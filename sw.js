@@ -1,5 +1,5 @@
 /* ВахтаХоз service worker — stale-while-revalidate + offline fallback */
-const CACHE = "vahtahoz-v10-filters";
+const CACHE = "vahtahoz-v13-merge-fix";
 const PRECACHE = [
   "./vahtahoz.html",
   "./manifest.webmanifest",
