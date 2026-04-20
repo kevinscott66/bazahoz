@@ -816,15 +816,18 @@ function orderReceive(opId){
     product = {
       id: uid(), type:"product", name: op.productName,
       qty: 0, unit: op.unit||"шт", minStock:"", expiry:"", location:"",
-      category:"Прочие продукты", note:"", createdAt:new Date().toISOString(),
+      category: ((state.categories.product||[]).includes("Прочие продукты") ? "Прочие продукты" : (state.categories.product||[])[0] || ""),
+      note:"", createdAt:new Date().toISOString(),
     };
     state.stock.push(product);
     op.productId = product.id;
   }
   product.qty = Number(product.qty||0) + Number(op.qty||0);
   product.updatedAt = new Date().toISOString();
+  const receiptId = uid();
+  op.receiptId = receiptId;
   state.journals.receipt.unshift({
-    id: uid(),
+    id: receiptId,
     ts: new Date().toISOString(),
     productId: product?.id || "",
     productName: op.productName,
@@ -862,19 +865,21 @@ async function deleteOp(kind, opId){
       const next = Number(product.qty||0) - effectiveSign*Number(op.qty||0);
       if(next<0){ toast("Нельзя откатить: на складе меньше"); return; }
       product.qty = next; product.updatedAt = new Date().toISOString();
-      // если принятый заказ — удалить и парную запись в Поступлении
+      // если принятый заказ — удалить парную запись в Поступлении по точному id (fallback: по совпадению)
       if(kind==="order"){
-        state.journals.receipt = (state.journals.receipt||[]).filter(r=>{
-          if(r.productId!==product.id) return true;
-          if(Number(r.qty)!==Number(op.qty)) return true;
-          if(!(r.note||"").startsWith("Из заказа")) return true;
-          return false;
-        });
+        if(op.receiptId){
+          state.journals.receipt = (state.journals.receipt||[]).filter(r=>r.id!==op.receiptId);
+        } else {
+          // старые записи без receiptId — фолбэк на эвристику (снесёт только одну первую совпадающую)
+          const arr = state.journals.receipt||[];
+          const idx = arr.findIndex(r=>r.productId===product.id && Number(r.qty)===Number(op.qty) && (r.note||"").startsWith("Из заказа"));
+          if(idx>=0) arr.splice(idx,1);
+        }
       }
       // если позиция была авто-создана (qty=0 и нет других журнальных записей) — предложить удалить
       if(product.qty===0){
         const hasOther = ["receipt","issue","writeoff","order"].some(k=>
-          (state.journals[k]||[]).some(r=>r.productId===product.id)
+          (state.journals[k]||[]).some(r=>r.productId===product.id && r.id!==opId)
         );
         if(!hasOther && await confirmSheet(`«${product.name}» на складе = 0 и больше не упоминается. Удалить позицию?`,{yes:"Удалить",no:"Оставить"})){
           state.stock = state.stock.filter(s=>s.id!==product.id);
@@ -896,7 +901,7 @@ function stockRow(it){
   const icon = it.type==="product"?"🥬":"🧴";
   const left = `${it.qty??0} ${esc(it.unit||"")}`;
   const loc = it.location?`<span class="badge badge-gray">📍 ${esc(it.location)}</span>`:"";
-  const cat = it.type==="household"&&it.category?`<span class="badge badge-gray">${esc(it.category)}</span>`:"";
+  const cat = it.category?`<span class="badge badge-gray">${esc(it.category)}</span>`:"";
   const exp = it.expiry?`<span class="badge badge-gray">⏰ ${fmtDate(it.expiry)}</span>`:"";
   return `
     <div class="card">
@@ -955,7 +960,10 @@ function openStockEdit(id, typeDefault){
                : { id:"", type:typeDefault||"product", name:"", qty:"", unit:"шт", minStock:"", expiry:"", location:"", category:"", note:"" };
   const isProd = it.type==="product";
   openSheet(`
-    <div class="font-bold text-xl mb-3">${id?"Редактировать":"Новый"} ${isProd?"продукт":"хозтовар"}</div>
+    <div class="flex items-center justify-between gap-2 mb-3">
+      <div class="font-bold text-xl">${id?"Редактировать":"Новый"} ${isProd?"продукт":"хозтовар"}</div>
+      ${id && isProd?`<button class="btn btn-warn" onclick="openBatchAdd('${id}')">➕ Партия</button>`:""}
+    </div>
     <div class="space-y-3">
       <input class="input" id="sn" placeholder="Название" value="${esc(it.name)}" autofocus />
       <div class="grid grid-cols-2 gap-2">
@@ -1023,6 +1031,57 @@ function saveStock(id, type){
   }
   saveState(); closeSheet(); render();
 }
+function openBatchAdd(id){
+  const it = state.stock.find(s=>s.id===id); if(!it) return;
+  // базовое имя без уже существующего суффикса "(до ...)"
+  const baseName = (it.name||"").replace(/\s*\(до\s+[^)]+\)\s*$/,"").trim();
+  openSheet(`
+    <div class="space-y-3">
+      <div class="font-bold text-xl">Новая партия</div>
+      <div class="text-sm opacity-70">Создаётся отдельная позиция «${esc(baseName)} (до …)» с собственным сроком. Остатки и просрочка считаются независимо.</div>
+      <div>
+        <div class="text-sm opacity-70 mb-1">Количество</div>
+        <input class="input" id="bq" type="number" inputmode="decimal" value="0" />
+      </div>
+      <div>
+        <div class="text-sm opacity-70 mb-1">Срок годности</div>
+        <input class="input" id="be" type="date" value="" />
+      </div>
+      <div class="flex gap-2 pt-2">
+        <button class="btn btn-ghost flex-1" data-close>Отмена</button>
+        <button class="btn btn-primary flex-1" onclick="saveBatch('${id}')">Добавить</button>
+      </div>
+    </div>
+  `);
+}
+function saveBatch(id){
+  const body = document.getElementById("sheetBody");
+  const src = state.stock.find(s=>s.id===id); if(!src){ closeSheet(); return; }
+  const qty = Number((body.querySelector("#bq").value||"0").replace(",","."));
+  const expiry = body.querySelector("#be").value || "";
+  if(!expiry){ toast("Укажите срок годности"); return; }
+  if(!(qty>0)){ toast("Количество должно быть > 0"); return; }
+  const baseName = (src.name||"").replace(/\s*\(до\s+[^)]+\)\s*$/,"").trim();
+  const name = `${baseName} (до ${fmtDate(expiry)})`;
+  const now = new Date().toISOString();
+  const clone = {
+    id: uid(), type: src.type, name,
+    qty, unit: src.unit||"", minStock: src.minStock||"",
+    expiry, location: src.location||"", category: src.category||"",
+    note: src.note||"", createdAt: now
+  };
+  state.stock.push(clone);
+  state.journals = state.journals || { receipt:[], issue:[], writeoff:[], order:[] };
+  state.journals.receipt = state.journals.receipt || [];
+  state.journals.receipt.unshift({
+    id: uid(), ts: now, productId: clone.id, productName: name,
+    qty, unit: clone.unit, note: `Новая партия (срок ${fmtDate(expiry)})`
+  });
+  logOp("BATCH_ADD", `${name} +${qty} ${clone.unit}`);
+  saveState(); closeSheet(); render();
+  toast("Партия добавлена");
+}
+
 async function deleteStock(id){
   const it = state.stock.find(s=>s.id===id);
   if(!await confirmSheet(`Удалить «${it?.name||""}»?`,{danger:true,yes:"Удалить"})) return;
@@ -1575,7 +1634,7 @@ document.addEventListener("click", e=>{
 
 /* ---------- Expose for inline handlers ---------- */
 Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,taskFilter,
-  openStockEdit,saveStock,deleteStock,quickAdjust,stockTab,stockSearch,stockCat,stockMode,
+  openStockEdit,saveStock,deleteStock,openBatchAdd,saveBatch,quickAdjust,stockTab,stockSearch,stockCat,stockMode,
   openOpEdit,saveOp,deleteOp,orderReceive,
   openCategoriesEdit,addCategory,renameCategory,deleteCategory,
   toggleCheck,addCheck,resetChecklist,
