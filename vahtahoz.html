@@ -188,16 +188,137 @@ function loadState(){
     return merged;
   }catch(e){ return structuredClone(defaultState); }
 }
-function saveState(){ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
+function saveState(){
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
+  catch(e){
+    if(e && (e.name==="QuotaExceededError" || e.code===22)){
+      if(Array.isArray(state.log) && state.log.length>200) state.log = state.log.slice(0,200);
+      if(state.journals){
+        for(const k of ["receipt","issue","writeoff","order"]){
+          if(Array.isArray(state.journals[k]) && state.journals[k].length>500)
+            state.journals[k] = state.journals[k].slice(-500);
+        }
+      }
+      try {
+        localStorage.setItem(STORE_KEY, JSON.stringify(state));
+        try{ toast("Хранилище переполнено: журнал урезан"); }catch(_){}
+      } catch(e2){
+        console.error("saveState retry failed:", e2);
+        try{ toast("Не удалось сохранить — переполнение"); }catch(_){}
+      }
+    } else { console.error("saveState error:", e); }
+  }
+}
 
 let state = loadState();
 
 /* ---------- Utils ---------- */
 const uid = () => (crypto?.randomUUID?.() || (Date.now()+"_"+Math.random().toString(16).slice(2)));
-const todayStr = () => new Date().toISOString().slice(0,10);
+const todayStr = () => {
+  // локальная дата пользователя в формате YYYY-MM-DD (не UTC: иначе вечером/утром daysLeft ошибается на ±1 день)
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+};
 const fmtDate = (s) => { if(!s) return "—"; const [y,m,d]=s.split("-"); return `${d}.${m}.${y}`; };
 const daysLeft = (s) => { if(!s) return null; const a=new Date(s+"T00:00:00"); const b=new Date(todayStr()+"T00:00:00"); return Math.round((a-b)/86400000); };
 const esc = (s) => (s??"").toString().replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+/* Округление количеств: устраняет накопление ошибок плавающей точки (0.1+0.2=0.30000000000000004).
+   3 знака достаточно для кг/л (граммы/мл), для шт/кор/уп/меш — фактически целое число. */
+const roundQty = (n) => {
+  const x = Number(n);
+  if(!Number.isFinite(x)) return 0;
+  return Math.round(x*1000)/1000;
+};
+/* Форматирование qty для UI/экспорта: убирает хвостовые нули, оставляя «человеческое» представление. */
+const fmtQty = (n) => {
+  const x = roundQty(n);
+  return Number.isInteger(x) ? String(x) : x.toFixed(3).replace(/0+$/,"").replace(/\.$/,"");
+};
+
+/* ---------- Input sanitization ---------- */
+const SAFE_ID = /^[A-Za-z0-9_\-]{1,64}$/;
+const safeId = (v) => (typeof v==="string" && SAFE_ID.test(v)) ? v : uid();
+const cleanCatName = (s) => (typeof s==="string") ? s.replace(/[<>'"\\\r\n]/g,"").slice(0,40).trim() : "";
+function sanitizeIds(arr){
+  if(!Array.isArray(arr)) return [];
+  for(const it of arr){ if(it && typeof it==="object") it.id = safeId(it.id); }
+  return arr;
+}
+function validateImport(obj){
+  if(!obj || typeof obj!=="object" || Array.isArray(obj)) throw new Error("корневой объект некорректен");
+  if(obj.stock!==undefined && !Array.isArray(obj.stock)) throw new Error("поле stock не массив");
+  if(obj.tasks!==undefined && !Array.isArray(obj.tasks)) throw new Error("поле tasks не массив");
+  if(obj.log!==undefined   && !Array.isArray(obj.log))   throw new Error("поле log не массив");
+  if(obj.journals!==undefined){
+    if(typeof obj.journals!=="object" || Array.isArray(obj.journals)) throw new Error("journals не объект");
+    for(const k of ["receipt","issue","writeoff","order"]){
+      if(obj.journals[k]!==undefined && !Array.isArray(obj.journals[k])) throw new Error(`journals.${k} не массив`);
+      if(obj.journals[k]===undefined) obj.journals[k] = [];
+    }
+  }
+  if(obj.categories!==undefined){
+    if(typeof obj.categories!=="object" || Array.isArray(obj.categories)) throw new Error("categories не объект");
+    for(const k of ["product","household"]){
+      if(obj.categories[k]!==undefined && !Array.isArray(obj.categories[k])) throw new Error(`categories.${k} не массив`);
+      if(Array.isArray(obj.categories[k])) obj.categories[k] = obj.categories[k].map(cleanCatName).filter(Boolean);
+    }
+  }
+  // нормализуем id у всех записей
+  if(obj.stock) sanitizeIds(obj.stock);
+  if(obj.tasks) sanitizeIds(obj.tasks);
+  if(obj.log)   sanitizeIds(obj.log);
+  if(obj.journals){
+    for(const k of ["receipt","issue","writeoff","order"]){
+      if(obj.journals[k]) sanitizeIds(obj.journals[k]);
+    }
+  }
+  // нормализуем qty: гасим float-эпсилоны на входе, чтобы не тащить мусор из старых экспортов
+  if(Array.isArray(obj.stock)){
+    for(const s of obj.stock){ if(s && s.qty!=="" && s.qty!=null) s.qty = roundQty(s.qty); }
+  }
+  if(obj.journals){
+    for(const k of ["receipt","issue","writeoff","order"]){
+      if(Array.isArray(obj.journals[k])){
+        for(const op of obj.journals[k]){ if(op && op.qty!=null) op.qty = roundQty(op.qty); }
+      }
+    }
+  }
+  return obj;
+}
+
+/* пост-загрузочная нормализация (loadState() выполнился до объявления хелперов) */
+if(!Array.isArray(state.stock)) state.stock = [];
+if(!Array.isArray(state.tasks)) state.tasks = [];
+if(!Array.isArray(state.log))   state.log   = [];
+if(!state.journals || typeof state.journals!=="object" || Array.isArray(state.journals))
+  state.journals = { receipt:[], issue:[], writeoff:[], order:[] };
+for(const k of ["receipt","issue","writeoff","order"]){
+  if(!Array.isArray(state.journals[k])) state.journals[k] = [];
+}
+if(!state.categories || typeof state.categories!=="object"){
+  state.categories = { product: [], household: [] };
+}
+if(!Array.isArray(state.categories.product))   state.categories.product = [];
+if(!Array.isArray(state.categories.household)) state.categories.household = [];
+sanitizeIds(state.stock);
+sanitizeIds(state.tasks);
+sanitizeIds(state.log);
+for(const k of ["receipt","issue","writeoff","order"]) sanitizeIds(state.journals[k]);
+
+/* нормализация существующих количеств: схлопывает накопленные float-эпсилоны
+   (91.54999999999998 → 91.55, 12.620000000000001 → 12.62) и заполняет пустую категорию у продуктов */
+for(const s of state.stock){
+  if(s.qty!=="" && s.qty!=null) s.qty = roundQty(s.qty);
+  if(s.type==="product" && !s.category){
+    s.category = (state.categories.product||[]).includes("Прочие продукты") ? "Прочие продукты" : "";
+  }
+}
+for(const k of ["receipt","issue","writeoff","order"]){
+  for(const op of state.journals[k]){
+    if(op && op.qty!=null) op.qty = roundQty(op.qty);
+  }
+}
 
 function toast(msg){
   const t=document.getElementById("toast");
@@ -316,7 +437,10 @@ document.getElementById("sheet").addEventListener("click", e=>{
 });
 
 /* ---------- Stock helpers ---------- */
+const inStock = (it) => roundQty((it && it.qty) || 0) > 0;
 function stockStatus(it){
+  // позиции без остатка ("архивные") — отдельный спокойный статус, всегда в конце списка
+  if(!inStock(it)) return { color:"gray", text:"Нет в наличии", rank:99, out:true };
   const low = (it.qty!==""&&it.minStock!==""&&Number(it.qty) <= Number(it.minStock));
   if(it.type==="product" && it.expiry){
     const d = daysLeft(it.expiry);
@@ -365,9 +489,10 @@ function renderDashboard(){
   const overdueTasks = state.tasks.filter(t=>!t.done && t.due && t.due<today);
   const expiringSoon = state.stock.filter(s=>{
     if(s.type!=="product"||!s.expiry) return false;
+    if(!inStock(s)) return false; // позиции без остатка не считаем «истекающими»
     const d = daysLeft(s.expiry); return d!==null && d<=7;
   });
-  const lowStock = state.stock.filter(s=> s.minStock!=="" && Number(s.qty) <= Number(s.minStock));
+  const lowStock = state.stock.filter(s=> inStock(s) && s.minStock!=="" && Number(s.qty) <= Number(s.minStock));
 
   v.innerHTML = `
     <div class="grid grid-cols-2 gap-3">
@@ -389,8 +514,8 @@ function renderDashboard(){
       </button>
       <button class="card tap text-left" onclick="nav('kitchen')">
         <div class="text-3xl">🍳</div>
-        <div class="text-2xl font-bold mt-1">${state.stock.filter(s=>s.type==="product").length}</div>
-        <div class="text-sm opacity-70">Продуктов</div>
+        <div class="text-2xl font-bold mt-1">${state.stock.filter(s=>s.type==="product" && inStock(s)).length}</div>
+        <div class="text-sm opacity-70">Продуктов в наличии</div>
       </button>
     </div>
 
@@ -403,7 +528,7 @@ function renderDashboard(){
     ${todayTasks.length?`
       <div class="card">
         <div class="font-bold mb-2">Задачи на сегодня</div>
-        <div class="space-y-2">${todayTasks.map(taskRow).join("")}</div>
+        <div class="space-y-2">${todayTasks.map(t=>taskRow(t,{showMove:false})).join("")}</div>
       </div>`:""}
 
     ${expiringSoon.length?`
@@ -433,6 +558,12 @@ function renderTasks(){
   list.sort((a,b)=>{
     const da = a.due?daysLeft(a.due):999, db=b.due?daysLeft(b.due):999;
     if(da!==db) return da-db;
+    // время-якорь: если задано время — оно ведёт сортировку внутри дня
+    const ta = a.time||"99:99", tb = b.time||"99:99";
+    if(ta!==tb) return ta<tb?-1:1;
+    // ручной порядок (стрелки ↑/↓): меньше — выше
+    const oa = Number(a.order||0), ob = Number(b.order||0);
+    if(oa!==ob) return oa-ob;
     const pa = TASK_PRIOS.indexOf(a.priority), pb = TASK_PRIOS.indexOf(b.priority);
     return pb-pa;
   });
@@ -451,7 +582,8 @@ function renderTasks(){
   `;
 }
 
-function taskRow(t){
+function taskRow(t, opts){
+  const showMove = !opts || opts.showMove!==false;
   const d = t.due?daysLeft(t.due):null;
   let dueBadge="";
   if(t.due){
@@ -459,10 +591,11 @@ function taskRow(t){
     else if(d===0) dueBadge=`<span class="badge badge-yellow">Сегодня</span>`;
     else dueBadge=`<span class="badge badge-gray">${fmtDate(t.due)}</span>`;
   }
+  const timeBadge = t.time?`<span class="badge badge-gray">🕒 ${esc(t.time)}</span>`:"";
   const prioBadge = t.priority==="Высокий"?`<span class="badge badge-red">!</span>`
                   : t.priority==="Средний"?`<span class="badge badge-yellow">~</span>`:"";
   return `
-    <div class="card flex items-start gap-3 ${t.done?"opacity-60":""}">
+    <div class="card flex items-start gap-2 ${t.done?"opacity-60":""}">
       <button class="mt-1" onclick="toggleTask('${t.id}')" aria-label="done">
         <span class="inline-block w-8 h-8 rounded-full border-2 ${t.done?"bg-green-600 border-green-600":"border-gray-500"}">
           ${t.done?'<span class="block text-white text-center leading-7">✓</span>':""}
@@ -472,11 +605,50 @@ function taskRow(t){
         <div class="font-semibold ${t.done?"line-through":""}">${esc(t.title)}</div>
         <div class="text-xs opacity-70 mt-1 flex flex-wrap gap-2 items-center">
           <span class="badge badge-gray">${esc(t.category||"Общее")}</span>
-          ${prioBadge} ${dueBadge}
+          ${prioBadge} ${dueBadge} ${timeBadge}
           ${t.repeat&&t.repeat!=="Нет"?`<span class="badge badge-gray">🔁 ${esc(t.repeat)}</span>`:""}
         </div>
       </div>
+      ${showMove?`<div class="flex flex-col gap-1">
+        <button class="btn btn-ghost px-2 py-0" onclick="moveTask('${t.id}',-1)" aria-label="up">▲</button>
+        <button class="btn btn-ghost px-2 py-0" onclick="moveTask('${t.id}',1)" aria-label="down">▼</button>
+      </div>`:""}
     </div>`;
+}
+
+function moveTask(id, dir){
+  // ручной порядок имеет смысл ТОЛЬКО внутри группы с одинаковыми daysLeft и time —
+  // иначе сортировка по дате/времени всё равно перетасует независимо от order.
+  let list = state.tasks.slice().filter(t=>!t.done);
+  if(taskFilter.cat!=="Все") list = list.filter(t=>t.category===taskFilter.cat);
+  list.sort((a,b)=>{
+    const da = a.due?daysLeft(a.due):999, db=b.due?daysLeft(b.due):999;
+    if(da!==db) return da-db;
+    const ta = a.time||"99:99", tb = b.time||"99:99";
+    if(ta!==tb) return ta<tb?-1:1;
+    const oa = Number(a.order||0), ob = Number(b.order||0);
+    if(oa!==ob) return oa-ob;
+    return TASK_PRIOS.indexOf(b.priority)-TASK_PRIOS.indexOf(a.priority);
+  });
+  const i = list.findIndex(x=>x.id===id);
+  const j = i + (dir<0?-1:1);
+  if(i<0 || j<0 || j>=list.length){ toast("Дальше двигать некуда"); return; }
+  const a = list[i], b = list[j];
+  const dueA = a.due?daysLeft(a.due):999, dueB = b.due?daysLeft(b.due):999;
+  const timeA = a.time||"99:99", timeB = b.time||"99:99";
+  if(dueA!==dueB || timeA!==timeB){
+    toast("Порядок задаётся датой/временем — измени их у задачи");
+    return;
+  }
+  // нормализуем order внутри одной группы, чтобы свап давал детерминированный результат
+  const group = list.filter(x=>{
+    const dx = x.due?daysLeft(x.due):999;
+    const tx = x.time||"99:99";
+    return dx===dueA && tx===timeA;
+  });
+  group.forEach((x,idx)=>{ x.order = idx; });
+  const tmp = a.order; a.order = b.order; b.order = tmp;
+  saveState(); render();
 }
 
 function toggleTask(id){
@@ -485,26 +657,56 @@ function toggleTask(id){
   if(t.done){
     logOp("TASK_DONE", t.title);
     if(t.repeat && t.repeat!=="Нет" && t.due){
+      const today = todayStr();
       const next = new Date(t.due+"T00:00:00");
-      if(t.repeat==="День") next.setDate(next.getDate()+1);
-      if(t.repeat==="Неделя") next.setDate(next.getDate()+7);
-      if(t.repeat==="Месяц") next.setMonth(next.getMonth()+1);
-      const nextDue = next.toISOString().slice(0,10);
-      // не плодим дубли: по parentId или по title+due+repeat
-      const exists = state.tasks.some(x=> x.parentId===t.id || (x.title===t.title && x.due===nextDue && x.repeat===t.repeat && !x.done));
+      const origDay = next.getDate();
+      const step = () => {
+        if(t.repeat==="День")   next.setDate(next.getDate()+1);
+        if(t.repeat==="Неделя") next.setDate(next.getDate()+7);
+        if(t.repeat==="Месяц"){
+          // защита от переполнения: 31.01 + 1 мес = 03.03 в JS; нормализуем к последнему дню целевого месяца
+          const targetMonth = next.getMonth()+1;
+          next.setDate(1);
+          next.setMonth(targetMonth);
+          // ставим оригинальный день, либо последний день месяца, если оригинального нет (29-31 фев и т.п.)
+          const lastDay = new Date(next.getFullYear(), next.getMonth()+1, 0).getDate();
+          next.setDate(Math.min(origDay, lastDay));
+        }
+      };
+      step();
+      // если задача была сильно просрочена (вплоть до ~10 лет), перематываем строго в будущее
+      const localDateStr = (d) => new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+      let guard = 0;
+      while(localDateStr(next) <= today && guard++ < 3650) step();
+      const nextDue = localDateStr(next);
+      // корневой id серии: если t уже копия — берём её parentId, чтобы цепочка оставалась плоской
+      const rootId = t.parentId || t.id;
+      // дубликат — только незавершённая копия с тем же rootId или открытая задача с тем же названием/датой/повтором
+      const exists = state.tasks.some(x=>
+        (!x.done && (x.parentId||x.id)===rootId) ||
+        (!x.done && x.title===t.title && x.due===nextDue && x.repeat===t.repeat)
+      );
       if(!exists){
-        state.tasks.push({...t, id:uid(), parentId:t.id, done:false, due:nextDue, createdAt:new Date().toISOString()});
+        // order сбрасываем — ручной порядок не имеет смысла переносить на новую дату
+        state.tasks.push({...t, id:uid(), parentId:rootId, order:undefined, done:false, due:nextDue, createdAt:new Date().toISOString()});
+        toast(`✓ Готово · следующая ${fmtDate(nextDue)}`);
+      } else {
+        toast("✓ Готово");
       }
+    } else {
+      toast("✓ Готово");
     }
   } else {
-    // откат: удаляем автоматически созданную следующую копию, если её ещё не трогали
-    state.tasks = state.tasks.filter(x=> !(x.parentId===t.id && !x.done));
+    // откат: удаляем автоматически созданную следующую копию по корневому id серии (только незавершённую)
+    const rootId = t.parentId || t.id;
+    state.tasks = state.tasks.filter(x=> !((x.parentId||"")===rootId && x.id!==t.id && !x.done));
+    toast("Снято");
   }
   saveState(); render();
 }
 
 function openTaskEdit(id){
-  const t = id?state.tasks.find(x=>x.id===id):{ id:"", title:"", category:"Общее", priority:"Средний", due:todayStr(), repeat:"Нет", done:false };
+  const t = id?state.tasks.find(x=>x.id===id):{ id:"", title:"", category:"Общее", priority:"Средний", due:todayStr(), time:"", repeat:"Нет", done:false };
   openSheet(`
     <div class="font-bold text-xl mb-3">${id?"Редактировать":"Новая"} задача</div>
     <div class="space-y-3">
@@ -517,9 +719,15 @@ function openTaskEdit(id){
         <div class="text-sm opacity-70 mb-1">Приоритет</div>
         <div class="scroll-x flex gap-2">${TASK_PRIOS.map(p=>`<button class="chip ${t.priority===p?"active":""}" data-prio="${p}" onclick="this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');">${p}</button>`).join("")}</div>
       </div>
-      <div>
-        <div class="text-sm opacity-70 mb-1">Дедлайн</div>
-        <input type="date" class="input" id="td" value="${t.due||""}" />
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <div class="text-sm opacity-70 mb-1">Дедлайн</div>
+          <input type="date" class="input" id="td" value="${t.due||""}" />
+        </div>
+        <div>
+          <div class="text-sm opacity-70 mb-1">Время (опц.)</div>
+          <input type="time" class="input" id="ttime" value="${t.time||""}" />
+        </div>
       </div>
       <div>
         <div class="text-sm opacity-70 mb-1">Повтор</div>
@@ -541,12 +749,24 @@ function saveTask(id){
   const prio = body.querySelector(".chip.active[data-prio]")?.dataset.prio || "Средний";
   const rep = body.querySelector(".chip.active[data-rep]")?.dataset.rep || "Нет";
   const due = body.querySelector("#td").value;
+  const time = (body.querySelector("#ttime")?.value || "").trim();
   if(id){
     const t = state.tasks.find(x=>x.id===id);
-    Object.assign(t,{title,category:cat,priority:prio,repeat:rep,due});
+    // если поменялась дата/время — старый order относится к другой группе, сбросим
+    const groupChanged = t.due!==due || (t.time||"")!==time;
+    Object.assign(t,{title,category:cat,priority:prio,repeat:rep,due,time});
+    if(groupChanged){
+      const sameGroup = state.tasks.filter(x=> x!==t && x.due===due && (x.time||"")===time);
+      const maxOrder = sameGroup.reduce((m,x)=> Math.max(m, Number(x.order||0)), -1);
+      t.order = maxOrder+1;
+    }
     logOp("TASK_EDIT", title);
   } else {
-    state.tasks.push({id:uid(), title, category:cat, priority:prio, repeat:rep, due, done:false, createdAt:new Date().toISOString()});
+    // order = max(существующих в той же дате/времени) + 1, чтобы новая задача попадала в конец группы,
+    // а не выше задач, которые пользователь уже ручную опустил вниз
+    const sameGroup = state.tasks.filter(x=> x.due===due && (x.time||"")===time);
+    const maxOrder = sameGroup.reduce((m,x)=> Math.max(m, Number(x.order||0)), -1);
+    state.tasks.push({id:uid(), title, category:cat, priority:prio, repeat:rep, due, time, order:maxOrder+1, done:false, createdAt:new Date().toISOString()});
     logOp("TASK_ADD", title);
   }
   saveState(); closeSheet(); render();
@@ -554,8 +774,19 @@ function saveTask(id){
 async function deleteTask(id){
   if(!await confirmSheet("Удалить задачу?",{danger:true,yes:"Удалить"})) return;
   const t = state.tasks.find(x=>x.id===id);
-  state.tasks = state.tasks.filter(x=>x.id!==id);
-  logOp("TASK_DEL", t?.title||"");
+  // удаляем саму задачу + всю forward-цепочку повторов (parentId-наследников), чтобы не оставались зомби-копии
+  const toRemove = new Set([id]);
+  let grew = true;
+  while(grew){
+    grew = false;
+    for(const x of state.tasks){
+      if(x.parentId && toRemove.has(x.parentId) && !toRemove.has(x.id)){
+        toRemove.add(x.id); grew = true;
+      }
+    }
+  }
+  state.tasks = state.tasks.filter(x=>!toRemove.has(x.id));
+  logOp("TASK_DEL", (t?.title||"") + (toRemove.size>1?` (+${toRemove.size-1} повторов)`:""));
   saveState(); closeSheet(); render();
 }
 
@@ -593,10 +824,10 @@ function renderStock(){
   else if(stockTab==="household") cats = state.categories.household;
   else cats = [...new Set([...state.categories.product, ...state.categories.household])];
 
-  // подсчёт по категориям для текущего таба
+  // подсчёт по категориям для текущего таба (только позиции в наличии)
   const countByCat = {};
   const base = state.stock.filter(s=> stockTab==="all" ? true : s.type===stockTab);
-  base.forEach(s=>{ if(s.category){ countByCat[s.category]=(countByCat[s.category]||0)+1; } });
+  base.forEach(s=>{ if(s.category && inStock(s)){ countByCat[s.category]=(countByCat[s.category]||0)+1; } });
   // счётчики сроков должны совпадать с видимым списком: учитываем категорию и поиск
   const q = stockSearch.trim().toLowerCase();
   const expScope = base.filter(s=>
@@ -612,15 +843,15 @@ function renderStock(){
     </div>
 
     <div class="scroll-x flex gap-2">
-      <button class="chip ${stockTab==='all'?'active':''}" data-stocktab="all">Все (${state.stock.length})</button>
-      <button class="chip ${stockTab==='product'?'active':''}" data-stocktab="product">🥬 Продукты (${state.stock.filter(s=>s.type==='product').length})</button>
-      <button class="chip ${stockTab==='household'?'active':''}" data-stocktab="household">🧴 Хозка (${state.stock.filter(s=>s.type==='household').length})</button>
+      <button class="chip ${stockTab==='all'?'active':''}" data-stocktab="all">Все (${state.stock.filter(inStock).length})</button>
+      <button class="chip ${stockTab==='product'?'active':''}" data-stocktab="product">🥬 Продукты (${state.stock.filter(s=>s.type==='product'&&inStock(s)).length})</button>
+      <button class="chip ${stockTab==='household'?'active':''}" data-stocktab="household">🧴 Хозка (${state.stock.filter(s=>s.type==='household'&&inStock(s)).length})</button>
     </div>
 
     <div class="scroll-x flex gap-2">
       <button class="chip ${stockExpiryFilter==='all'?'active':''}" data-expfilter="all">Все сроки</button>
-      <button class="chip ${stockExpiryFilter==='expired'?'active':''}" data-expfilter="expired">⛔ Просрочка (${expScope.filter(s=>s.expiry&&daysLeft(s.expiry)<0).length})</button>
-      <button class="chip ${stockExpiryFilter==='soon'?'active':''}" data-expfilter="soon">⏰ Скоро (${expScope.filter(s=>{const d=s.expiry?daysLeft(s.expiry):null;return d!==null&&d>=0&&d<=7;}).length})</button>
+      <button class="chip ${stockExpiryFilter==='expired'?'active':''}" data-expfilter="expired">⛔ Просрочка (${expScope.filter(s=>inStock(s)&&s.expiry&&daysLeft(s.expiry)<0).length})</button>
+      <button class="chip ${stockExpiryFilter==='soon'?'active':''}" data-expfilter="soon">⏰ Скоро (${expScope.filter(s=>{if(!inStock(s))return false;const d=s.expiry?daysLeft(s.expiry):null;return d!==null&&d>=0&&d<=7;}).length})</button>
     </div>
 
     <div class="scroll-x flex gap-2" id="stockCatChips">
@@ -653,14 +884,16 @@ function renderStockList(){
   if(stockTab==="product") list = list.filter(s=>s.type==="product");
   if(stockTab==="household") list = list.filter(s=>s.type==="household");
   if(stockCat) list = list.filter(s=>s.category===stockCat);
-  if(stockExpiryFilter==="expired") list = list.filter(s=>s.expiry && daysLeft(s.expiry)<0);
-  else if(stockExpiryFilter==="soon") list = list.filter(s=>{ const d=s.expiry?daysLeft(s.expiry):null; return d!==null && d>=0 && d<=7; });
+  if(stockExpiryFilter==="expired") list = list.filter(s=>inStock(s) && s.expiry && daysLeft(s.expiry)<0);
+  else if(stockExpiryFilter==="soon") list = list.filter(s=>{ if(!inStock(s)) return false; const d=s.expiry?daysLeft(s.expiry):null; return d!==null && d>=0 && d<=7; });
   if(stockSearch.trim()){
     const q = stockSearch.trim().toLowerCase();
     list = list.filter(s=>(s.name||"").toLowerCase().includes(q));
   }
   list = sortedStock(list);
   const total = list.length;
+  const outCount = list.filter(s=>!inStock(s)).length;
+  const inCount  = total - outCount;
   const shown = list.slice(0, stockLimit);
   if(!total){
     box.innerHTML = `<div class="card text-center opacity-70">Ничего не найдено</div>`;
@@ -668,8 +901,18 @@ function renderStockList(){
   }
   const more = total > shown.length
     ? `<button class="btn btn-ghost w-full mt-2" id="stockMore">Показать ещё (${total - shown.length})</button>`
-    : `<div class="text-center text-xs opacity-60 mt-2">Показано всё: ${total}</div>`;
-  box.innerHTML = `<div class="space-y-2">${shown.map(stockRow).join("")}</div>${more}`;
+    : `<div class="text-center text-xs opacity-60 mt-2">В наличии: ${inCount}${outCount?` · нет в наличии: ${outCount}`:""}</div>`;
+  // визуальный разделитель перед блоком «нет в наличии» (только если он попадает в показанный срез)
+  let html = "";
+  let firstOutSeen = false;
+  for(const it of shown){
+    if(!firstOutSeen && !inStock(it) && inCount>0){
+      firstOutSeen = true;
+      html += `<div class="text-xs opacity-60 mt-3 mb-1 uppercase tracking-wide">— Нет в наличии (${outCount}) —</div>`;
+    }
+    html += stockRow(it);
+  }
+  box.innerHTML = `<div class="space-y-2">${html}</div>${more}`;
   const moreBtn = document.getElementById("stockMore");
   if(moreBtn) moreBtn.addEventListener("click", ()=>{ stockLimit += 200; renderStockList(); });
 }
@@ -685,7 +928,9 @@ function renderJournal(kind){
           ? `<span class="badge badge-green">Принят</span>`
           : `<span class="badge badge-yellow">Ожидает</span>`)
       : "";
-    const qtyBadge = `<span class="badge badge-gray">${op.qty} ${esc(op.unit||"")}</span>`;
+    const qtyBadge = `<span class="badge badge-gray">${fmtQty(op.qty)} ${esc(op.unit||"")}</span>`;
+    // зеркальные записи из принятого заказа: редактировать нельзя — это рассинхронизирует с order; удалять можно (deleteOp умеет)
+    const linkedToOrder = kind==="receipt" && (op.note||"").startsWith("Из заказа");
     const receiveBtn = (kind==="order" && op.status!=="received")
       ? `<button class="btn btn-success" onclick="orderReceive('${op.id}')">Принять на склад</button>`
       : "";
@@ -700,7 +945,10 @@ function renderJournal(kind){
           </div>
           ${op.note?`<div class="text-xs opacity-80 mt-1">${esc(op.note)}</div>`:""}
         </div>
-        <button class="btn btn-ghost" onclick="deleteOp('${kind}','${op.id}')">🗑</button>
+        <div class="flex flex-col gap-1">
+          ${linkedToOrder ? `<button class="btn btn-ghost opacity-40" disabled title="Редактируйте исходный заказ">✏️</button>` : `<button class="btn btn-ghost" onclick="editOp('${kind}','${op.id}')">✏️</button>`}
+          <button class="btn btn-ghost" onclick="deleteOp('${kind}','${op.id}')">🗑</button>
+        </div>
       </div>
       ${receiveBtn?`<div class="mt-2">${receiveBtn}</div>`:""}
     </div>`;
@@ -754,7 +1002,7 @@ function openOpEdit(kind){
     if(!Q){ list.innerHTML = `<div class="text-xs opacity-60 p-2">Введи 2+ символа для поиска</div>`; return; }
     const found = state.stock.filter(s=>(s.name||"").toLowerCase().includes(Q)).slice(0,20);
     list.innerHTML = found.length
-      ? found.map(s=>`<button type="button" class="w-full text-left p-2 rounded hover:bg-white/5" data-pick="${esc(s.id)}">${s.type==='product'?'🥬':'🧴'} ${esc(s.name)} <span class="opacity-60 text-xs">· ${s.qty} ${esc(s.unit||"")}</span></button>`).join("")
+      ? found.map(s=>`<button type="button" class="w-full text-left p-2 rounded hover:bg-white/5" data-pick="${esc(s.id)}">${s.type==='product'?'🥬':'🧴'} ${esc(s.name)} <span class="opacity-60 text-xs">· ${fmtQty(s.qty)} ${esc(s.unit||"")}</span></button>`).join("")
       : `<div class="text-xs opacity-60 p-2">Не найдено. Можно ввести вручную.</div>`;
   }
   renderList("");
@@ -763,7 +1011,7 @@ function openOpEdit(kind){
     const b = e.target.closest("[data-pick]"); if(!b) return;
     const s = state.stock.find(x=>x.id===b.dataset.pick); if(!s) return;
     hid.value = s.id;
-    sel.textContent = `Выбрано: ${s.name} (${s.qty} ${s.unit||""})`;
+    sel.textContent = `Выбрано: ${s.name} (${fmtQty(s.qty)} ${s.unit||""})`;
     if(UNITS.includes(s.unit)) unit.value = s.unit;
     nameI.value = "";
   });
@@ -795,7 +1043,7 @@ function saveOp(kind){
   if(kind==="order") op.status = "pending";
 
   if(product && m.sign!==0){
-    product.qty = Number(product.qty||0) + m.sign*qty;
+    product.qty = roundQty(Number(product.qty||0) + m.sign*qty);
     product.updatedAt = new Date().toISOString();
   }
   state.journals[kind] = state.journals[kind] || [];
@@ -822,7 +1070,7 @@ function orderReceive(opId){
     state.stock.push(product);
     op.productId = product.id;
   }
-  product.qty = Number(product.qty||0) + Number(op.qty||0);
+  product.qty = roundQty(Number(product.qty||0) + Number(op.qty||0));
   product.updatedAt = new Date().toISOString();
   const receiptId = uid();
   op.receiptId = receiptId;
@@ -835,7 +1083,7 @@ function orderReceive(opId){
     unit: op.unit,
     note: `Из заказа${op.note?": "+op.note:""}`,
   });
-  logOp("ORDER_RECEIVE", `${op.productName} +${op.qty} ${op.unit||""}`);
+  logOp("ORDER_RECEIVE", `${op.productName} +${fmtQty(op.qty)} ${op.unit||""}`);
   saveState(); render();
   toast("Принято на склад");
 }
@@ -853,7 +1101,7 @@ async function deleteOp(kind, opId){
 
   if(effectiveSign!==0 && product){
     const choice = await chooseSheet(
-      `Удалить запись?\n${op.productName} — ${op.qty} ${op.unit||""}`,
+      `Удалить запись?\n${op.productName} — ${fmtQty(op.qty)} ${op.unit||""}`,
       [
         { label:"Удалить и ОТКАТИТЬ склад", value:"revert", color:"btn-warn" },
         { label:"Удалить только запись", value:"keep", color:"btn-danger" },
@@ -864,7 +1112,7 @@ async function deleteOp(kind, opId){
     if(revert){
       const next = Number(product.qty||0) - effectiveSign*Number(op.qty||0);
       if(next<0){ toast("Нельзя откатить: на складе меньше"); return; }
-      product.qty = next; product.updatedAt = new Date().toISOString();
+      product.qty = roundQty(next); product.updatedAt = new Date().toISOString();
       // если принятый заказ — удалить парную запись в Поступлении по точному id (fallback: по совпадению)
       if(kind==="order"){
         if(op.receiptId){
@@ -887,54 +1135,237 @@ async function deleteOp(kind, opId){
       }
     }
   } else {
-    if(!await confirmSheet(`Удалить запись?\n${op.productName} — ${op.qty} ${op.unit||""}`,{danger:true,yes:"Удалить"})) return;
+    if(!await confirmSheet(`Удалить запись?\n${op.productName} — ${fmtQty(op.qty)} ${op.unit||""}`,{danger:true,yes:"Удалить"})) return;
   }
   state.journals[kind] = state.journals[kind].filter(o=>o.id!==opId);
-  logOp("OP_DEL", `${kind} ${op.productName} ${op.qty}${revert?" (откат)":""}`);
+  logOp("OP_DEL", `${kind} ${op.productName} ${fmtQty(op.qty)}${revert?" (откат)":""}`);
   saveState(); render();
+}
+
+/* Редактирование записи журнала: дата/время, продукт, количество, примечание.
+   Откат старого эффекта на склад → применение нового. Для принятого заказа — синхронизация
+   парной записи в receipt по receiptId. */
+function editOp(kind, opId){
+  const op = (state.journals[kind]||[]).find(o=>o.id===opId);
+  if(!op) return;
+  // блок: зеркальная запись принятого заказа — редактировать через order, иначе рассинхрон
+  if(kind==="receipt" && (op.note||"").startsWith("Из заказа")){
+    toast("Эта запись из заказа — редактируйте сам заказ во вкладке «Заказы»");
+    return;
+  }
+  const m = JOURNAL_META[kind];
+  // dt-local: YYYY-MM-DDTHH:MM (без секунд, локальное время)
+  const d = new Date(op.ts);
+  const pad = n=>String(n).padStart(2,"0");
+  const dtLocal = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  openSheet(`
+    <div class="font-bold text-xl mb-3">✏️ Изменить запись — ${m.label}</div>
+    <div class="space-y-3">
+      <div>
+        <div class="text-sm opacity-70 mb-1">Дата и время</div>
+        <input type="datetime-local" class="input" id="eopTs" value="${dtLocal}" />
+      </div>
+      <div>
+        <div class="text-sm opacity-70 mb-1">Сменить позицию (опц.)</div>
+        <input class="input" id="eopSearch" placeholder="Поиск по складу..." autocomplete="off" />
+        <div id="eopList" class="mt-2 space-y-1 max-h-48 overflow-y-auto" style="border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:4px"></div>
+        <div class="text-xs opacity-60 mt-1" id="eopSel">Текущая: ${esc(op.productName)}${op.productId?" (привязана к складу)":" (вручную)"}</div>
+        <input type="hidden" id="eopProdId" value="${esc(op.productId||"")}" />
+      </div>
+      <input class="input" id="eopName" placeholder="Название (если ручной ввод)" value="${esc(op.productName||"")}" />
+      <div class="grid grid-cols-2 gap-2">
+        <input class="input" id="eopQty" type="number" inputmode="decimal" value="${esc(fmtQty(op.qty))}" />
+        <select class="input" id="eopUnit">${UNITS.map(u=>`<option ${u===op.unit?"selected":""}>${u}</option>`).join("")}</select>
+      </div>
+      <textarea class="input" id="eopNote" rows="2">${esc(op.note||"")}</textarea>
+      <div class="flex gap-2 pt-2">
+        <button class="btn btn-ghost flex-1" data-close>Отмена</button>
+        <button class="btn btn-primary flex-1" onclick="saveOpEdit('${kind}','${opId}')">Сохранить</button>
+      </div>
+    </div>
+  `);
+  const input = document.getElementById("eopSearch");
+  const list  = document.getElementById("eopList");
+  const sel   = document.getElementById("eopSel");
+  const hid   = document.getElementById("eopProdId");
+  const unit  = document.getElementById("eopUnit");
+  const nameI = document.getElementById("eopName");
+  function renderList(q){
+    const Q = q.trim().toLowerCase();
+    if(!Q){ list.innerHTML = `<div class="text-xs opacity-60 p-2">Введи 2+ символа</div>`; return; }
+    const found = state.stock.filter(s=>(s.name||"").toLowerCase().includes(Q)).slice(0,20);
+    list.innerHTML = found.length
+      ? found.map(s=>`<button type="button" class="w-full text-left p-2 rounded hover:bg-white/5" data-pick="${esc(s.id)}">${s.type==='product'?'🥬':'🧴'} ${esc(s.name)} <span class="opacity-60 text-xs">· ${fmtQty(s.qty)} ${esc(s.unit||"")}</span></button>`).join("")
+      : `<div class="text-xs opacity-60 p-2">Не найдено</div>`;
+  }
+  renderList("");
+  input.addEventListener("input", ()=>renderList(input.value));
+  list.addEventListener("click", e=>{
+    const b = e.target.closest("[data-pick]"); if(!b) return;
+    const s = state.stock.find(x=>x.id===b.dataset.pick); if(!s) return;
+    hid.value = s.id;
+    sel.textContent = `Выбрано: ${s.name} (${fmtQty(s.qty)} ${s.unit||""})`;
+    if(UNITS.includes(s.unit)) unit.value = s.unit;
+    nameI.value = s.name;
+  });
+}
+
+function saveOpEdit(kind, opId){
+  const op = (state.journals[kind]||[]).find(o=>o.id===opId); if(!op) return;
+  const m = JOURNAL_META[kind];
+  const body = document.getElementById("sheetBody");
+  const dtVal = body.querySelector("#eopTs").value;
+  const newProdId = body.querySelector("#eopProdId").value;
+  const newName = body.querySelector("#eopName").value.trim();
+  const newQty = Number((body.querySelector("#eopQty").value||"0").replace(",","."));
+  const newUnit = body.querySelector("#eopUnit").value;
+  const newNote = body.querySelector("#eopNote").value.trim();
+  if(!Number.isFinite(newQty) || newQty<=0){ toast("Количество должно быть > 0"); return; }
+  if(!newName && !newProdId){ toast("Укажи название или выбери позицию"); return; }
+
+  // эффективный знак (order влияет на склад только если received)
+  const effSign = kind==="order" ? (op.status==="received" ? +1 : 0) : m.sign;
+
+  const oldProd = op.productId ? state.stock.find(s=>s.id===op.productId) : null;
+  const newProd = newProdId ? state.stock.find(s=>s.id===newProdId) : null;
+
+  // если запись имела привязку к складу, но продукт удалён — нельзя корректно откатить старый эффект
+  if(effSign!==0 && op.productId && !oldProd){
+    toast("Привязанный продукт не найден на складе — откат невозможен");
+    return;
+  }
+
+  // блок будущей даты для движений склада (нельзя «выдать»/«принять» в будущем)
+  const newTs = dtVal ? new Date(dtVal).toISOString() : op.ts;
+  if(effSign!==0 && new Date(newTs).getTime() > Date.now() + 60_000){
+    toast("Дата не может быть в будущем для движений склада");
+    return;
+  }
+
+  // снимок qty ДО любых мутаций — для надёжного отката при ошибке
+  const oldProdQtyBefore = oldProd ? Number(oldProd.qty||0) : null;
+  const newProdQtyBefore = (newProd && newProd!==oldProd) ? Number(newProd.qty||0) : null;
+  const restore = () => {
+    if(oldProd && oldProdQtyBefore!==null) oldProd.qty = oldProdQtyBefore;
+    if(newProd && newProd!==oldProd && newProdQtyBefore!==null) newProd.qty = newProdQtyBefore;
+  };
+
+  // 1) откатить старый эффект
+  if(effSign!==0 && oldProd){
+    const reverted = Number(oldProd.qty||0) - effSign*Number(op.qty||0);
+    if(reverted < 0){ toast("Нельзя откатить: на складе меньше старого количества"); return; }
+    oldProd.qty = roundQty(reverted); oldProd.updatedAt = new Date().toISOString();
+  }
+  // 2) применить новый эффект
+  if(effSign!==0 && newProd){
+    if(effSign<0 && Number(newProd.qty||0) < newQty){
+      restore();
+      toast("Не хватает на складе для нового количества"); return;
+    }
+    newProd.qty = roundQty(Number(newProd.qty||0) + effSign*newQty);
+    newProd.updatedAt = new Date().toISOString();
+  }
+
+  // 3) обновить саму запись
+  op.ts = newTs;
+  op.productId = newProd?.id || "";
+  op.productName = newProd?.name || newName;
+  op.qty = roundQty(newQty);
+  op.unit = newProd?.unit || newUnit;
+  op.note = newNote;
+
+  // 4) для принятого заказа — синхронизируем парную запись в receipt
+  if(kind==="order" && op.status==="received" && op.receiptId){
+    const r = (state.journals.receipt||[]).find(x=>x.id===op.receiptId);
+    if(r){
+      r.ts = newTs;
+      r.productId = op.productId;
+      r.productName = op.productName;
+      r.qty = op.qty;
+      r.unit = op.unit;
+      r.note = `Из заказа${op.note?": "+op.note:""}`;
+    }
+  }
+
+  // если старый продукт после отвязки/перепривязки осиротел (qty=0 и больше нигде не упоминается) — удалим тихо
+  if(oldProd && oldProd!==newProd && Number(oldProd.qty||0)===0){
+    const hasOther = ["receipt","issue","writeoff","order"].some(k=>
+      (state.journals[k]||[]).some(r=>r.productId===oldProd.id && r.id!==op.id)
+    );
+    if(!hasOther){
+      state.stock = state.stock.filter(s=>s.id!==oldProd.id);
+    }
+  }
+
+  logOp("OP_EDIT", `${kind} ${op.productName} ${fmtQty(op.qty)} ${op.unit||""}`);
+  saveState(); closeSheet(); render();
+  toast("Запись обновлена");
 }
 
 function stockRow(it){
   const st = stockStatus(it);
-  const badge = st.color==="red"?`<span class="badge badge-red">${st.text}</span>`
-              : st.color==="yellow"?`<span class="badge badge-yellow">${st.text}</span>`:"";
+  const out = !!st.out;
+  const badge = out
+    ? `<span class="badge badge-gray">${st.text}</span>`
+    : st.color==="red" ? `<span class="badge badge-red">${st.text}</span>`
+    : st.color==="yellow" ? `<span class="badge badge-yellow">${st.text}</span>` : "";
   const icon = it.type==="product"?"🥬":"🧴";
-  const left = `${it.qty??0} ${esc(it.unit||"")}`;
+  const left = `${fmtQty(it.qty)} ${esc(it.unit||"")}`;
+  const qtyBadge = out ? `<span class="badge badge-gray">${left}</span>` : `<span class="badge badge-green">${left}</span>`;
   const loc = it.location?`<span class="badge badge-gray">📍 ${esc(it.location)}</span>`:"";
   const cat = it.category?`<span class="badge badge-gray">${esc(it.category)}</span>`:"";
+  // у «архивных» (qty=0) бейдж срока без подсветки
   const exp = it.expiry?`<span class="badge badge-gray">⏰ ${fmtDate(it.expiry)}</span>`:"";
   return `
-    <div class="card">
+    <div class="card${out?" opacity-60":""}">
       <div class="flex items-start gap-3">
-        <div class="text-2xl">${icon}</div>
+        <div class="text-2xl${out?" grayscale":""}">${icon}</div>
         <div class="flex-1 min-w-0" onclick="openStockEdit('${it.id}')">
-          <div class="font-semibold">${esc(it.name)}</div>
+          <div class="font-semibold${out?" line-through opacity-80":""}">${esc(it.name)}</div>
           <div class="text-xs opacity-70 mt-1 flex flex-wrap gap-2 items-center">
-            <span class="badge badge-green">${left}</span>
+            ${qtyBadge}
             ${cat} ${loc} ${exp} ${badge}
           </div>
         </div>
       </div>
-      <div class="grid grid-cols-2 gap-2 mt-3">
-        <button class="btn btn-success" onclick="quickAdjust('${it.id}',+1)">＋ Приход</button>
-        <button class="btn btn-danger" onclick="quickAdjust('${it.id}',-1)">− Расход</button>
+      <div class="grid grid-cols-${out?"1":"2"} gap-2 mt-3">
+        <button class="btn btn-success" onclick="quickAdjust('${it.id}',+1)">＋ Приход${out?" (вернуть в наличие)":""}</button>
+        ${out?"":`<button class="btn btn-danger" onclick="quickAdjust('${it.id}',-1)">− Расход…</button>`}
       </div>
     </div>`;
 }
 
 async function quickAdjust(id, sign){
   const it = state.stock.find(s=>s.id===id); if(!it) return;
-  const label = sign>0?"Сколько пришло?":"Сколько списать?";
-  const val = await promptSheet(`${it.name}\n${label} (сейчас ${it.qty} ${it.unit||""})`, "1", {numeric:true,title: sign>0?"Приход":"Расход"});
+  // для расхода — спрашиваем тип движения: выдача персоналу или списание (порча/просрочка/бой)
+  let kind, label, title, opNote;
+  if(sign>0){
+    kind = "receipt"; label = "Сколько пришло?"; title = "Приход"; opNote = "(быстрая правка)";
+  } else {
+    const choice = await chooseSheet(
+      `${it.name}\nКуда списать?`,
+      [
+        { label:"Выдача (кому-то)",      value:"issue",    color:"btn-danger" },
+        { label:"Списание (порча/срок)", value:"writeoff", color:"btn-warn"   },
+      ]
+    );
+    if(!choice) return;
+    kind = choice;
+    label = kind==="issue" ? "Сколько выдано?" : "Сколько списать?";
+    title = kind==="issue" ? "Выдача" : "Списание";
+    opNote = kind==="issue" ? "(быстрая выдача)" : "(быстрое списание)";
+  }
+  const val = await promptSheet(`${it.name}\n${label} (сейчас ${fmtQty(it.qty)} ${it.unit||""})`, "1", {numeric:true,title});
   if(val===null) return;
-  const n = Number((val||"").replace(",",".")); if(isNaN(n)||n<=0){ toast("Не число"); return; }
-  const next = Number(it.qty||0) + sign*n;
+  const n = roundQty(Number((val||"").replace(",",".")));
+  if(!Number.isFinite(n) || n<=0){ toast("Не число"); return; }
+  const next = roundQty(Number(it.qty||0) + sign*n);
   if(next<0){ toast("Не хватает на складе"); return; }
   it.qty = next; it.updatedAt = new Date().toISOString();
-  const kind = sign>0?"receipt":"issue";
   state.journals[kind] = state.journals[kind]||[];
-  state.journals[kind].unshift({ id:uid(), ts:new Date().toISOString(), productId:it.id, productName:it.name, qty:n, unit:it.unit||"", note:"(быстрая правка)" });
-  logOp(sign>0?"IN":"OUT", `${it.name} ${sign>0?"+":"-"}${n} ${it.unit||""}`);
+  state.journals[kind].unshift({ id:uid(), ts:new Date().toISOString(), productId:it.id, productName:it.name, qty:n, unit:it.unit||"", note:opNote });
+  const tag = kind==="receipt"?"IN":(kind==="issue"?"OUT":"WRITEOFF");
+  logOp(tag, `${it.name} ${sign>0?"+":"-"}${fmtQty(n)} ${it.unit||""}`);
   saveState(); render();
 }
 
@@ -967,7 +1398,7 @@ function openStockEdit(id, typeDefault){
     <div class="space-y-3">
       <input class="input" id="sn" placeholder="Название" value="${esc(it.name)}" autofocus />
       <div class="grid grid-cols-2 gap-2">
-        <input class="input" id="sq" type="number" inputmode="decimal" placeholder="Количество" value="${it.qty??""}" />
+        <input class="input" id="sq" type="number" inputmode="decimal" placeholder="Количество" value="${it.qty!==undefined&&it.qty!==""?fmtQty(it.qty):""}" />
         <select class="input" id="su">
           ${UNITS.map(u=>`<option ${it.unit===u?"selected":""}>${u}</option>`).join("")}
         </select>
@@ -1174,6 +1605,7 @@ async function deleteCategory(type, name){
 
 /* ---------- Kitchen ---------- */
 function renderKitchen(){
+  ensureChecklist();
   const v = document.querySelector('[data-view="kitchen"]');
   const products = state.stock.filter(s=>s.type==="product");
   const sorted = sortedStock(products).filter(p=>{
@@ -1206,17 +1638,24 @@ function renderKitchen(){
     </div>
   `;
 }
+function ensureChecklist(){
+  if(!state.checklists || typeof state.checklists!=="object") state.checklists = { kitchen: [] };
+  if(!Array.isArray(state.checklists.kitchen)) state.checklists.kitchen = [];
+}
 function toggleCheck(id, done){
+  ensureChecklist();
   const c = state.checklists.kitchen.find(x=>x.id===id); if(!c) return;
   c.done = done; saveState();
 }
 function addCheck(){
+  ensureChecklist();
   const inp = document.getElementById("ckNew");
   const t = inp.value.trim(); if(!t) return;
   state.checklists.kitchen.push({id:uid(),text:t,done:false});
   saveState(); render();
 }
 function resetChecklist(){
+  ensureChecklist();
   state.checklists.kitchen.forEach(c=>c.done=false);
   saveState(); render();
 }
@@ -1283,18 +1722,18 @@ function renderMore(){
 }
 
 /* ---------- Excel / CSV экспорт ---------- */
-function ensureXlsx(){ return Promise.resolve(window.XLSX); }
+function ensureXlsx(){ return window.XLSX ? Promise.resolve(window.XLSX) : Promise.reject(new Error("XLSX недоступен")); }
 async function exportXlsx(){
   toast("Готовлю файл...");
   let XLSX;
   try{ XLSX = await ensureXlsx(); }
-  catch(e){ toast("Нет сети — сохраняю CSV"); exportCsv(); return; }
+  catch(e){ toast("XLSX недоступен — сохраняю CSV"); exportCsv(); return; }
   const wb = XLSX.utils.book_new();
   const stockRows = sortedStock(state.stock).map(s=>({
     "Тип": s.type==="product"?"Продукт":"Хозка",
     "Категория": s.category||"",
     "Наименование": s.name,
-    "Количество": Number(s.qty||0),
+    "Количество": roundQty(s.qty||0),
     "Ед. изм.": s.unit||"",
     "Мин. запас": s.minStock===""?"":Number(s.minStock),
     "Срок годности": s.expiry||"",
@@ -1305,26 +1744,45 @@ async function exportXlsx(){
   ws["!cols"] = [{wch:10},{wch:22},{wch:40},{wch:10},{wch:10},{wch:10},{wch:14},{wch:16},{wch:30}];
   XLSX.utils.book_append_sheet(wb, ws, "Остатки");
 
+  const fmtTs = ts => { const d = ts?new Date(ts):null; return d && !isNaN(d) ? d.toLocaleString("ru-RU") : ""; };
   const jSheet = (kind, title) => {
     const rows = (state.journals[kind]||[]).slice().sort((a,b)=>(b.ts||"").localeCompare(a.ts||"")).map(op=>{
       const r = {
-        "Дата": new Date(op.ts).toLocaleString("ru-RU"),
+        "Дата": fmtTs(op.ts),
         "Наименование": op.productName,
-        "Количество": Number(op.qty||0),
+        "Количество": roundQty(op.qty||0),
         "Ед. изм.": op.unit||"",
         "Примечание": op.note||"",
       };
-      if(kind==="order") r["Статус"] = op.status==="received"?"Принят":"Ожидает";
+      if(kind==="order"){
+        r["Статус"] = op.status==="received"?"Принят":"Ожидает";
+        r["Принят"] = fmtTs(op.receivedAt);
+      }
       return r;
     });
     const sh = XLSX.utils.json_to_sheet(rows.length?rows:[{"Дата":"","Наименование":"","Количество":"","Ед. изм.":"","Примечание":""}]);
-    sh["!cols"] = [{wch:18},{wch:40},{wch:10},{wch:10},{wch:30},{wch:12}];
+    sh["!cols"] = [{wch:18},{wch:40},{wch:10},{wch:10},{wch:30},{wch:12},{wch:18}];
     XLSX.utils.book_append_sheet(wb, sh, title);
   };
   jSheet("receipt","Поступление");
   jSheet("issue","Выдача");
   jSheet("writeoff","Списание");
   jSheet("order","Заказы");
+
+  // лист с задачами
+  const taskRows = (state.tasks||[]).slice().sort((a,b)=>(a.due||"").localeCompare(b.due||"")).map(t=>({
+    "Задача": t.title||"",
+    "Категория": t.category||"",
+    "Приоритет": t.priority||"",
+    "Повтор": t.repeat||"Нет",
+    "Срок": t.due||"",
+    "Время": t.time||"",
+    "Порядок": (t.order==null)?"":Number(t.order),
+    "Готово": t.done?"✓":"",
+  }));
+  const tsh = XLSX.utils.json_to_sheet(taskRows.length?taskRows:[{"Задача":"","Категория":"","Приоритет":"","Повтор":"","Срок":"","Время":"","Порядок":"","Готово":""}]);
+  tsh["!cols"] = [{wch:40},{wch:16},{wch:12},{wch:10},{wch:12},{wch:8},{wch:8},{wch:10}];
+  XLSX.utils.book_append_sheet(wb, tsh, "Задачи");
 
   XLSX.writeFile(wb, `vahtahoz-${todayStr()}.xlsx`);
   toast("Excel сохранён");
@@ -1334,7 +1792,7 @@ function exportCsv(){
   const rows = [header];
   sortedStock(state.stock).forEach(s=>rows.push([
     s.type==="product"?"Продукт":"Хозка",
-    s.category||"", s.name, s.qty??0, s.unit||"",
+    s.category||"", s.name, fmtQty(s.qty), s.unit||"",
     s.minStock??"", s.expiry||"", s.location||"", s.note||""
   ]));
   const csv = "\uFEFF" + rows.map(r=>r.map(v=>{
@@ -1343,20 +1801,24 @@ function exportCsv(){
   }).join(";")).join("\r\n");
   const blob = new Blob([csv],{type:"text/csv;charset=utf-8"});
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
+  const url = URL.createObjectURL(blob);
+  a.href = url;
   a.download = `vahtahoz-sklad-${todayStr()}.csv`;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(a.href);
+  setTimeout(()=>{ a.remove(); URL.revokeObjectURL(url); }, 1500);
   toast("CSV сохранён");
 }
 
 function exportData(){
   const blob = new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
+  const url = URL.createObjectURL(blob);
+  a.href = url;
   a.download = `vahtahoz-${todayStr()}.json`;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(a.href);
+  setTimeout(()=>{ a.remove(); URL.revokeObjectURL(url); }, 1500);
   toast("Экспортировано");
 }
 function importData(ev){
@@ -1366,7 +1828,7 @@ function importData(ev){
   r.onload = async () => {
     inputEl.value = ""; // чтобы можно было повторно выбрать тот же файл
     try{
-      const obj = JSON.parse(r.result);
+      const obj = validateImport(JSON.parse(r.result));
       const mode = await chooseSheet(
         `Найдено ${(obj.stock||[]).length} поз. Что делать?`,
         [
@@ -1412,7 +1874,7 @@ function importData(ev){
           }
           if(found){
             // обновляем количество и поля, которые пусты у существующего
-            found.qty = Number(found.qty||0) + Number(src.qty||0);
+            found.qty = roundQty(Number(found.qty||0) + Number(src.qty||0));
             if(!found.expiry && src.expiry) found.expiry = src.expiry;
             if(!found.unit && src.unit) found.unit = src.unit;
             const catChanged = !found.category && src.category;
@@ -1456,12 +1918,16 @@ function importData(ev){
         }
       }
       state = merged;
-      if(!state.seededAt) state.seededAt = new Date().toISOString(); // больше не сидить встроенные 623
+      // фиксируем, что встроенный seed уже не нужен (после replace stock мог стать пустым умышленно)
+      state.seededAt = state.seededAt || new Date().toISOString();
       // сбрасываем фильтры, т.к. категории могли полностью смениться
       stockCat = ""; stockSearch = ""; stockLimit = 100; stockMode = "stock"; stockTab = "all"; stockExpiryFilter = "all";
       saveState(); applyTheme(); render();
       if(mode==="replace") toast(`Заменено: ${state.stock.length} поз.`);
-    }catch(e){ toast("Ошибка импорта"); }
+    }catch(e){
+      console.error("Import error:", e);
+      toast(`Ошибка импорта: ${e?.message || e}`);
+    }
   };
   r.readAsText(f);
 }
@@ -1564,11 +2030,11 @@ function expiryNoticeOnOpen(){
       <div class="font-bold text-xl mb-3">⏰ Внимание! Сроки годности</div>
       ${expired.length?`<div class="text-sm opacity-70 mb-1">Просрочено (${expired.length})</div>
       <div class="space-y-2 mb-3">
-        ${sortedStock(expired).map(s=>{const d=daysLeft(s.expiry);return `<div class="card flex justify-between"><span>${esc(s.name)} (${s.qty} ${esc(s.unit||"")})</span><span class="badge badge-red">Просрочено ${-d} дн.</span></div>`;}).join("")}
+        ${sortedStock(expired).map(s=>{const d=daysLeft(s.expiry);return `<div class="card flex justify-between"><span>${esc(s.name)} (${fmtQty(s.qty)} ${esc(s.unit||"")})</span><span class="badge badge-red">Просрочено ${-d} дн.</span></div>`;}).join("")}
       </div>`:""}
       ${soon.length?`<div class="text-sm opacity-70 mb-1">Истекает в ближайшие 3 дня (${soon.length})</div>
       <div class="space-y-2 mb-3">
-        ${sortedStock(soon).map(s=>{const d=daysLeft(s.expiry);const txt=d===0?"Сегодня":`${d} дн.`;return `<div class="card flex justify-between"><span>${esc(s.name)} (${s.qty} ${esc(s.unit||"")})</span><span class="badge badge-yellow">${txt}</span></div>`;}).join("")}
+        ${sortedStock(soon).map(s=>{const d=daysLeft(s.expiry);const txt=d===0?"Сегодня":`${d} дн.`;return `<div class="card flex justify-between"><span>${esc(s.name)} (${fmtQty(s.qty)} ${esc(s.unit||"")})</span><span class="badge badge-yellow">${txt}</span></div>`;}).join("")}
       </div>`:""}
       ${expired.length?`<button class="btn btn-danger w-full" onclick="writeoffExpired()">🗑 Списать всю просрочку (${expired.length})</button>`:""}
       <button class="btn btn-primary w-full mt-2" onclick="openExpiredView()">Перейти к складу</button>
@@ -1602,7 +2068,7 @@ async function writeoffExpired(){
       id: uid(), ts: now, productId: it.id, productName: it.name,
       qty: Number(it.qty||0), unit: it.unit||"", note: `Списано по сроку (просрочено ${-d} дн., ${fmtDate(it.expiry)})`
     });
-    logOp("WRITEOFF", `${it.name} -${it.qty} ${it.unit||""} (срок)`);
+    logOp("WRITEOFF", `${it.name} -${fmtQty(it.qty)} ${it.unit||""} (срок)`);
     it.qty = 0; it.updatedAt = now;
   });
   saveState(); closeSheet(); render();
@@ -1633,9 +2099,9 @@ document.addEventListener("click", e=>{
 });
 
 /* ---------- Expose for inline handlers ---------- */
-Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,taskFilter,
+Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,moveTask,taskFilter,
   openStockEdit,saveStock,deleteStock,openBatchAdd,saveBatch,quickAdjust,stockTab,stockSearch,stockCat,stockMode,
-  openOpEdit,saveOp,deleteOp,orderReceive,
+  openOpEdit,saveOp,deleteOp,editOp,saveOpEdit,orderReceive,
   openCategoriesEdit,addCategory,renameCategory,deleteCategory,
   toggleCheck,addCheck,resetChecklist,
   exportData,importData,exportXlsx,exportCsv,clearLog,wipeAll,toggleTheme,
@@ -1656,9 +2122,9 @@ applyTheme();
         household:Array.from(new Set([...(state.categories.household||[]),...(seed.categories.household||[])])),
       };
     }
-    state.stock = (seed.stock||[]).map(s=>({ ...s, id: s.id || uid() }));
+    state.stock = (seed.stock||[]).map(s=>({ ...s, id: safeId(s.id) }));
     if(Array.isArray(seed.tasks) && seed.tasks.length && !(state.tasks||[]).length){
-      state.tasks = seed.tasks.map(t=>({ ...t, id: t.id || uid() }));
+      state.tasks = seed.tasks.map(t=>({ ...t, id: safeId(t.id) }));
     }
     state.seededAt = new Date().toISOString();
     saveState();
