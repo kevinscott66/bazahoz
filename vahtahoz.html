@@ -224,9 +224,23 @@ function saveState(){
       }
     } else { console.error("saveState error:", e); }
   }
+  // если активная база связана с облаком и есть вход — отложенно отправляем изменения
+  try{ if(typeof cloudMaybePush==="function") cloudMaybePush(); }catch(_){}
 }
 
 let state = loadState();
+
+/* ---------- Облако (Supabase): состояние объявлено рано, до первых saveState ----------
+   Реализация функций — единым блоком ниже (hoisted). Без входа всё работает офлайн. */
+const CLOUD_CFG = {
+  url:  "https://jzxajxwtcemrztfwbdkm.supabase.co",
+  anon: "sb_publishable_UxWs9yx1r4fbo4KJJZqYLA_ndNyVgT0",
+};
+const cloud = {
+  sb:null, session:null, profile:null, members:[], bases:{},
+  channel:null, subscribedBase:null,
+  pushTimer:null, pullTimer:null, applying:false, ready:false, busy:false,
+};
 
 /* ---------- Utils ---------- */
 const uid = () => (crypto?.randomUUID?.() || (Date.now()+"_"+Math.random().toString(16).slice(2)));
@@ -884,6 +898,7 @@ function sortedStock(items){
    ============================================================ */
 function render(){
   renderHeader();
+  try{ if(typeof cloudGateTasks==="function") cloudGateTasks(); }catch(_){}
   if(currentView==="dashboard") renderDashboard();
   if(currentView==="tasks") renderTasks();
   if(currentView==="stock") renderStock();
@@ -2516,6 +2531,8 @@ function renderMore(){
       <div class="text-xs opacity-70 mt-2">У каждой базы свой склад, журналы и места хранения. Данные других баз сохраняются.</div>
     </div>
 
+    ${(typeof cloudCardHtml==="function")?cloudCardHtml():""}
+
     <div class="card">
       <div class="font-bold mb-2">🍅 Pomodoro</div>
       <div id="pomo" class="text-center">
@@ -3162,7 +3179,304 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   openProfilesSheet,switchProfile,addProfile,renameProfile,deleteProfile,exportAllProfiles,
   toggleCheck,addCheck,resetChecklist,
   exportData,importData,exportXlsx,exportCsv,clearLog,wipeAll,toggleTheme,
-  pomoStart,pomoPause,pomoReset,closeSheet,writeoffExpired,openExpiredView});
+  pomoStart,pomoPause,pomoReset,closeSheet,writeoffExpired,openExpiredView,
+  cloudLoginPrompt,cloudLogout,cloudSyncNow});
+
+/* ============================================================
+   ОБЛАКО — реализация (Supabase). Загрузка клиента по требованию.
+   Активная база может быть «связана» с облачной (profiles.list[i].cloudId).
+   Синхронизируется ТОЛЬКО активная база. Без входа — всё локально.
+   ============================================================ */
+async function ensureSB(){
+  if(cloud.sb) return cloud.sb;
+  const m = await import("https://esm.sh/@supabase/supabase-js@2");
+  cloud.sb = m.createClient(CLOUD_CFG.url, CLOUD_CFG.anon, {
+    auth:{ persistSession:true, autoRefreshToken:true, storageKey:"vahtahoz_auth" }
+  });
+  return cloud.sb;
+}
+/* --- маппинг строк БД <-> локальные объекты --- */
+function rowToStock(r){
+  return { id:r.id, type:r.type, name:r.name, category:r.category||"", unit:r.unit||"шт",
+    minStock:(r.min_stock==null?"":Number(r.min_stock)), note:r.note||"", qty:Number(r.qty||0),
+    expiry:r.expiry||"", location:r.location||"", batches:Array.isArray(r.batches)?r.batches:[],
+    updatedAt:r.updated_at||undefined };
+}
+function stockToRow(s, cid){
+  return { id:s.id, base_id:cid, type:s.type, name:s.name, category:s.category||"", unit:s.unit||"шт",
+    min_stock:(s.minStock===""||s.minStock==null)?null:Number(s.minStock), note:s.note||"",
+    qty:roundQty(s.qty||0), expiry:s.expiry||"", location:s.location||"", batches:Array.isArray(s.batches)?s.batches:[] };
+}
+function rowToTask(r){
+  const t = { id:r.id, title:r.title, category:r.category||"Общее", priority:r.priority||"Средний",
+    repeat:r.repeat||"Нет", due:r.due||"", time:r.time||"", order:(r.order==null?undefined:Number(r.order)),
+    done:!!r.done };
+  if(r.parent_id) t.parentId=r.parent_id;
+  if(Array.isArray(r.items) && r.items.length) t.items=r.items;
+  return t;
+}
+function taskToRow(t, cid){
+  return { id:t.id, base_id:cid, title:t.title, category:t.category||"Общее", priority:t.priority||"Средний",
+    repeat:t.repeat||"Нет", due:t.due||"", time:t.time||"", order:(t.order==null?null:Number(t.order)),
+    done:!!t.done, parent_id:t.parentId||null, items:Array.isArray(t.items)?t.items:[] };
+}
+/* --- связь активной базы с облаком и права --- */
+function activeCloudId(){ const p=profiles.list.find(x=>x.id===profiles.activeId); return p?(p.cloudId||null):null; }
+function memberOf(cid){ return cloud.members.find(m=>m.base_id===cid)||null; }
+function activeMember(){
+  const cid=activeCloudId(); if(!cid) return null;
+  if(cloud.profile && cloud.profile.is_admin) return {can_view_stock:true,can_edit_stock:true,can_view_tasks:true,can_edit_tasks:true};
+  return memberOf(cid);
+}
+const cloudDirtyKey = (cid)=>`vahtahoz_dirty_${cid}`;
+function cloudOnline(){ return navigator.onLine!==false; }
+
+async function cloudInit(){
+  try{
+    const sb = await ensureSB();
+    const { data } = await sb.auth.getSession();
+    if(data && data.session) await cloudOnLogin(data.session);
+    // авто-пуш при возврате сети
+    window.addEventListener("online", ()=>{ if(cloud.ready && activeCloudId()) cloudActivate(activeCloudId()); });
+  }catch(e){ console.warn("cloudInit", e); }
+}
+async function cloudLogin(email, password){
+  const sb = await ensureSB();
+  const { data, error } = await sb.auth.signInWithPassword({ email:(email||"").trim(), password });
+  if(error) throw error;
+  await cloudOnLogin(data.session);
+}
+async function cloudOnLogin(session){
+  cloud.session = session;
+  const sb = cloud.sb; const uidv = session.user.id;
+  try{
+    const { data:prof } = await sb.from("profiles").select("*").eq("id",uidv).maybeSingle();
+    cloud.profile = prof || { id:uidv, username:session.user.email };
+    const { data:mem } = await sb.from("base_members").select("*"); cloud.members = mem||[];
+    const { data:bs } = await sb.from("bases").select("id,name"); cloud.bases={}; (bs||[]).forEach(b=>cloud.bases[b.id]=b.name);
+    cloud.ready = true;
+    const reloaded = await cloudAutoLink();
+    if(reloaded) return;                       // switchProfile перезагрузит страницу
+    const cid = activeCloudId();
+    if(cid) await cloudActivate(cid);
+    renderHeader(); render();
+    toast(`Облако: ${cloud.profile.username||session.user.email}`);
+  }catch(e){ console.warn("cloudOnLogin", e); toast("Ошибка облака: "+(e.message||e)); }
+}
+async function cloudLogout(){
+  try{ if(cloud.channel) await cloud.sb.removeChannel(cloud.channel); }catch(e){}
+  try{ await cloud.sb && cloud.sb.auth.signOut(); }catch(e){}
+  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
+  renderHeader(); render(); toast("Выход из облака");
+}
+/* привязываем облачные базы к локальным (по имени) или создаём новые; для одной базы — переключаемся */
+async function cloudAutoLink(){
+  let myBases = cloud.members.map(m=>m.base_id);
+  if(cloud.profile && cloud.profile.is_admin){ for(const id in cloud.bases) if(!myBases.includes(id)) myBases.push(id); }
+  let changed=false, switchTo=null;
+  for(const cid of myBases){
+    if(profiles.list.some(x=>x.cloudId===cid)) continue;
+    const name = cloud.bases[cid] || "Облачная база";
+    const exist = profiles.list.find(x=>!x.cloudId && x.name===name);
+    if(exist){
+      exist.cloudId=cid; changed=true;
+      // если у связываемой локальной базы есть данные — помечаем «к выгрузке»,
+      // чтобы при активации они ушли В облако, а не были затёрты pull-ом.
+      // (пустую базу НЕ метим — иначе пустое затёрло бы заполненное облако)
+      try{
+        const raw = exist.id===profiles.activeId ? JSON.stringify(state) : localStorage.getItem(slotKey(exist.id));
+        const st = raw ? JSON.parse(raw) : null;
+        if(st && ((st.stock&&st.stock.length) || (st.tasks&&st.tasks.length))) localStorage.setItem(cloudDirtyKey(cid),"1");
+      }catch(e){}
+    }
+    else {
+      const id=uid();
+      try{ localStorage.setItem(slotKey(id), JSON.stringify(freshProfileState())); }catch(e){}
+      profiles.list.push({ id, name, cloudId:cid }); changed=true;
+      if(!switchTo) switchTo=id;
+    }
+  }
+  if(changed) saveProfiles(profiles);
+  if(switchTo && !activeCloudId()){ switchProfile(switchTo); return true; }
+  return false;
+}
+/* активация облачной базы: первичная выгрузка / подтягивание / разрешение оффлайн-правок */
+async function cloudActivate(cid){
+  if(!cid || !cloud.ready || !cloudOnline()) return;
+  const sb = cloud.sb; const perm = activeMember();
+  cloud.busy=true;
+  try{
+    const dirty = localStorage.getItem(cloudDirtyKey(cid));
+    const { count } = await sb.from("stock_items").select("id",{count:"exact",head:true}).eq("base_id",cid);
+    const cloudEmpty = !count;
+    if((dirty || (cloudEmpty && ((state.stock&&state.stock.length)||(state.tasks&&state.tasks.length)))) && perm && perm.can_edit_stock){
+      await cloudPushNow();                   // локальное — источник (первый раз или были оффлайн-правки)
+      localStorage.removeItem(cloudDirtyKey(cid));
+      toast("Данные выгружены в облако");
+    } else {
+      await cloudPull(cid);
+    }
+  }catch(e){ console.warn("cloudActivate", e); }
+  finally{ cloud.busy=false; cloudSubscribe(cid); }
+}
+async function cloudPull(cid){
+  if(!cid || !cloudOnline()) return;
+  const sb = await ensureSB(); const perm = activeMember();
+  cloud.applying=true;
+  try{
+    const { data:items } = await sb.from("stock_items").select("*").eq("base_id",cid);
+    state.stock = (items||[]).map(rowToStock);
+    const { data:jr } = await sb.from("journal_entries").select("*").eq("base_id",cid);
+    const J={receipt:[],issue:[],writeoff:[],order:[]};
+    (jr||[]).forEach(r=>{ if(J[r.kind]) J[r.kind].push({ ...(r.data||{}), id:r.id }); });
+    for(const k in J) J[k].sort((a,b)=>(b.ts||"").localeCompare(a.ts||""));
+    state.journals = J;
+    if(!perm || perm.can_view_tasks){
+      const { data:tk } = await sb.from("tasks").select("*").eq("base_id",cid);
+      state.tasks = (tk||[]).map(rowToTask);
+    } else { state.tasks = []; }
+    const { data:base } = await sb.from("bases").select("settings").eq("id",cid).maybeSingle();
+    if(base && base.settings){
+      for(const k of STOCK_TYPE_KEYS){
+        if(Array.isArray(base.settings.locations?.[k]) && base.settings.locations[k].length) state.locations[k]=base.settings.locations[k];
+        if(Array.isArray(base.settings.categories?.[k]) && base.settings.categories[k].length) state.categories[k]=base.settings.categories[k];
+      }
+    }
+    saveState();                              // cloud.applying=true → push не сработает (без эха)
+  }catch(e){ console.warn("cloudPull", e); }
+  finally{ cloud.applying=false; render(); }
+}
+function cloudMaybePush(){
+  if(!cloud.ready || cloud.applying) return;
+  const cid = activeCloudId(); if(!cid) return;
+  if(!cloudOnline()){ try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(e){} return; }
+  clearTimeout(cloud.pushTimer);
+  cloud.pushTimer = setTimeout(()=>cloudPushNow(), 800);
+}
+async function cloudPushNow(){
+  const cid = activeCloudId();
+  if(!cid || !cloud.ready || cloud.applying || !cloudOnline()) return;
+  const perm = activeMember(); if(!perm) return;
+  const sb = cloud.sb; cloud.busy=true;
+  try{
+    if(perm.can_edit_stock){
+      // склад
+      const rows = state.stock.map(s=>stockToRow(s,cid));
+      const ids = new Set(state.stock.map(s=>s.id));
+      const { data:cIds } = await sb.from("stock_items").select("id").eq("base_id",cid);
+      const del = (cIds||[]).map(r=>r.id).filter(id=>!ids.has(id));
+      if(del.length) await sb.from("stock_items").delete().in("id",del);
+      if(rows.length) await sb.from("stock_items").upsert(rows);
+      // журналы
+      const jrows=[]; const jids=new Set();
+      for(const k of ["receipt","issue","writeoff","order"]) for(const op of (state.journals?.[k]||[])){ jrows.push({id:op.id,base_id:cid,kind:k,data:op}); jids.add(op.id); }
+      const { data:cj } = await sb.from("journal_entries").select("id").eq("base_id",cid);
+      const jdel=(cj||[]).map(r=>r.id).filter(id=>!jids.has(id));
+      if(jdel.length) await sb.from("journal_entries").delete().in("id",jdel);
+      if(jrows.length) await sb.from("journal_entries").upsert(jrows);
+      // настройки базы
+      await sb.from("bases").update({ settings:{ locations:state.locations, categories:state.categories } }).eq("id",cid);
+    }
+    if(perm.can_edit_tasks){
+      const trows=(state.tasks||[]).map(t=>taskToRow(t,cid));
+      const tids=new Set((state.tasks||[]).map(t=>t.id));
+      const { data:ct } = await sb.from("tasks").select("id").eq("base_id",cid);
+      const tdel=(ct||[]).map(r=>r.id).filter(id=>!tids.has(id));
+      if(tdel.length) await sb.from("tasks").delete().in("id",tdel);
+      if(trows.length) await sb.from("tasks").upsert(trows);
+    }
+  }catch(e){ console.warn("cloudPushNow", e); }
+  finally{ cloud.busy=false; }
+}
+/* realtime: на любое изменение в облаке — отложенный пере-pull активной базы */
+function cloudSubscribe(cid){
+  if(!cid || cloud.subscribedBase===cid) return;
+  cloudUnsubscribe();
+  try{
+    const sb = cloud.sb;
+    cloud.channel = sb.channel("base-"+cid)
+      .on("postgres_changes",{event:"*",schema:"public",table:"stock_items",filter:"base_id=eq."+cid}, cloudOnRemote)
+      .on("postgres_changes",{event:"*",schema:"public",table:"journal_entries",filter:"base_id=eq."+cid}, cloudOnRemote)
+      .on("postgres_changes",{event:"*",schema:"public",table:"tasks",filter:"base_id=eq."+cid}, cloudOnRemote)
+      .subscribe();
+    cloud.subscribedBase = cid;
+  }catch(e){ console.warn("cloudSubscribe", e); }
+}
+function cloudUnsubscribe(){
+  try{ if(cloud.channel) cloud.sb.removeChannel(cloud.channel); }catch(e){}
+  cloud.channel=null; cloud.subscribedBase=null;
+}
+function cloudOnRemote(){
+  if(cloud.busy) return;                       // наши же изменения — не дёргаемся
+  clearTimeout(cloud.pullTimer);
+  cloud.pullTimer = setTimeout(()=>{ const cid=activeCloudId(); if(cid) cloudPull(cid); }, 400);
+}
+/* UI: вход */
+function cloudLoginPrompt(){
+  openSheet(`
+    <div class="font-bold text-xl mb-1">☁ Вход в облако</div>
+    <div class="text-sm opacity-70 mb-3">Синхронизация склада/журналов между телефонами в реальном времени.</div>
+    <div class="space-y-3">
+      <input class="input" id="clEmail" type="email" autocomplete="username" placeholder="Логин (email)" />
+      <input class="input" id="clPwd" type="password" autocomplete="current-password" placeholder="Пароль" />
+      <div class="flex gap-2 pt-1">
+        <button class="btn btn-ghost flex-1" data-close>Отмена</button>
+        <button class="btn btn-primary flex-1" id="clGo">Войти</button>
+      </div>
+    </div>`);
+  const body=document.getElementById("sheetBody");
+  body.querySelector("#clGo").addEventListener("click", async ()=>{
+    const em=body.querySelector("#clEmail").value, pw=body.querySelector("#clPwd").value;
+    if(!em||!pw){ toast("Введи логин и пароль"); return; }
+    const btn=body.querySelector("#clGo"); btn.disabled=true; btn.textContent="Вход…";
+    try{ await cloudLogin(em,pw); closeSheet(); }
+    catch(e){ btn.disabled=false; btn.textContent="Войти"; toast("Не удалось войти: "+(e.message||e)); }
+  });
+}
+/* прячем «Задачи», если у пользователя нет права смотреть задачи на активной облачной базе */
+function cloudGateTasks(){
+  const m = activeMember();
+  const hideTasks = !!(m && !m.can_view_tasks);
+  const tb = document.querySelector('#navbar .nav-btn[data-nav="tasks"]');
+  if(tb) tb.style.display = hideTasks ? "none" : "";
+  if(hideTasks && currentView==="tasks") nav("dashboard");
+}
+async function cloudSyncNow(){
+  const cid = activeCloudId();
+  if(!cloud.ready){ toast("Сначала войди в облако"); return; }
+  if(!cid){ toast("Эта база не связана с облаком"); return; }
+  if(!cloudOnline()){ toast("Нет сети"); return; }
+  toast("Синхронизация…"); await cloudActivate(cid); toast("Готово");
+}
+function cloudCardHtml(){
+  const cid = activeCloudId();
+  if(!cloud.ready){
+    return `<div class="card">
+      <div class="flex items-center justify-between gap-2">
+        <div><div class="font-bold">☁ Облако</div><div class="text-xs opacity-70 mt-0.5">Не подключено · работает офлайн</div></div>
+        <button class="btn btn-primary" onclick="cloudLoginPrompt()">Войти</button>
+      </div>
+      <div class="text-xs opacity-70 mt-2">Вход нужен начальнику (просмотр/правка склада База 2) и для синхронизации между телефонами.</div>
+    </div>`;
+  }
+  const m = activeMember();
+  const linked = cid ? (cloud.bases[cid]||"облачная база") : null;
+  const role = (cloud.profile&&cloud.profile.is_admin) ? "полный доступ"
+    : m ? [m.can_edit_stock?"склад: правка":(m.can_view_stock?"склад: просмотр":""), m.can_view_tasks?"задачи":""].filter(Boolean).join(" · ")
+    : "—";
+  return `<div class="card">
+    <div class="flex items-center justify-between gap-2">
+      <div class="min-w-0">
+        <div class="font-bold truncate">☁ ${esc(cloud.profile.username||cloud.session.user.email)}</div>
+        <div class="text-xs opacity-70 mt-0.5">${cloudOnline()?"🟢 онлайн":"🔴 оффлайн"}${linked?` · база: ${esc(linked)}`:" · база не связана"}</div>
+        ${linked?`<div class="text-xs opacity-60 mt-0.5">${esc(role)}</div>`:""}
+      </div>
+      <button class="btn btn-ghost" onclick="cloudLogout()">Выйти</button>
+    </div>
+    ${cid?`<button class="btn btn-success w-full mt-2" onclick="cloudSyncNow()">🔄 Синхронизировать сейчас</button>`:
+      `<div class="text-xs opacity-70 mt-2">Активная база не связана с облаком. Открой «Сменить / базы» и переключись на облачную базу.</div>`}
+  </div>`;
+}
 
 /* ---------- Boot ---------- */
 applyTheme();
@@ -3197,6 +3511,8 @@ applyTheme();
 nav("dashboard");
 pomoTick();  // чтобы таймер Pomodoro работал в фоне независимо от вкладки
 setTimeout(expiryNoticeOnOpen, 400);
+// восстановление облачной сессии (если был вход) — тихо, не блокирует загрузку
+setTimeout(()=>{ try{ cloudInit(); }catch(e){ console.warn(e); } }, 50);
 
 /* ============================================================
    PWA: регистрация service worker (внешний sw.js)
