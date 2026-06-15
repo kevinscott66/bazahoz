@@ -854,7 +854,9 @@ function stockStatus(it){
   // суффикс «в Морозильной» включается только когда мест ≥ 2 (иначе и так понятно из карточки)
   const locSuffix = (expBatch && locationsOf(it).length>=2 && expBatch.location)
     ? ` · ${expBatch.location}` : "";
-  if(it.type==="product" && expiry){
+  // срок/гарантия подсвечивается у ЛЮБОГО типа, если он указан (хозхимия, гарантия инструмента) —
+  // так бейдж карточки согласован с фильтром «Просрочка/Скоро», который тоже идёт по s.expiry
+  if(expiry){
     const d = daysLeft(expiry);
     if(d<0)  return { color:"red",    text:`Просрочено (${-d} дн.)${locSuffix}`, rank:0, expiry, expBatch };
     if(d<=3) return { color:"red",    text:`Срок ≤ ${d} дн.${locSuffix}`,         rank:1, expiry, expBatch };
@@ -1318,7 +1320,7 @@ function renderStock(){
     <div class="scroll-x flex gap-2">
       <button class="chip ${stockExpiryFilter==='all'?'active':''}" data-expfilter="all">Все сроки</button>
       <button class="chip ${stockExpiryFilter==='expired'?'active':''}" data-expfilter="expired">⛔ Просрочка (${expScope.filter(s=>inStock(s)&&s.expiry&&daysLeft(s.expiry)<0).length})</button>
-      <button class="chip ${stockExpiryFilter==='soon'?'active':''}" data-expfilter="soon">⏰ Скоро (${expScope.filter(s=>{if(!inStock(s))return false;const d=s.expiry?daysLeft(s.expiry):null;return d!==null&&d>=0&&d<=7;}).length})</button>
+      <button class="chip ${stockExpiryFilter==='soon'?'active':''}" data-expfilter="soon">⏰ Скоро (${expScope.filter(s=>{if(!inStock(s))return false;const d=s.expiry?daysLeft(s.expiry):null;return d!==null&&d>=0&&d<=14;}).length})</button>
     </div>
 
     <div class="scroll-x flex gap-2" id="stockCatChips">
@@ -1352,7 +1354,7 @@ function renderStockList(){
   if(STOCK_TYPE_KEYS.includes(stockTab)) list = list.filter(s=>s.type===stockTab);
   if(stockCat) list = list.filter(s=>s.category===stockCat);
   if(stockExpiryFilter==="expired") list = list.filter(s=>inStock(s) && s.expiry && daysLeft(s.expiry)<0);
-  else if(stockExpiryFilter==="soon") list = list.filter(s=>{ if(!inStock(s)) return false; const d=s.expiry?daysLeft(s.expiry):null; return d!==null && d>=0 && d<=7; });
+  else if(stockExpiryFilter==="soon") list = list.filter(s=>{ if(!inStock(s)) return false; const d=s.expiry?daysLeft(s.expiry):null; return d!==null && d>=0 && d<=14; });
   if(stockSearch.trim()){
     const q = stockSearch.trim().toLowerCase();
     list = list.filter(s=>{
@@ -3023,6 +3025,12 @@ function expiryNoticeOnOpen(){
   if(state.lastExpiryNoticeDate===todayStr()) return;
   const expired = state.stock.filter(s=> s.type==="product" && s.expiry && daysLeft(s.expiry)<0 && Number(s.qty||0)>0);
   const soon    = state.stock.filter(s=>{ if(s.type!=="product"||!s.expiry) return false; const d=daysLeft(s.expiry); return d!==null && d>=0 && d<=3; });
+  // число единиц для списания — по партиям (как в writeoffExpired), чтобы подпись кнопки совпадала с фактом
+  const expiredTargets = state.stock.reduce((n,s)=>{
+    if(s.type!=="product") return n;
+    if(hasBatches(s)) return n + s.batches.filter(b=>b.expiry && daysLeft(b.expiry)<0 && roundQty(b.qty||0)>0).length;
+    return n + ((s.expiry && daysLeft(s.expiry)<0 && Number(s.qty||0)>0)?1:0);
+  },0);
   const any = expired.length || soon.length;
   if(any){
     // Системное уведомление (если разрешено), иначе запрос разрешения
@@ -3056,7 +3064,7 @@ function expiryNoticeOnOpen(){
       <div class="space-y-2 mb-3">
         ${sortedStock(soon).map(s=>{const d=daysLeft(s.expiry);const txt=d===0?"Сегодня":`${d} дн.`;const q=qtyFor(s,dd=>dd>=0&&dd<=3);const loc=locFor(s,dd=>dd>=0&&dd<=3);return `<div class="card flex justify-between gap-2"><span class="flex-1">${esc(s.name)} <span class="opacity-70">(${fmtQty(q)} ${esc(s.unit||"")}${loc?` · 📍 ${esc(loc)}`:""})</span></span><span class="badge badge-yellow">${txt}</span></div>`;}).join("")}
       </div>`:""}
-      ${expired.length?`<button class="btn btn-danger w-full" onclick="writeoffExpired()">🗑 Списать всю просрочку (${expired.length})</button>`:""}
+      ${expired.length?`<button class="btn btn-danger w-full" onclick="writeoffExpired()">🗑 Списать всю просрочку (${expiredTargets})</button>`:""}
       <button class="btn btn-primary w-full mt-2" onclick="openExpiredView()">Перейти к складу</button>
       <button class="btn btn-ghost w-full mt-2" data-close>Позже</button>
     `;
