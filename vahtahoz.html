@@ -155,6 +155,15 @@ if(typeof structuredClone!=="function"){
 
 /* ---------- Storage ---------- */
 const STORE_KEY = "vahtahoz:v1";
+/* Задачи/планы — ОБЩИЕ для всех баз устройства (у хоза одно расписание на обе базы).
+   Храним отдельно от per-base состояния и накладываем на state.tasks при загрузке. */
+const TASKS_KEY = "vahtahoz:tasks";
+function loadGlobalTasks(){
+  try{ const raw=localStorage.getItem(TASKS_KEY); if(raw){ const t=JSON.parse(raw); if(Array.isArray(t)) state.tasks=t; } }catch(e){}
+}
+function saveGlobalTasks(){
+  try{ localStorage.setItem(TASKS_KEY, JSON.stringify(Array.isArray(state.tasks)?state.tasks:[])); }catch(e){}
+}
 const defaultState = {
   theme: "dark",
   stock: [],
@@ -224,6 +233,8 @@ function saveState(){
       }
     } else { console.error("saveState error:", e); }
   }
+  // задачи — общие для всех баз: дублируем в отдельный ключ
+  try{ if(typeof saveGlobalTasks==="function") saveGlobalTasks(); }catch(_){}
   // если активная база связана с облаком и есть вход — отложенно отправляем изменения
   try{ if(typeof cloudMaybePush==="function") cloudMaybePush(); }catch(_){}
 }
@@ -632,6 +643,8 @@ const cleanLoc = s => String(s).replace(/[<>'"\\&\r\n]/g,"").trim().slice(0,40);
 for(const k of STOCK_TYPE_KEYS){
   state.locations[k] = [...new Set(state.locations[k].map(cleanLoc).filter(Boolean))];
 }
+// общие задачи накладываем ДО санитизации — чтобы их id/чек-листы тоже прошли проверку
+loadGlobalTasks();
 sanitizeIds(state.stock);
 sanitizeIds(state.tasks);
 sanitizeIds(state.log);
@@ -3314,7 +3327,10 @@ async function cloudActivate(cid){
     const dirty = localStorage.getItem(cloudDirtyKey(cid));
     const { count } = await sb.from("stock_items").select("id",{count:"exact",head:true}).eq("base_id",cid);
     const cloudEmpty = !count;
-    if((dirty || (cloudEmpty && ((state.stock&&state.stock.length)||(state.tasks&&state.tasks.length)))) && perm && perm.can_edit_stock){
+    // решение «выгружать» — по складу/журналам (задачи не синкаются и тут не учитываются)
+    const localHasData = (state.stock&&state.stock.length) ||
+      ["receipt","issue","writeoff","order"].some(k=>(state.journals?.[k]||[]).length);
+    if((dirty || (cloudEmpty && localHasData)) && perm && perm.can_edit_stock){
       await cloudPushNow();                   // локальное — источник (первый раз или были оффлайн-правки)
       localStorage.removeItem(cloudDirtyKey(cid));
       toast("Данные выгружены в облако");
@@ -3341,14 +3357,8 @@ async function cloudPull(cid){
     (jr||[]).forEach(r=>{ if(J[r.kind]) J[r.kind].push({ ...(r.data||{}), id:safeId(r.id) }); });
     for(const k in J) J[k].sort((a,b)=>(b.ts||"").localeCompare(a.ts||""));
     state.journals = J;
-    if(!perm || perm.can_view_tasks){
-      const { data:tk } = await sb.from("tasks").select("*").eq("base_id",cid);
-      state.tasks = (tk||[]).map(rowToTask).map(t=>{
-        t.id = safeId(t.id);
-        if(Array.isArray(t.items)) t.items.forEach(i=>{ if(i) i.id = safeId(i.id); });
-        return t;
-      });
-    } else { state.tasks = []; }
+    // ЗАДАЧИ НЕ ТЯНЕМ из облака — они общие-локальные (одно расписание на все базы),
+    // не зависят от базы и не видны начальнику. state.tasks остаётся как есть (из loadGlobalTasks).
     const { data:base } = await sb.from("bases").select("settings").eq("id",cid).maybeSingle();
     if(base && base.settings){
       for(const k of STOCK_TYPE_KEYS){
@@ -3384,27 +3394,36 @@ async function cloudPushNow(){
       const rows = state.stock.map(s=>stockToRow(s,cid));
       const ids = new Set(state.stock.map(s=>s.id));
       const { data:cIds } = await sb.from("stock_items").select("id").eq("base_id",cid);
-      const del = (cIds||[]).map(r=>r.id).filter(id=>!ids.has(id));
-      if(del.length) await sb.from("stock_items").delete().in("id",del);
-      if(rows.length) await sb.from("stock_items").upsert(rows);
+      // ЗАЩИТА ОТ СТИРАНИЯ: пустой локальный склад НЕ затирает непустое облако.
+      // (иначе сбой/случайная очистка могли бы удалить все позиции в облаке)
+      if(rows.length===0 && (cIds||[]).length>0){
+        console.warn("cloudPush: локальный склад пуст, облако непусто — выгрузка склада пропущена (защита)");
+      } else {
+        const del = (cIds||[]).map(r=>r.id).filter(id=>!ids.has(id));
+        // порог: не удаляем массово больше, чем остаётся локально (признак сбоя/неполного состояния)
+        if(del.length && del.length <= ids.size + 10){ await sb.from("stock_items").delete().in("id",del); }
+        else if(del.length){ console.warn("cloudPush: подозрительное массовое удаление склада пропущено", del.length); }
+        if(rows.length) await sb.from("stock_items").upsert(rows);
+        // настройки базы (места/категории) — только вместе с непустым складом
+        await sb.from("bases").update({ settings:{ locations:state.locations, categories:state.categories } }).eq("id",cid);
+      }
       // журналы
       const jrows=[]; const jids=new Set();
       for(const k of ["receipt","issue","writeoff","order"]) for(const op of (state.journals?.[k]||[])){ jrows.push({id:op.id,base_id:cid,kind:k,data:op}); jids.add(op.id); }
       const { data:cj } = await sb.from("journal_entries").select("id").eq("base_id",cid);
-      const jdel=(cj||[]).map(r=>r.id).filter(id=>!jids.has(id));
-      if(jdel.length) await sb.from("journal_entries").delete().in("id",jdel);
-      if(jrows.length) await sb.from("journal_entries").upsert(jrows);
-      // настройки базы
-      await sb.from("bases").update({ settings:{ locations:state.locations, categories:state.categories } }).eq("id",cid);
+      // та же защита для журналов
+      if(jrows.length===0 && (cj||[]).length>0){
+        console.warn("cloudPush: локальные журналы пусты, облако непусто — выгрузка журналов пропущена (защита)");
+      } else {
+        const jdel=(cj||[]).map(r=>r.id).filter(id=>!jids.has(id));
+        // тот же порог: журнал в облаке может быть длиннее локального (квота-усечение) — не стираем массово
+        if(jdel.length && jdel.length <= jids.size + 10){ await sb.from("journal_entries").delete().in("id",jdel); }
+        else if(jdel.length){ console.warn("cloudPush: подозрительное массовое удаление журналов пропущено", jdel.length); }
+        if(jrows.length) await sb.from("journal_entries").upsert(jrows);
+      }
     }
-    if(perm.can_edit_tasks){
-      const trows=(state.tasks||[]).map(t=>taskToRow(t,cid));
-      const tids=new Set((state.tasks||[]).map(t=>t.id));
-      const { data:ct } = await sb.from("tasks").select("id").eq("base_id",cid);
-      const tdel=(ct||[]).map(r=>r.id).filter(id=>!tids.has(id));
-      if(tdel.length) await sb.from("tasks").delete().in("id",tdel);
-      if(trows.length) await sb.from("tasks").upsert(trows);
-    }
+    // ЗАДАЧИ НЕ ВЫГРУЖАЕМ — они общие-локальные (одно расписание на все базы устройства),
+    // в облаке не хранятся и начальнику недоступны.
     // выгрузка прошла успешно — снимаем пометку «не синхронизировано»
     try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(e){}
   }catch(e){ console.warn("cloudPushNow", e); }
@@ -3556,9 +3575,15 @@ window.addEventListener("storage", (e)=>{
     if(p){ profiles = p; renderHeader(); }
     return;
   }
+  if(e.key===TASKS_KEY && e.newValue){
+    // общие задачи изменились в другой вкладке/базе
+    try{ loadGlobalTasks(); if(currentView==="tasks") render(); }catch(err){}
+    return;
+  }
   if(e.key===STORE_KEY && e.newValue){
     try{
       state = loadState();
+      loadGlobalTasks();                 // задачи общие — накладываем поверх per-base
       applyTheme(); render();
       toast("Данные обновлены в другой вкладке");
     }catch(err){ console.warn("storage sync failed", err); }
