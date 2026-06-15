@@ -1,5 +1,5 @@
 /* ВахтаХоз service worker — stale-while-revalidate + offline fallback */
-const CACHE = "vahtahoz-v37-tools-units";
+const CACHE = "vahtahoz-v38-cloud-sync";
 const PRECACHE = [
   "./vahtahoz.html",
   "./manifest.webmanifest",
@@ -24,6 +24,10 @@ self.addEventListener("activate", e => {
 self.addEventListener("fetch", e => {
   const req = e.request;
   if (req.method !== "GET") return;
+  // Кешируем/перехватываем ТОЛЬКО свой origin (оболочка приложения).
+  // Запросы к Supabase (REST/Realtime) и CDN-модули идут напрямую в сеть —
+  // иначе ignoreSearch:true отдавал бы один кеш на разные API-запросы.
+  if (new URL(req.url).origin !== self.location.origin) return;
   e.respondWith((async () => {
     const cache = await caches.open(CACHE);
     const cached = await cache.match(req, { ignoreSearch: true });

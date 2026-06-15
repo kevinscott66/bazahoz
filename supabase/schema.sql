@@ -47,7 +47,7 @@ create table if not exists public.base_members (
 
 -- Позиции склада. Партии и агрегаты хранятся в jsonb (как в клиенте).
 create table if not exists public.stock_items (
-  id          uuid primary key default gen_random_uuid(),
+  id          text primary key,  -- клиентский id
   base_id     uuid not null references public.bases(id) on delete cascade,
   type        text not null check (type in ('product','household','tool')),
   name        text not null,
@@ -69,7 +69,7 @@ create index if not exists stock_items_base_idx on public.stock_items(base_id);
 
 -- Задачи/планы (личные для базы; начальник их НЕ видит без can_view_tasks)
 create table if not exists public.tasks (
-  id          uuid primary key default gen_random_uuid(),
+  id          text primary key,  -- клиентский id
   base_id     uuid not null references public.bases(id) on delete cascade,
   owner_id    uuid references public.profiles(id),
   title       text not null,
@@ -80,13 +80,27 @@ create table if not exists public.tasks (
   "time"      text not null default '',
   "order"     numeric,
   done        boolean not null default false,
-  parent_id   uuid,
+  parent_id   text,
   -- чек-лист задачи: [{id, text, done}]
   items       jsonb not null default '[]'::jsonb,
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
 create index if not exists tasks_base_idx on public.tasks(base_id);
+
+-- Журналы движений: поступление/выдача/списание/заказы.
+-- Доступ — по тем же правам, что и склад (view_stock / edit_stock).
+create table if not exists public.journal_entries (
+  id          text primary key,  -- клиентский id
+  base_id     uuid not null references public.bases(id) on delete cascade,
+  kind        text not null check (kind in ('receipt','issue','writeoff','order')),
+  -- сама запись как в клиенте: {id, ts, productId, productName, qty, unit, note,
+  --   batchId, batchLocation, batchExpiry, status, receiptId, receivedAt ...}
+  data        jsonb not null default '{}'::jsonb,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+create index if not exists journal_base_idx on public.journal_entries(base_id, kind);
 
 -- ============================================================
 -- ХЕЛПЕРЫ ПРАВ (SECURITY DEFINER — обходят RLS, чтобы не было рекурсии)
@@ -158,6 +172,18 @@ create policy stock_update on public.stock_items for update
 drop policy if exists stock_delete on public.stock_items;
 create policy stock_delete on public.stock_items for delete using (public.has_perm(base_id,'edit_stock'));
 
+-- journal_entries: те же права, что и склад (view_stock / edit_stock)
+alter table public.journal_entries enable row level security;
+drop policy if exists journal_select on public.journal_entries;
+create policy journal_select on public.journal_entries for select using (public.has_perm(base_id,'view_stock'));
+drop policy if exists journal_insert on public.journal_entries;
+create policy journal_insert on public.journal_entries for insert with check (public.has_perm(base_id,'edit_stock'));
+drop policy if exists journal_update on public.journal_entries;
+create policy journal_update on public.journal_entries for update
+  using (public.has_perm(base_id,'edit_stock')) with check (public.has_perm(base_id,'edit_stock'));
+drop policy if exists journal_delete on public.journal_entries;
+create policy journal_delete on public.journal_entries for delete using (public.has_perm(base_id,'edit_stock'));
+
 -- tasks: видит при view_tasks, правит при edit_tasks (начальник без этих прав — не видит)
 drop policy if exists tasks_select on public.tasks;
 create policy tasks_select on public.tasks for select using (public.has_perm(base_id,'view_tasks'));
@@ -173,6 +199,7 @@ create policy tasks_delete on public.tasks for delete using (public.has_perm(bas
 -- REALTIME (живое обновление у всех)
 -- ============================================================
 alter publication supabase_realtime add table public.stock_items;
+alter publication supabase_realtime add table public.journal_entries;
 alter publication supabase_realtime add table public.tasks;
 alter publication supabase_realtime add table public.bases;
 
@@ -186,4 +213,7 @@ create trigger stock_touch before update on public.stock_items
   for each row execute function public.touch_updated_at();
 drop trigger if exists tasks_touch on public.tasks;
 create trigger tasks_touch before update on public.tasks
+  for each row execute function public.touch_updated_at();
+drop trigger if exists journal_touch on public.journal_entries;
+create trigger journal_touch before update on public.journal_entries
   for each row execute function public.touch_updated_at();
