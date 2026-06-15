@@ -1,5 +1,5 @@
 /* ВахтаХоз service worker — stale-while-revalidate + offline fallback */
-const CACHE = "vahtahoz-v35-seed-update";
+const CACHE = "vahtahoz-v36-task-lists";
 const PRECACHE = [
   "./vahtahoz.html",
   "./manifest.webmanifest",
