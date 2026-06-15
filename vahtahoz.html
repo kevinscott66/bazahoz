@@ -958,10 +958,9 @@ function renderDashboard(){
       </button>
     </div>
 
+    <button class="btn btn-primary w-full mt-2" onclick="openTaskEdit()">＋ Задача</button>
     <div class="grid grid-cols-3 gap-2 mt-2">
-      <button class="btn btn-primary" onclick="openTaskEdit()">＋ Задача</button>
-      <button class="btn btn-success" onclick="openStockEdit(null,'product')">＋ Продукт</button>
-      <button class="btn btn-warn" onclick="openStockEdit(null,'household')">＋ Хозка</button>
+      ${STOCK_TYPES.map(t=>`<button class="btn ${t.key==='product'?'btn-success':(t.key==='household'?'btn-warn':'btn-ghost')}" onclick="openStockEdit(null,'${t.key}')">＋ ${t.short}</button>`).join("")}
     </div>
 
     ${todayTasks.length?`
@@ -3238,7 +3237,12 @@ async function cloudInit(){
   try{
     const sb = await ensureSB();
     const { data } = await sb.auth.getSession();
-    if(data && data.session) await cloudOnLogin(data.session);
+    if(data && data.session){ await cloudOnLogin(data.session); }
+    else if(!localStorage.getItem("vahtahoz_login_shown")){
+      // первый запуск без сессии — сразу предлагаем вход (один раз; потом сессия кэшируется)
+      try{ localStorage.setItem("vahtahoz_login_shown","1"); }catch(e){}
+      if(cloudOnline()) setTimeout(()=>{ try{ cloudLoginPrompt(); }catch(e){} }, 600);
+    }
   }catch(e){ console.warn("cloudInit", e); }
 }
 async function cloudLogin(email, password){
