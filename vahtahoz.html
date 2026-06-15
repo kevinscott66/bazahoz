@@ -168,7 +168,8 @@ const defaultState = {
       "Прочие продукты","Сахар, соль, мучное","Сладости и десерты",
       "Соусы и заправки","Сухофрукты и орехи","Колбасные изделия и копчёности","Заморозка"
     ],
-    household: ["Химия","Уборка","Инструменты","Расходники","Прочее"]
+    household: ["Химия","Уборка","Расходники","Прочее"],
+    tool: ["Электроинструмент","Ручной инструмент","Крепёж и метизы","Сантехника","Электрика","Спецодежда и СИЗ","Прочее"]
   },
   checklists: {
     kitchen: [
@@ -183,7 +184,8 @@ const defaultState = {
   journals: { receipt:[], issue:[], writeoff:[], order:[] },
   locations: {
     product: ["Склад А","Склад Б","Холодильник","Ларь","Склад В","Кухня"],
-    household: ["Красный жилой болк","Склад В","Баня","Кунг","Болк хозрабочего"]
+    household: ["Красный жилой болк","Склад В","Баня","Кунг","Болк хозрабочего"],
+    tool: ["Склад В","Кунг","Болк хозрабочего","Мастерская"]
   },
   lastExpiryNoticeDate: null
 };
@@ -490,7 +492,7 @@ function validateImport(obj){
   }
   if(obj.categories!==undefined){
     if(typeof obj.categories!=="object" || Array.isArray(obj.categories)) throw new Error("categories не объект");
-    for(const k of ["product","household"]){
+    for(const k of STOCK_TYPE_KEYS){
       if(obj.categories[k]!==undefined && !Array.isArray(obj.categories[k])) throw new Error(`categories.${k} не массив`);
       if(Array.isArray(obj.categories[k])) obj.categories[k] = obj.categories[k].map(cleanCatName).filter(Boolean);
     }
@@ -498,7 +500,7 @@ function validateImport(obj){
   if(obj.locations!==undefined){
     if(typeof obj.locations!=="object" || Array.isArray(obj.locations)) throw new Error("locations не объект");
     const _cleanLoc = s => String(s).replace(/[<>'"\\&\r\n]/g,"").trim().slice(0,40);
-    for(const k of ["product","household"]){
+    for(const k of STOCK_TYPE_KEYS){
       if(obj.locations[k]!==undefined && !Array.isArray(obj.locations[k])) throw new Error(`locations.${k} не массив`);
       if(Array.isArray(obj.locations[k])) obj.locations[k] = [...new Set(obj.locations[k].map(_cleanLoc).filter(Boolean))];
     }
@@ -559,23 +561,38 @@ if(!state.journals || typeof state.journals!=="object" || Array.isArray(state.jo
 for(const k of ["receipt","issue","writeoff","order"]){
   if(!Array.isArray(state.journals[k])) state.journals[k] = [];
 }
+/* Типы склада: продукты / хозтовары / инструменты. Единый источник для UI и данных. */
+const STOCK_TYPES = [
+  { key:"product",   icon:"🥬", label:"Продукты",   addLabel:"Продукт",    short:"Продукты"   },
+  { key:"household", icon:"🧴", label:"Хозтовары",   addLabel:"Хозтовар",   short:"Хозка"      },
+  { key:"tool",      icon:"🔧", label:"Инструменты", addLabel:"Инструмент", short:"Инструменты"},
+];
+const STOCK_TYPE_KEYS = STOCK_TYPES.map(t=>t.key);
+const typeMeta = (k) => STOCK_TYPES.find(t=>t.key===k) || STOCK_TYPES[0];
+const DEFAULT_CATEGORIES = {
+  household: ["Химия","Уборка","Расходники","Прочее"],
+  tool: ["Электроинструмент","Ручной инструмент","Крепёж и метизы","Сантехника","Электрика","Спецодежда и СИЗ","Прочее"],
+};
 if(!state.categories || typeof state.categories!=="object"){
-  state.categories = { product: [], household: [] };
+  state.categories = { product: [], household: [], tool: [] };
 }
-if(!Array.isArray(state.categories.product))   state.categories.product = [];
-if(!Array.isArray(state.categories.household)) state.categories.household = [];
+for(const k of STOCK_TYPE_KEYS){
+  if(!Array.isArray(state.categories[k])){
+    state.categories[k] = DEFAULT_CATEGORIES[k] ? DEFAULT_CATEGORIES[k].slice() : [];
+  }
+}
 /* Дефолтные места — seed для state.locations при первом запуске и фолбэк, если массив пуст. */
-const DEFAULT_LOCATIONS_PRODUCT = [
-  "Склад А","Склад Б","Холодильник",
-  "Ларь","Склад В","Кухня"
-];
-const DEFAULT_LOCATIONS_HOUSEHOLD = [
-  "Красный жилой болк","Склад В","Баня","Кунг","Болк хозрабочего"
-];
+const DEFAULT_LOCATIONS = {
+  product: ["Склад А","Склад Б","Холодильник","Ларь","Склад В","Кухня"],
+  household: ["Красный жилой болк","Склад В","Баня","Кунг","Болк хозрабочего"],
+  tool: ["Склад В","Кунг","Болк хозрабочего","Мастерская"],
+};
+const DEFAULT_LOCATIONS_PRODUCT = DEFAULT_LOCATIONS.product;   // совместимость
+const DEFAULT_LOCATIONS_HOUSEHOLD = DEFAULT_LOCATIONS.household;
 function getLocations(type){
-  const arr = type==="product" ? state.locations?.product : state.locations?.household;
+  const arr = state.locations?.[type];
   return Array.isArray(arr) && arr.length ? arr.slice()
-       : (type==="product" ? DEFAULT_LOCATIONS_PRODUCT.slice() : DEFAULT_LOCATIONS_HOUSEHOLD.slice());
+       : (DEFAULT_LOCATIONS[type] ? DEFAULT_LOCATIONS[type].slice() : []);
 }
 /* Список мест для формы редактирования — включает orphan-значение (которое есть у записи,
    но было удалено из state.locations), чтобы при сохранении не стереть его молча. */
@@ -590,17 +607,17 @@ function getLocationsWithOrphan(type, orphanValues){
 /* state.locations — пользовательские места хранения. При первом запуске сидим из дефолтов.
    Поля внутри: product[], household[]. */
 if(!state.locations || typeof state.locations!=="object" || Array.isArray(state.locations)){
-  state.locations = {
-    product: DEFAULT_LOCATIONS_PRODUCT.slice(),
-    household: DEFAULT_LOCATIONS_HOUSEHOLD.slice(),
-  };
+  state.locations = {};
+  for(const k of STOCK_TYPE_KEYS) state.locations[k] = DEFAULT_LOCATIONS[k].slice();
 }
-if(!Array.isArray(state.locations.product)   || !state.locations.product.length)   state.locations.product   = DEFAULT_LOCATIONS_PRODUCT.slice();
-if(!Array.isArray(state.locations.household) || !state.locations.household.length) state.locations.household = DEFAULT_LOCATIONS_HOUSEHOLD.slice();
+for(const k of STOCK_TYPE_KEYS){
+  if(!Array.isArray(state.locations[k]) || !state.locations[k].length) state.locations[k] = (DEFAULT_LOCATIONS[k]||[]).slice();
+}
 // чистим дубликаты, пустоты и опасные символы (XSS-страховка для inline-onclick)
 const cleanLoc = s => String(s).replace(/[<>'"\\&\r\n]/g,"").trim().slice(0,40);
-state.locations.product   = [...new Set(state.locations.product.map(cleanLoc).filter(Boolean))];
-state.locations.household = [...new Set(state.locations.household.map(cleanLoc).filter(Boolean))];
+for(const k of STOCK_TYPE_KEYS){
+  state.locations[k] = [...new Set(state.locations[k].map(cleanLoc).filter(Boolean))];
+}
 sanitizeIds(state.stock);
 sanitizeIds(state.tasks);
 sanitizeIds(state.log);
@@ -1273,9 +1290,8 @@ function renderStock(){
 
   // список категорий для фильтра в зависимости от tab
   let cats = [];
-  if(stockTab==="product") cats = state.categories.product;
-  else if(stockTab==="household") cats = state.categories.household;
-  else cats = [...new Set([...state.categories.product, ...state.categories.household])];
+  if(STOCK_TYPE_KEYS.includes(stockTab)) cats = state.categories[stockTab] || [];
+  else cats = [...new Set(STOCK_TYPE_KEYS.flatMap(k=>state.categories[k]||[]))];
 
   // подсчёт по категориям для текущего таба (только позиции в наличии)
   const countByCat = {};
@@ -1290,15 +1306,13 @@ function renderStock(){
 
   v.innerHTML = `
     ${modeTabs}
-    <div class="grid grid-cols-2 gap-2">
-      <button class="btn btn-success" onclick="openStockEdit(null,'product')">＋ Продукт</button>
-      <button class="btn btn-warn" onclick="openStockEdit(null,'household')">＋ Хозка</button>
+    <div class="grid grid-cols-3 gap-2">
+      ${STOCK_TYPES.map(t=>`<button class="btn btn-ghost" onclick="openStockEdit(null,'${t.key}')">＋ ${t.addLabel}</button>`).join("")}
     </div>
 
     <div class="scroll-x flex gap-2">
       <button class="chip ${stockTab==='all'?'active':''}" data-stocktab="all">Все (${state.stock.filter(inStock).length})</button>
-      <button class="chip ${stockTab==='product'?'active':''}" data-stocktab="product">🥬 Продукты (${state.stock.filter(s=>s.type==='product'&&inStock(s)).length})</button>
-      <button class="chip ${stockTab==='household'?'active':''}" data-stocktab="household">🧴 Хозка (${state.stock.filter(s=>s.type==='household'&&inStock(s)).length})</button>
+      ${STOCK_TYPES.map(t=>`<button class="chip ${stockTab===t.key?'active':''}" data-stocktab="${t.key}">${t.icon} ${t.short} (${state.stock.filter(s=>s.type===t.key&&inStock(s)).length})</button>`).join("")}
     </div>
 
     <div class="scroll-x flex gap-2">
@@ -1335,8 +1349,7 @@ function renderStockList(){
   const box = document.getElementById("stockListBox");
   if(!box) return;
   let list = state.stock.slice();
-  if(stockTab==="product") list = list.filter(s=>s.type==="product");
-  if(stockTab==="household") list = list.filter(s=>s.type==="household");
+  if(STOCK_TYPE_KEYS.includes(stockTab)) list = list.filter(s=>s.type===stockTab);
   if(stockCat) list = list.filter(s=>s.category===stockCat);
   if(stockExpiryFilter==="expired") list = list.filter(s=>inStock(s) && s.expiry && daysLeft(s.expiry)<0);
   else if(stockExpiryFilter==="soon") list = list.filter(s=>{ if(!inStock(s)) return false; const d=s.expiry?daysLeft(s.expiry):null; return d!==null && d>=0 && d<=7; });
@@ -1468,7 +1481,7 @@ function openOpEdit(kind){
     if(!Q){ list.innerHTML = `<div class="text-xs opacity-60 p-2">Введи 2+ символа для поиска</div>`; return; }
     const found = state.stock.filter(s=>(s.name||"").toLowerCase().includes(Q)).slice(0,20);
     list.innerHTML = found.length
-      ? found.map(s=>`<button type="button" class="w-full text-left p-2 rounded hover:bg-white/5" data-pick="${esc(s.id)}">${s.type==='product'?'🥬':'🧴'} ${esc(s.name)} <span class="opacity-60 text-xs">· ${fmtQty(s.qty)} ${esc(s.unit||"")}</span></button>`).join("")
+      ? found.map(s=>`<button type="button" class="w-full text-left p-2 rounded hover:bg-white/5" data-pick="${esc(s.id)}">${typeMeta(s.type).icon} ${esc(s.name)} <span class="opacity-60 text-xs">· ${fmtQty(s.qty)} ${esc(s.unit||"")}</span></button>`).join("")
       : `<div class="text-xs opacity-60 p-2">Не найдено. Можно ввести вручную.</div>`;
   }
   renderList("");
@@ -1718,7 +1731,7 @@ function editOp(kind, opId){
     if(!Q){ list.innerHTML = `<div class="text-xs opacity-60 p-2">Введи 2+ символа</div>`; return; }
     const found = state.stock.filter(s=>(s.name||"").toLowerCase().includes(Q)).slice(0,20);
     list.innerHTML = found.length
-      ? found.map(s=>`<button type="button" class="w-full text-left p-2 rounded hover:bg-white/5" data-pick="${esc(s.id)}">${s.type==='product'?'🥬':'🧴'} ${esc(s.name)} <span class="opacity-60 text-xs">· ${fmtQty(s.qty)} ${esc(s.unit||"")}</span></button>`).join("")
+      ? found.map(s=>`<button type="button" class="w-full text-left p-2 rounded hover:bg-white/5" data-pick="${esc(s.id)}">${typeMeta(s.type).icon} ${esc(s.name)} <span class="opacity-60 text-xs">· ${fmtQty(s.qty)} ${esc(s.unit||"")}</span></button>`).join("")
       : `<div class="text-xs opacity-60 p-2">Не найдено</div>`;
   }
   renderList("");
@@ -1850,7 +1863,7 @@ function stockRow(it){
     ? `<span class="badge badge-gray">${esc(st.text)}</span>`
     : st.color==="red" ? `<span class="badge badge-red">${esc(st.text)}</span>`
     : st.color==="yellow" ? `<span class="badge badge-yellow">${esc(st.text)}</span>` : "";
-  const icon = it.type==="product"?"🥬":"🧴";
+  const icon = typeMeta(it.type).icon;
   const totalQ = totalQtyOf(it);
   const left = `${fmtQty(totalQ)} ${esc(it.unit||"")}`;
   const qtyBadge = out ? `<span class="badge badge-gray">${left}</span>` : `<span class="badge badge-green">${left}</span>`;
@@ -2011,12 +2024,14 @@ async function quickAdjust(id, sign){
   saveState(); render();
 }
 
-const UNITS = ["шт","кг","г","л","мл","упаковка","пачка","рулон","метр","кор","уп"];
+const UNITS = ["шт","кг","г","л","мл","упаковка","пачка","рулон","метр","кор","уп","меш"];
 
 function openStockEdit(id, typeDefault){
   const it = id ? state.stock.find(s=>s.id===id)
                : { id:"", type:typeDefault||"product", name:"", qty:"", unit:"шт", minStock:"", expiry:"", location:"", category:"", note:"" };
-  const isProd = it.type==="product";
+  const tk = it.type;
+  const isProd = tk==="product";
+  const expiryLabel = isProd ? "Срок годности" : (tk==="tool" ? "Срок/гарантия (опц.)" : "Срок годности (опц.)");
   const bList = id ? batchesOf(it) : [];
   const batchesSection = (id && bList.length>0) ? `
     <div class="border-t border-gray-700 pt-3">
@@ -2036,7 +2051,7 @@ function openStockEdit(id, typeDefault){
     </div>` : "";
   openSheet(`
     <div class="flex items-center justify-between gap-2 mb-3">
-      <div class="font-bold text-xl">${id?"Редактировать":"Новый"} ${isProd?"продукт":"хозтовар"}</div>
+      <div class="font-bold text-xl">${id?"Редактировать":"Новый"} ${esc(typeMeta(tk).addLabel.toLowerCase())}</div>
       ${id?`<button class="btn btn-warn" onclick="openBatchAdd('${id}')">➕ Партия</button>`:""}
     </div>
     <div class="space-y-3">
@@ -2049,31 +2064,18 @@ function openStockEdit(id, typeDefault){
       </div>
       <input class="input" id="sm" type="number" inputmode="decimal" placeholder="Мин. запас" value="${it.minStock??""}" />
 
-      ${isProd
-        ? `<div>
-             <div class="text-sm opacity-70 mb-1">Категория</div>
-             <div class="scroll-x flex gap-2">${state.categories.product.map(c=>`<button class="chip ${it.category===c?"active":""}" data-cat="${esc(c)}" onclick="this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');">${esc(c)}</button>`).join("")}</div>
-           </div>
-           <div>
-             <div class="text-sm opacity-70 mb-1">Срок годности</div>
-             <input class="input" id="se" type="date" value="${it.expiry||""}" />
-           </div>
-           <div>
-             <div class="text-sm opacity-70 mb-1">Место хранения</div>
-             <div class="scroll-x flex gap-2">${getLocationsWithOrphan("product", it.location).map(l=>`<button class="chip ${it.location===l?"active":""}" data-loc="${esc(l)}" onclick="this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');">${esc(l)}</button>`).join("")}</div>
-           </div>`
-        : `<div>
-             <div class="text-sm opacity-70 mb-1">Категория</div>
-             <div class="scroll-x flex gap-2">${state.categories.household.map(c=>`<button class="chip ${it.category===c?"active":""}" data-cat="${esc(c)}" onclick="this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');">${esc(c)}</button>`).join("")}</div>
-           </div>
-           <div>
-             <div class="text-sm opacity-70 mb-1">Место хранения</div>
-             <div class="scroll-x flex gap-2">${getLocationsWithOrphan("household", it.location).map(l=>`<button class="chip ${it.location===l?"active":""}" data-loc="${esc(l)}" onclick="this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');">${esc(l)}</button>`).join("")}</div>
-           </div>
-           <div>
-             <div class="text-sm opacity-70 mb-1">Срок годности (опционально)</div>
-             <input class="input" id="se" type="date" value="${it.expiry||""}" />
-           </div>`}
+      <div>
+        <div class="text-sm opacity-70 mb-1">Категория</div>
+        <div class="scroll-x flex gap-2">${(state.categories[tk]||[]).map(c=>`<button class="chip ${it.category===c?"active":""}" data-cat="${esc(c)}" onclick="this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');">${esc(c)}</button>`).join("")}</div>
+      </div>
+      <div>
+        <div class="text-sm opacity-70 mb-1">Место хранения</div>
+        <div class="scroll-x flex gap-2">${getLocationsWithOrphan(tk, it.location).map(l=>`<button class="chip ${it.location===l?"active":""}" data-loc="${esc(l)}" onclick="this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');">${esc(l)}</button>`).join("")}</div>
+      </div>
+      <div>
+        <div class="text-sm opacity-70 mb-1">${expiryLabel}</div>
+        <input class="input" id="se" type="date" value="${it.expiry||""}" />
+      </div>
       <textarea class="input" id="sno" rows="2" placeholder="Примечание">${esc(it.note)}</textarea>
 
       ${batchesSection}
@@ -2116,10 +2118,9 @@ function saveStock(id, type){
 }
 function openBatchAdd(id){
   const it = state.stock.find(s=>s.id===id); if(!it) return;
-  const isProd = it.type==="product";
   // в форме партии включаем orphan-локации существующих партий, чтобы не «потерять» их при сохранении
   const existingLocs = (it.batches||[]).map(b=>b.location).concat([it.location]);
-  const LOCS = getLocationsWithOrphan(isProd ? "product" : "household", existingLocs);
+  const LOCS = getLocationsWithOrphan(it.type, existingLocs);
   openSheet(`
     <div class="space-y-3">
       <div class="font-bold text-xl">Новая партия</div>
@@ -2129,7 +2130,7 @@ function openBatchAdd(id){
         <input class="input" id="bq" type="number" inputmode="decimal" value="" autofocus />
       </div>
       <div>
-        <div class="text-sm opacity-70 mb-1">Срок годности${isProd?"":" (опц.)"}</div>
+        <div class="text-sm opacity-70 mb-1">Срок годности${it.type==="product"?"":" (опц.)"}</div>
         <input class="input" id="be" type="date" value="" />
       </div>
       <div>
@@ -2179,9 +2180,8 @@ function saveBatch(id){
 function openBatchEdit(itemId, batchId){
   const it = state.stock.find(s=>s.id===itemId); if(!it) return;
   const b = (it.batches||[]).find(x=>x.id===batchId); if(!b) return;
-  const isProd = it.type==="product";
   const existingLocs = (it.batches||[]).map(x=>x.location).concat([it.location]);
-  const LOCS = getLocationsWithOrphan(isProd ? "product" : "household", existingLocs);
+  const LOCS = getLocationsWithOrphan(it.type, existingLocs);
   openSheet(`
     <div class="space-y-3">
       <div class="font-bold text-xl">Партия: ${esc(it.name)}</div>
@@ -2263,7 +2263,7 @@ function locationUsageCount(type, name){
   return n;
 }
 async function addLocation(type){
-  const val = await promptSheet(`Новое место хранения (${type==="product"?"продукты":"хозтовары"})`, "", {title:"Добавить место"});
+  const val = await promptSheet(`Новое место хранения (${typeMeta(type).label})`, "", {title:"Добавить место"});
   if(val===null) return;
   const name = String(val).trim();
   if(!name){ toast("Пустое название"); return; }
@@ -2334,8 +2334,7 @@ function openLocationsEdit(){
   openSheet(`
     <div class="font-bold text-xl mb-3">📍 Места хранения</div>
     <div class="flex gap-2 mb-3" id="locTabs">
-      <button class="chip ${type==='product'?'active':''}" data-loctab="product">🥬 Продукты</button>
-      <button class="chip ${type==='household'?'active':''}" data-loctab="household">🧴 Хозтовары</button>
+      ${STOCK_TYPES.map(t=>`<button class="chip ${type===t.key?'active':''}" data-loctab="${t.key}">${t.icon} ${t.label}</button>`).join("")}
     </div>
     <div class="space-y-1 max-h-96 overflow-y-auto" id="locList">
       ${list.length===0
@@ -2391,23 +2390,16 @@ function openCategoriesEdit(){
   openSheet(`
     <div class="font-bold text-xl mb-3">Категории</div>
     <div class="space-y-3">
-      <div>
-        <div class="text-sm opacity-70 mb-1">🥬 Продукты (${state.categories.product.length})</div>
-        <div class="space-y-2">${renderList("product")}</div>
-        <div class="flex gap-2 mt-2">
-          <input class="input" id="catNewP" placeholder="Новая категория продукта" />
-          <button class="btn btn-primary" onclick="addCategory('product')">＋</button>
-        </div>
-      </div>
-      <div class="divider"></div>
-      <div>
-        <div class="text-sm opacity-70 mb-1">🧴 Хозка (${state.categories.household.length})</div>
-        <div class="space-y-2">${renderList("household")}</div>
-        <div class="flex gap-2 mt-2">
-          <input class="input" id="catNewH" placeholder="Новая категория хозки" />
-          <button class="btn btn-primary" onclick="addCategory('household')">＋</button>
-        </div>
-      </div>
+      ${STOCK_TYPES.map((t,i)=>`
+        ${i>0?'<div class="divider"></div>':''}
+        <div>
+          <div class="text-sm opacity-70 mb-1">${t.icon} ${t.short} (${(state.categories[t.key]||[]).length})</div>
+          <div class="space-y-2">${renderList(t.key)}</div>
+          <div class="flex gap-2 mt-2">
+            <input class="input" id="catNew_${t.key}" placeholder="Новая категория (${t.label.toLowerCase()})" />
+            <button class="btn btn-primary" onclick="addCategory('${t.key}')">＋</button>
+          </div>
+        </div>`).join("")}
       <div class="flex gap-2 pt-2">
         <button class="btn btn-ghost flex-1" data-close>Готово</button>
       </div>
@@ -2415,7 +2407,8 @@ function openCategoriesEdit(){
   `);
 }
 function addCategory(type){
-  const inp = document.getElementById(type==="product"?"catNewP":"catNewH");
+  const inp = document.getElementById(`catNew_${type}`);
+  if(!inp) return;
   const v = inp.value.trim(); if(!v) return;
   if(state.categories[type].includes(v)){ toast("Уже есть"); return; }
   state.categories[type].push(v);
@@ -2440,7 +2433,7 @@ async function deleteCategory(type, name){
     : `Удалить пустую категорию «${name}»?`;
   if(!await confirmSheet(msg,{danger:true,yes:"Удалить"})) return;
   state.categories[type] = state.categories[type].filter(c=>c!==name);
-  const fallback = type==="product" ? "Прочие продукты" : "Прочее";
+  const fallback = type==="product" ? "Прочие продукты" : "Прочее";  // household/tool → «Прочее»
   if(!state.categories[type].includes(fallback)) state.categories[type].push(fallback);
   state.stock.forEach(s=>{ if(s.type===type && s.category===name) s.category=fallback; });
   if(stockCat===name) stockCat="";
@@ -2588,7 +2581,7 @@ async function exportXlsx(){
   catch(e){ toast("XLSX недоступен — сохраняю CSV"); exportCsv(); return; }
   const wb = XLSX.utils.book_new();
   const stockRows = sortedStock(state.stock).map(s=>({
-    "Тип": s.type==="product"?"Продукт":"Хозка",
+    "Тип": typeMeta(s.type).addLabel,
     "Категория": s.category||"",
     "Наименование": s.name,
     "Количество": roundQty(s.qty||0),
@@ -2670,7 +2663,7 @@ function exportCsv(){
   const header = ["Тип","Категория","Наименование","Количество","Ед. изм.","Мин. запас","Срок годности","Место","Примечание"];
   const rows = [header];
   sortedStock(state.stock).forEach(s=>rows.push([
-    s.type==="product"?"Продукт":"Хозка",
+    typeMeta(s.type).addLabel,
     s.category||"", s.name, fmtQty(s.qty), s.unit||"",
     s.minStock??"", s.expiry||"", locationsOf(s).join("; "), s.note||""
   ]));
@@ -2815,10 +2808,10 @@ function importData(ev){
       // категории
       const catBase = base.categories || structuredClone(defaultState).categories;
       if(obj.categories){
-        merged.categories = {
-          product: Array.from(new Set([...(catBase.product||[]), ...(obj.categories.product||[])])),
-          household: Array.from(new Set([...(catBase.household||[]), ...(obj.categories.household||[])]))
-        };
+        merged.categories = {};
+        for(const k of STOCK_TYPE_KEYS){
+          merged.categories[k] = Array.from(new Set([...(catBase[k]||[]), ...(obj.categories[k]||[])]));
+        }
       } else {
         merged.categories = catBase;
       }
@@ -2928,8 +2921,8 @@ function importData(ev){
         }
         // объединяем пользовательские места хранения (validateImport уже очистил строки)
         if(obj.locations){
-          merged.locations = merged.locations || { product:[], household:[] };
-          for(const k of ["product","household"]){
+          merged.locations = merged.locations || {};
+          for(const k of STOCK_TYPE_KEYS){
             merged.locations[k] = [...new Set([...(merged.locations[k]||[]), ...(obj.locations[k]||[])])];
           }
         }
@@ -3173,10 +3166,9 @@ applyTheme();
   try{
     const seed = JSON.parse(el.textContent);
     if(seed.categories){
-      state.categories = {
-        product:  Array.from(new Set([...(state.categories.product||[]),  ...(seed.categories.product||[])])),
-        household:Array.from(new Set([...(state.categories.household||[]),...(seed.categories.household||[])])),
-      };
+      for(const k of STOCK_TYPE_KEYS){
+        state.categories[k] = Array.from(new Set([...(state.categories[k]||[]), ...(seed.categories[k]||[])]));
+      }
     }
     state.stock = (seed.stock||[]).map(s=>({ ...s, id: safeId(s.id) }));
     if(Array.isArray(seed.tasks) && seed.tasks.length && !(state.tasks||[]).length){
