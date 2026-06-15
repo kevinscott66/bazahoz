@@ -113,6 +113,12 @@ returns boolean language sql stable security definer set search_path = public as
       or exists (select 1 from public.profiles pr where pr.id = auth.uid() and pr.is_admin);
 $$;
 
+-- проверка «я админ?» через SECURITY DEFINER (обходит RLS → нет рекурсии в политиках profiles)
+create or replace function public.is_admin()
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.profiles where id = auth.uid() and is_admin);
+$$;
+
 -- ============================================================
 -- RLS
 -- ============================================================
@@ -132,14 +138,14 @@ create policy bases_update on public.bases for update
 -- profiles: каждый видит свой профиль + профили админ; правит свой
 drop policy if exists profiles_select on public.profiles;
 create policy profiles_select on public.profiles for select
-  using (id = auth.uid() or exists(select 1 from public.profiles pr where pr.id=auth.uid() and pr.is_admin));
+  using (id = auth.uid() or public.is_admin());
 drop policy if exists profiles_self on public.profiles;
 create policy profiles_self on public.profiles for update using (id = auth.uid()) with check (id = auth.uid());
 
 -- base_members: пользователь видит СВОИ строки членства (чтобы знать свои права)
 drop policy if exists members_select on public.base_members;
 create policy members_select on public.base_members for select
-  using (user_id = auth.uid() or exists(select 1 from public.profiles pr where pr.id=auth.uid() and pr.is_admin));
+  using (user_id = auth.uid() or public.is_admin());
 
 -- stock_items: видит при view_stock, правит при edit_stock
 drop policy if exists stock_select on public.stock_items;
