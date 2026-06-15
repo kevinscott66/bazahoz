@@ -3232,12 +3232,13 @@ const cloudDirtyKey = (cid)=>`vahtahoz_dirty_${cid}`;
 function cloudOnline(){ return navigator.onLine!==false; }
 
 async function cloudInit(){
+  if(cloud._initDone) return; cloud._initDone = true;   // защита от повторного запуска (дубль listener)
+  // авто-пуш/синхронизация при возврате сети
+  window.addEventListener("online", ()=>{ if(cloud.ready && activeCloudId()) cloudActivate(activeCloudId()); });
   try{
     const sb = await ensureSB();
     const { data } = await sb.auth.getSession();
     if(data && data.session) await cloudOnLogin(data.session);
-    // авто-пуш при возврате сети
-    window.addEventListener("online", ()=>{ if(cloud.ready && activeCloudId()) cloudActivate(activeCloudId()); });
   }catch(e){ console.warn("cloudInit", e); }
 }
 async function cloudLogin(email, password){
@@ -3248,7 +3249,7 @@ async function cloudLogin(email, password){
 }
 async function cloudOnLogin(session){
   cloud.session = session;
-  const sb = cloud.sb; const uidv = session.user.id;
+  const sb = await ensureSB(); const uidv = session.user.id;
   try{
     const { data:prof } = await sb.from("profiles").select("*").eq("id",uidv).maybeSingle();
     cloud.profile = prof || { id:uidv, username:session.user.email };
@@ -3325,15 +3326,24 @@ async function cloudPull(cid){
   cloud.applying=true;
   try{
     const { data:items } = await sb.from("stock_items").select("*").eq("base_id",cid);
-    state.stock = (items||[]).map(rowToStock);
+    // id из БД проходят safeId (защита inline-onclick на случай порчи данных в облаке)
+    state.stock = (items||[]).map(rowToStock).map(s=>{
+      s.id = safeId(s.id);
+      if(Array.isArray(s.batches)) s.batches.forEach(b=>{ if(b) b.id = safeId(b.id); });
+      return s;
+    });
     const { data:jr } = await sb.from("journal_entries").select("*").eq("base_id",cid);
     const J={receipt:[],issue:[],writeoff:[],order:[]};
-    (jr||[]).forEach(r=>{ if(J[r.kind]) J[r.kind].push({ ...(r.data||{}), id:r.id }); });
+    (jr||[]).forEach(r=>{ if(J[r.kind]) J[r.kind].push({ ...(r.data||{}), id:safeId(r.id) }); });
     for(const k in J) J[k].sort((a,b)=>(b.ts||"").localeCompare(a.ts||""));
     state.journals = J;
     if(!perm || perm.can_view_tasks){
       const { data:tk } = await sb.from("tasks").select("*").eq("base_id",cid);
-      state.tasks = (tk||[]).map(rowToTask);
+      state.tasks = (tk||[]).map(rowToTask).map(t=>{
+        t.id = safeId(t.id);
+        if(Array.isArray(t.items)) t.items.forEach(i=>{ if(i) i.id = safeId(i.id); });
+        return t;
+      });
     } else { state.tasks = []; }
     const { data:base } = await sb.from("bases").select("settings").eq("id",cid).maybeSingle();
     if(base && base.settings){
@@ -3349,15 +3359,21 @@ async function cloudPull(cid){
 function cloudMaybePush(){
   if(!cloud.ready || cloud.applying) return;
   const cid = activeCloudId(); if(!cid) return;
-  if(!cloudOnline()){ try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(e){} return; }
+  // помечаем «не синхронизировано» СРАЗУ — флаг снимется только после успешной выгрузки.
+  // Так переключение базы/перезагрузка не теряет отложенные правки: при возврате
+  // cloudActivate увидит dirty и выгрузит локальное, а не затрёт его pull-ом.
+  try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(e){}
+  if(!cloudOnline()) return;
+  cloud.pushPending = true;                  // есть ожидающая выгрузка — realtime-pull её не затрёт
   clearTimeout(cloud.pushTimer);
   cloud.pushTimer = setTimeout(()=>cloudPushNow(), 800);
 }
 async function cloudPushNow(){
   const cid = activeCloudId();
-  if(!cid || !cloud.ready || cloud.applying || !cloudOnline()) return;
-  const perm = activeMember(); if(!perm) return;
-  const sb = cloud.sb; cloud.busy=true;
+  // на раннем выходе снимаем pushPending (dirty остаётся durable-маркером несинхронизации)
+  if(!cid || !cloud.ready || cloud.applying || !cloudOnline()){ cloud.pushPending=false; return; }
+  const perm = activeMember(); if(!perm){ cloud.pushPending=false; return; }
+  const sb = await ensureSB(); cloud.busy=true;
   try{
     if(perm.can_edit_stock){
       // склад
@@ -3385,8 +3401,10 @@ async function cloudPushNow(){
       if(tdel.length) await sb.from("tasks").delete().in("id",tdel);
       if(trows.length) await sb.from("tasks").upsert(trows);
     }
+    // выгрузка прошла успешно — снимаем пометку «не синхронизировано»
+    try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(e){}
   }catch(e){ console.warn("cloudPushNow", e); }
-  finally{ cloud.busy=false; }
+  finally{ cloud.busy=false; cloud.pushPending=false; }
 }
 /* realtime: на любое изменение в облаке — отложенный пере-pull активной базы */
 function cloudSubscribe(cid){
@@ -3407,7 +3425,7 @@ function cloudUnsubscribe(){
   cloud.channel=null; cloud.subscribedBase=null;
 }
 function cloudOnRemote(){
-  if(cloud.busy) return;                       // наши же изменения — не дёргаемся
+  if(cloud.busy || cloud.pushPending) return;  // идёт/ждёт наша выгрузка — pull её не затрёт
   clearTimeout(cloud.pullTimer);
   cloud.pullTimer = setTimeout(()=>{ const cid=activeCloudId(); if(cid) cloudPull(cid); }, 400);
 }
