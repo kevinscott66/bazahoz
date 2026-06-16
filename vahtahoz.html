@@ -75,10 +75,13 @@
       <div id="dateStr" class="text-sm text-gray-400"></div>
     </div>
     <div class="flex items-center gap-2">
+      <button id="syncChip" class="btn btn-ghost text-xs hidden" style="padding:6px 10px" title="Синхронизация с облаком"></button>
       <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px" title="Сменить базу"></button>
       <button id="themeBtn" class="btn btn-ghost" style="min-width:52px;padding:0">🌙</button>
     </div>
   </header>
+  <!-- тонкий статус-бар синхронизации (под шапкой) -->
+  <div id="syncBar" class="hidden" style="position:sticky;top:0;z-index:30;font-size:12px;text-align:center;padding:4px 8px;color:#fff"></div>
 
   <!-- Views -->
   <main id="views" class="px-4 pt-2">
@@ -943,6 +946,11 @@ function renderHeader(){
     // показываем чип только когда баз больше одной — иначе не загромождаем шапку
     if(profiles.list.length>1){ bc.textContent = `🏠 ${activeProfileName()}`; bc.style.display=""; }
     else { bc.style.display="none"; }
+  }
+  // статус-бар/чип облака скрываем, если активная база не связана с облаком или нет входа
+  if(typeof cloud!=="undefined" && (!cloud.ready || !activeCloudId())){
+    const sc=document.getElementById("syncChip"), sb=document.getElementById("syncBar");
+    if(sc) sc.classList.add("hidden"); if(sb) sb.classList.add("hidden");
   }
 }
 
@@ -3176,6 +3184,7 @@ async function writeoffExpired(){
 document.querySelectorAll("#navbar .nav-btn").forEach(b=>b.addEventListener("click",()=>nav(b.dataset.nav)));
 document.getElementById("themeBtn").addEventListener("click", toggleTheme);
 document.getElementById("baseChip").addEventListener("click", ()=>openProfilesSheet());
+document.getElementById("syncChip").addEventListener("click", ()=>{ if(typeof cloudSyncNow==="function") cloudSyncNow(); });
 
 /* ---------- Global delegation для data-атрибутов (защита от апострофов в именах) ---------- */
 document.addEventListener("click", e=>{
@@ -3259,10 +3268,33 @@ function activeMember(){
 const cloudDirtyKey = (cid)=>`vahtahoz_dirty_${cid}`;
 function cloudOnline(){ return navigator.onLine!==false; }
 
+/* статус-бар синхронизации: syncing | offline | synced | error | hidden */
+let _syncHideT = null;
+function setSyncStatus(kind, text){
+  const bar = document.getElementById("syncBar"); const chip = document.getElementById("syncChip");
+  if(!bar || !chip) return;
+  clearTimeout(_syncHideT);
+  if(kind==="hidden" || !cloud.ready || !activeCloudId()){ bar.classList.add("hidden"); chip.classList.add("hidden"); return; }
+  const M = {
+    syncing:{ bg:"#2563eb", icon:"↻", chip:"↻", txt:text||"Синхронизация…" },
+    offline:{ bg:"#b45309", icon:"🔴", chip:"⏳", txt:text||"Нет сети — изменения уйдут при подключении" },
+    synced: { bg:"#15803d", icon:"✓", chip:"✓", txt:text||"Синхронизировано" },
+    error:  { bg:"#b91c1c", icon:"⚠", chip:"⚠", txt:text||"Ошибка синхронизации — повторю" },
+  };
+  const m = M[kind] || M.syncing;
+  bar.style.background = m.bg; bar.textContent = `${m.icon} ${m.txt}`;
+  chip.textContent = m.chip; chip.classList.remove("hidden");
+  bar.classList.remove("hidden");
+  if(kind==="synced"){
+    _syncHideT = setTimeout(()=>{ bar.classList.add("hidden"); chip.classList.add("hidden"); }, 1800);
+  }
+}
+
 async function cloudInit(){
   if(cloud._initDone) return; cloud._initDone = true;   // защита от повторного запуска (дубль listener)
   // авто-пуш/синхронизация при возврате сети
-  window.addEventListener("online", ()=>{ if(cloud.ready && activeCloudId()) cloudActivate(activeCloudId()); });
+  window.addEventListener("online", ()=>{ if(cloud.ready && activeCloudId()){ setSyncStatus("syncing","Сеть появилась — синхронизирую…"); cloudActivate(activeCloudId()); } });
+  window.addEventListener("offline", ()=>{ if(cloud.ready && activeCloudId()) setSyncStatus("offline"); });
   try{
     const sb = await ensureSB();
     const { data } = await sb.auth.getSession();
@@ -3338,9 +3370,11 @@ async function cloudAutoLink(){
 }
 /* активация облачной базы: первичная выгрузка / подтягивание / разрешение оффлайн-правок */
 async function cloudActivate(cid){
-  if(!cid || !cloud.ready || !cloudOnline()) return;
-  const sb = cloud.sb; const perm = activeMember();
+  if(!cid || !cloud.ready) return;
+  if(!cloudOnline()){ setSyncStatus("offline"); return; }
+  const sb = await ensureSB(); const perm = activeMember();
   cloud.busy=true;
+  setSyncStatus("syncing","Проверка облака…");
   try{
     const dirty = localStorage.getItem(cloudDirtyKey(cid));
     const { count } = await sb.from("stock_items").select("id",{count:"exact",head:true}).eq("base_id",cid);
@@ -3351,17 +3385,17 @@ async function cloudActivate(cid){
     if((dirty || (cloudEmpty && localHasData)) && perm && perm.can_edit_stock){
       await cloudPushNow();                   // локальное — источник (первый раз или были оффлайн-правки)
       localStorage.removeItem(cloudDirtyKey(cid));
-      toast("Данные выгружены в облако");
     } else {
       await cloudPull(cid);
     }
-  }catch(e){ console.warn("cloudActivate", e); }
+  }catch(e){ console.warn("cloudActivate", e); setSyncStatus("error"); }
   finally{ cloud.busy=false; cloudSubscribe(cid); }
 }
 async function cloudPull(cid){
   if(!cid || !cloudOnline()) return;
   const sb = await ensureSB(); const perm = activeMember();
   cloud.applying=true;
+  setSyncStatus("syncing","Загрузка из облака…");
   try{
     const { data:items } = await sb.from("stock_items").select("*").eq("base_id",cid);
     // id из БД проходят safeId (защита inline-onclick на случай порчи данных в облаке)
@@ -3385,7 +3419,8 @@ async function cloudPull(cid){
       }
     }
     saveState();                              // cloud.applying=true → push не сработает (без эха)
-  }catch(e){ console.warn("cloudPull", e); }
+    setSyncStatus("synced","Загружено из облака");
+  }catch(e){ console.warn("cloudPull", e); setSyncStatus("error"); }
   finally{ cloud.applying=false; render(); }
 }
 function cloudMaybePush(){
@@ -3395,17 +3430,19 @@ function cloudMaybePush(){
   // Так переключение базы/перезагрузка не теряет отложенные правки: при возврате
   // cloudActivate увидит dirty и выгрузит локальное, а не затрёт его pull-ом.
   try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(e){}
-  if(!cloudOnline()) return;
+  if(!cloudOnline()){ setSyncStatus("offline"); return; }   // ждём сеть — уйдёт по событию "online"
   cloud.pushPending = true;                  // есть ожидающая выгрузка — realtime-pull её не затрёт
+  setSyncStatus("syncing","Сохранение в облако…");
   clearTimeout(cloud.pushTimer);
-  cloud.pushTimer = setTimeout(()=>cloudPushNow(), 800);
+  cloud.pushTimer = setTimeout(()=>cloudPushNow(), 600);
 }
 // upsert пачками — большой запрос (сотни позиций) на мобильной сети рвётся; чанки надёжнее
-async function cloudUpsertChunked(sb, table, rows, size){
+async function cloudUpsertChunked(sb, table, rows, size, onProgress){
   size = size || 100;
   for(let i=0;i<rows.length;i+=size){
     const { error } = await sb.from(table).upsert(rows.slice(i,i+size));
     if(error) throw error;
+    if(onProgress) onProgress(Math.min(i+size,rows.length), rows.length);
   }
 }
 async function cloudPushNow(){
@@ -3429,7 +3466,7 @@ async function cloudPushNow(){
         // порог: не удаляем массово больше, чем остаётся локально (признак сбоя/неполного состояния)
         if(del.length && del.length <= ids.size + 10){ await sb.from("stock_items").delete().in("id",del); }
         else if(del.length){ console.warn("cloudPush: подозрительное массовое удаление склада пропущено", del.length); }
-        if(rows.length) await cloudUpsertChunked(sb,"stock_items",rows);
+        if(rows.length) await cloudUpsertChunked(sb,"stock_items",rows,100,(d,t)=>{ if(t>100) setSyncStatus("syncing",`Выгрузка склада ${d}/${t}`); });
         // настройки базы (места/категории) — только вместе с непустым складом
         await sb.from("bases").update({ settings:{ locations:state.locations, categories:state.categories } }).eq("id",cid);
       }
@@ -3452,7 +3489,17 @@ async function cloudPushNow(){
     // в облаке не хранятся и начальнику недоступны.
     // выгрузка прошла успешно — снимаем пометку «не синхронизировано»
     try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(e){}
-  }catch(e){ console.warn("cloudPushNow", e); }
+    setSyncStatus("synced");
+  }catch(e){
+    console.warn("cloudPushNow", e);
+    if(!cloudOnline()){ setSyncStatus("offline"); }   // ждём сеть → событие "online" доpush-ит
+    else {
+      setSyncStatus("error");
+      // транзиентная ошибка — авто-повтор пока есть несинхронизированное и сеть
+      clearTimeout(cloud.retryTimer);
+      cloud.retryTimer = setTimeout(()=>{ if(localStorage.getItem(cloudDirtyKey(activeCloudId()))) cloudPushNow(); }, 6000);
+    }
+  }
   finally{ cloud.busy=false; cloud.pushPending=false; }
 }
 /* realtime: на любое изменение в облаке — отложенный пере-pull активной базы */
@@ -3475,6 +3522,9 @@ function cloudUnsubscribe(){
 }
 function cloudOnRemote(){
   if(cloud.busy || cloud.pushPending) return;  // идёт/ждёт наша выгрузка — pull её не затрёт
+  // есть несинхронизированные локальные правки → не тянем (затёрли бы своё); сначала выгрузим их
+  const cid0 = activeCloudId();
+  if(cid0 && localStorage.getItem(cloudDirtyKey(cid0))){ cloudMaybePush(); return; }
   clearTimeout(cloud.pullTimer);
   cloud.pullTimer = setTimeout(()=>{ const cid=activeCloudId(); if(cid) cloudPull(cid); }, 400);
 }
