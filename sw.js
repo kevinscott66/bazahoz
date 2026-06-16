@@ -1,8 +1,9 @@
 /* ВахтаХоз service worker — stale-while-revalidate + offline fallback */
-const CACHE = "vahtahoz-v42-refactor";
+const CACHE = "vahtahoz-v43-supabase-selfhost";
 const PRECACHE = [
   "./vahtahoz.html",
   "./manifest.webmanifest",
+  "./supabase.js",
 ];
 
 self.addEventListener("install", e => {

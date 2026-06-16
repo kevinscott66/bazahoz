@@ -61,6 +61,8 @@
   @keyframes pop{0%{transform:scale(.9);opacity:0}100%{transform:scale(1);opacity:1}}
   .pop{ animation:pop .15s ease-out; }
 </style>
+<!-- Supabase клиент (self-hosted, тот же origin → кешируется SW, работает офлайн после 1й загрузки) -->
+<script src="./supabase.js"></script>
 </head>
 <body class="bg-gray-950 text-gray-100 min-h-screen">
 
@@ -3213,8 +3215,10 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
    ============================================================ */
 async function ensureSB(){
   if(cloud.sb) return cloud.sb;
-  const m = await import("https://esm.sh/@supabase/supabase-js@2");
-  cloud.sb = m.createClient(CLOUD_CFG.url, CLOUD_CFG.anon, {
+  // self-hosted UMD-бандл (script в <head>) даёт глобальный supabase.createClient
+  const lib = window.supabase;
+  if(!lib || !lib.createClient) throw new Error("Библиотека облака не загрузилась (нет сети при первом запуске?)");
+  cloud.sb = lib.createClient(CLOUD_CFG.url, CLOUD_CFG.anon, {
     auth:{ persistSession:true, autoRefreshToken:true, storageKey:"vahtahoz_auth" }
   });
   return cloud.sb;
