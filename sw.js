@@ -1,5 +1,7 @@
-/* ВахтаХоз service worker — stale-while-revalidate + offline fallback */
-const CACHE = "vahtahoz-v52-parallel-skip";
+/* ВахтаХоз service worker — network-first для оболочки + offline fallback.
+   network-first важен: после деплоя фикса пользователь получает свежий vahtahoz.html
+   сразу при наличии сети, а кэш используется только как офлайн-резерв. */
+const CACHE = "vahtahoz-v53-network-first";
 const PRECACHE = [
   "./vahtahoz.html",
   "./manifest.webmanifest",
@@ -9,7 +11,10 @@ const PRECACHE = [
 self.addEventListener("install", e => {
   e.waitUntil((async () => {
     const c = await caches.open(CACHE);
-    try { await c.addAll(PRECACHE); } catch (_) {}
+    // по отдельности: один битый путь не должен ронять весь прекэш
+    await Promise.allSettled(PRECACHE.map(u => c.add(u).catch(err => {
+      console.warn("precache failed:", u, err); throw err;
+    })));
     self.skipWaiting();
   })());
 });
@@ -25,26 +30,27 @@ self.addEventListener("activate", e => {
 self.addEventListener("fetch", e => {
   const req = e.request;
   if (req.method !== "GET") return;
-  // Кешируем/перехватываем ТОЛЬКО свой origin (оболочка приложения).
-  // Запросы к Supabase (REST/Realtime) и CDN-модули идут напрямую в сеть —
-  // иначе ignoreSearch:true отдавал бы один кеш на разные API-запросы.
+  // Перехватываем ТОЛЬКО свой origin (оболочка приложения).
+  // Запросы к Supabase (REST/Realtime/Auth) и CDN-модули идут напрямую в сеть.
   if (new URL(req.url).origin !== self.location.origin) return;
   e.respondWith((async () => {
     const cache = await caches.open(CACHE);
-    const cached = await cache.match(req, { ignoreSearch: true });
-    const fetching = fetch(req).then(res => {
-      if (res && res.status === 200 && (res.type === "basic" || res.type === "cors")) {
-        cache.put(req, res.clone()).catch(() => {});
+    try {
+      // network-first: всегда пробуем свежую версию
+      const fresh = await fetch(req);
+      if (fresh && fresh.status === 200 && (fresh.type === "basic" || fresh.type === "cors")) {
+        cache.put(req, fresh.clone()).catch(() => {});
       }
-      return res;
-    }).catch(() => null);
-    if (cached) { fetching; return cached; }
-    const fresh = await fetching;
-    if (fresh) return fresh;
-    if (req.mode === "navigate") {
-      const html = await cache.match("./vahtahoz.html");
-      if (html) return html;
+      return fresh;
+    } catch (_) {
+      // офлайн / сеть недоступна → отдаём из кэша
+      const cached = await cache.match(req, { ignoreSearch: true });
+      if (cached) return cached;
+      if (req.mode === "navigate") {
+        const html = await cache.match("./vahtahoz.html");
+        if (html) return html;
+      }
+      return new Response("Оффлайн", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } });
     }
-    return new Response("Оффлайн", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } });
   })());
 });
