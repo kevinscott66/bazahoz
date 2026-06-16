@@ -155,6 +155,7 @@ if(typeof structuredClone!=="function"){
 
 /* ---------- Storage ---------- */
 const STORE_KEY = "vahtahoz:v1";
+const JOURNAL_KEYS = ["receipt","issue","writeoff","order"];  // виды журналов движений
 /* Задачи/планы — ОБЩИЕ для всех баз устройства (у хоза одно расписание на обе базы).
    Храним отдельно от per-base состояния и накладываем на state.tasks при загрузке. */
 const TASKS_KEY = "vahtahoz:tasks";
@@ -219,7 +220,7 @@ function saveState(){
     if(e && (e.name==="QuotaExceededError" || e.code===22)){
       if(Array.isArray(state.log) && state.log.length>200) state.log = state.log.slice(0,200);
       if(state.journals){
-        for(const k of ["receipt","issue","writeoff","order"]){
+        for(const k of JOURNAL_KEYS){
           if(Array.isArray(state.journals[k]) && state.journals[k].length>500)
             state.journals[k] = state.journals[k].slice(-500);
         }
@@ -510,7 +511,7 @@ function validateImport(obj){
   if(obj.log!==undefined   && !Array.isArray(obj.log))   throw new Error("поле log не массив");
   if(obj.journals!==undefined){
     if(typeof obj.journals!=="object" || Array.isArray(obj.journals)) throw new Error("journals не объект");
-    for(const k of ["receipt","issue","writeoff","order"]){
+    for(const k of JOURNAL_KEYS){
       if(obj.journals[k]!==undefined && !Array.isArray(obj.journals[k])) throw new Error(`journals.${k} не массив`);
       if(obj.journals[k]===undefined) obj.journals[k] = [];
     }
@@ -541,10 +542,20 @@ function validateImport(obj){
   }
   // нормализуем id у всех записей
   if(obj.stock) sanitizeIds(obj.stock);
-  if(obj.tasks) sanitizeIds(obj.tasks);
+  if(obj.tasks){
+    sanitizeIds(obj.tasks);
+    // чек-листы задач: id пунктов идут в inline-onclick → санитизируем при импорте (XSS)
+    for(const t of obj.tasks){
+      if(t && Array.isArray(t.items)){
+        t.items = t.items.filter(i=>i&&typeof i==="object")
+          .map(i=>({ id:safeId(i.id), text:String(i.text||"").slice(0,200), done:!!i.done }))
+          .filter(i=>i.text);
+      }
+    }
+  }
   if(obj.log)   sanitizeIds(obj.log);
   if(obj.journals){
-    for(const k of ["receipt","issue","writeoff","order"]){
+    for(const k of JOURNAL_KEYS){
       if(obj.journals[k]) sanitizeIds(obj.journals[k]);
     }
   }
@@ -568,7 +579,7 @@ function validateImport(obj){
     }
   }
   if(obj.journals){
-    for(const k of ["receipt","issue","writeoff","order"]){
+    for(const k of JOURNAL_KEYS){
       if(Array.isArray(obj.journals[k])){
         for(const op of obj.journals[k]){ if(op && op.qty!=null) op.qty = roundQty(op.qty); }
       }
@@ -583,7 +594,7 @@ if(!Array.isArray(state.tasks)) state.tasks = [];
 if(!Array.isArray(state.log))   state.log   = [];
 if(!state.journals || typeof state.journals!=="object" || Array.isArray(state.journals))
   state.journals = { receipt:[], issue:[], writeoff:[], order:[] };
-for(const k of ["receipt","issue","writeoff","order"]){
+for(const k of JOURNAL_KEYS){
   if(!Array.isArray(state.journals[k])) state.journals[k] = [];
 }
 /* Типы склада: продукты / хозтовары / инструменты. Единый источник для UI и данных. */
@@ -648,7 +659,7 @@ loadGlobalTasks();
 sanitizeIds(state.stock);
 sanitizeIds(state.tasks);
 sanitizeIds(state.log);
-for(const k of ["receipt","issue","writeoff","order"]) sanitizeIds(state.journals[k]);
+for(const k of JOURNAL_KEYS) sanitizeIds(state.journals[k]);
 // нормализуем чек-листы задач: id пунктов идут в inline-onclick → защита от XSS из импорта
 for(const t of state.tasks){
   if(Array.isArray(t.items)){
@@ -732,7 +743,7 @@ for(const s of state.stock){
       }
       // удаляем дубликат и переадресуем productId в журналах на parent.id
       if(state.journals){
-        for(const k of ["receipt","issue","writeoff","order"]){
+        for(const k of JOURNAL_KEYS){
           for(const op of (state.journals[k]||[])){
             if(op && op.productId===m.id){ op.productId = parent.id; op.productName = baseName; changed = true; }
           }
@@ -746,7 +757,7 @@ for(const s of state.stock){
   }
   if(merged>0 || changed){ saveState(); console.info(`Миграция партий: схлопнуто ${merged} партий "(до …)"`); }
 })();
-for(const k of ["receipt","issue","writeoff","order"]){
+for(const k of JOURNAL_KEYS){
   for(const op of state.journals[k]){
     if(op && op.qty!=null) op.qty = roundQty(op.qty);
   }
@@ -942,7 +953,8 @@ function renderDashboard(){
   const expiringSoon = state.stock.filter(s=>{
     if(s.type!=="product"||!s.expiry) return false;
     if(!inStock(s)) return false; // позиции без остатка не считаем «истекающими»
-    const d = daysLeft(s.expiry); return d!==null && d<=7;
+    // окно ≤14 дней (включая просрочку) — единое со списком склада (фильтры «Просрочка»+«Скоро»)
+    const d = daysLeft(s.expiry); return d!==null && d<=14;
   });
   const lowStock = state.stock.filter(s=> inStock(s) && s.minStock!=="" && s.minStock!=null && Number(s.qty) <= Number(s.minStock));
 
@@ -1691,7 +1703,7 @@ async function deleteOp(kind, opId){
       }
       // если позиция была авто-создана (qty=0 и нет других журнальных записей) — предложить удалить
       if(product.qty===0){
-        const hasOther = ["receipt","issue","writeoff","order"].some(k=>
+        const hasOther = JOURNAL_KEYS.some(k=>
           (state.journals[k]||[]).some(r=>r.productId===product.id && r.id!==opId)
         );
         if(!hasOther && await confirmSheet(`«${product.name}» на складе = 0 и больше не упоминается. Удалить позицию?`,{yes:"Удалить",no:"Оставить"})){
@@ -1872,7 +1884,7 @@ async function saveOpEdit(kind, opId){
   // если старый продукт после отвязки/перепривязки осиротел (qty=0 и больше нигде не упоминается) —
   // спрашиваем, а не удаляем тихо: позиция может быть каталожной (minStock/категория ценны)
   if(oldProd && oldProd!==newProd && Number(oldProd.qty||0)===0 && !hasBatches(oldProd)){
-    const hasOther = ["receipt","issue","writeoff","order"].some(k=>
+    const hasOther = JOURNAL_KEYS.some(k=>
       (state.journals[k]||[]).some(r=>r.productId===oldProd.id && r.id!==op.id)
     );
     if(!hasOther && await confirmSheet(`«${oldProd.name}» на складе = 0 и больше не упоминается. Удалить позицию?`,{yes:"Удалить",no:"Оставить"})){
@@ -2250,7 +2262,7 @@ async function deleteBatch(itemId, batchId){
   if(!await confirmSheet(`Удалить партию ${fmtQty(b.qty)} ${it.unit||""}${b.location?` (📍 ${b.location})`:""}${b.expiry?` (⏰ ${fmtDate(b.expiry)})`:""}?`,{danger:true,yes:"Удалить"})) return;
   // помечаем осиротевшие журнальные записи — чтобы editOp по ним выдавал предупреждение
   let orphans = 0;
-  for(const k of ["receipt","issue","writeoff","order"]){
+  for(const k of JOURNAL_KEYS){
     for(const op of (state.journals[k]||[])){
       if(op && op.batchId===batchId){
         op.batchId = ""; orphans++;
@@ -2271,7 +2283,7 @@ async function deleteStock(id){
   state.stock = state.stock.filter(s=>s.id!==id);
   // каскадом чистим связанные записи в журналах, чтобы не оставалось «висячих» ссылок
   if(state.journals){
-    ["receipt","issue","writeoff","order"].forEach(k=>{
+    JOURNAL_KEYS.forEach(k=>{
       if(Array.isArray(state.journals[k])){
         state.journals[k] = state.journals[k].filter(op=> op.productId!==id);
       }
@@ -2323,7 +2335,7 @@ async function renameLocation(type, oldName){
     for(const b of (s.batches||[])) if((b.location||"")===oldName){ b.location = newName; touched++; }
     if(hasBatches(s)) syncItemFromBatches(s);
   }
-  for(const k of ["receipt","issue","writeoff","order"]){
+  for(const k of JOURNAL_KEYS){
     for(const op of (state.journals[k]||[])){
       if(op && op.batchLocation===oldName){ op.batchLocation = newName; touched++; }
     }
@@ -2946,7 +2958,7 @@ function importData(ev){
         merged.log   = mergeById(merged.log||[],   obj.log||[]);
         if(obj.journals){
           merged.journals = merged.journals || { receipt:[], issue:[], writeoff:[], order:[] };
-          ["receipt","issue","writeoff","order"].forEach(k=>{
+          JOURNAL_KEYS.forEach(k=>{
             merged.journals[k] = mergeById(merged.journals[k]||[], obj.journals[k]||[]);
           });
         }
@@ -3329,7 +3341,7 @@ async function cloudActivate(cid){
     const cloudEmpty = !count;
     // решение «выгружать» — по складу/журналам (задачи не синкаются и тут не учитываются)
     const localHasData = (state.stock&&state.stock.length) ||
-      ["receipt","issue","writeoff","order"].some(k=>(state.journals?.[k]||[]).length);
+      JOURNAL_KEYS.some(k=>(state.journals?.[k]||[]).length);
     if((dirty || (cloudEmpty && localHasData)) && perm && perm.can_edit_stock){
       await cloudPushNow();                   // локальное — источник (первый раз или были оффлайн-правки)
       localStorage.removeItem(cloudDirtyKey(cid));
@@ -3409,7 +3421,7 @@ async function cloudPushNow(){
       }
       // журналы
       const jrows=[]; const jids=new Set();
-      for(const k of ["receipt","issue","writeoff","order"]) for(const op of (state.journals?.[k]||[])){ jrows.push({id:op.id,base_id:cid,kind:k,data:op}); jids.add(op.id); }
+      for(const k of JOURNAL_KEYS) for(const op of (state.journals?.[k]||[])){ jrows.push({id:op.id,base_id:cid,kind:k,data:op}); jids.add(op.id); }
       const { data:cj } = await sb.from("journal_entries").select("id").eq("base_id",cid);
       // та же защита для журналов
       if(jrows.length===0 && (cj||[]).length>0){
