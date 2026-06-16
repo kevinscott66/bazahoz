@@ -1,5 +1,5 @@
 /* ВахтаХоз service worker — stale-while-revalidate + offline fallback */
-const CACHE = "vahtahoz-v49-skip-label";
+const CACHE = "vahtahoz-v50-split-xlsx";
 const PRECACHE = [
   "./vahtahoz.html",
   "./manifest.webmanifest",
