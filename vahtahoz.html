@@ -171,6 +171,8 @@ if(typeof structuredClone!=="function"){
 /* ---------- Storage ---------- */
 const STORE_KEY = "vahtahoz:v1";
 const JOURNAL_KEYS = ["receipt","issue","writeoff","order"];  // виды журналов движений
+// свежий пустой набор журналов (каждый вызов — новый объект, безопасно для присваивания в state)
+function emptyJournals(){ return Object.fromEntries(JOURNAL_KEYS.map(k=>[k,[]])); }
 /* Задачи/планы — ОБЩИЕ для всех баз устройства (у хоза одно расписание на обе базы).
    Храним отдельно от per-base состояния и накладываем на state.tasks при загрузке. */
 const TASKS_KEY = "vahtahoz:tasks";
@@ -206,7 +208,7 @@ const defaultState = {
     ]
   },
   pomodoro: { phase:"idle", endAt:null, cycles:0 },
-  journals: { receipt:[], issue:[], writeoff:[], order:[] },
+  journals: emptyJournals(),
   locations: {
     product: ["Склад А","Склад Б","Холодильник","Ларь","Склад В","Кухня"],
     household: ["Красный жилой болк","Склад В","Баня","Кунг","Болк хозрабочего"],
@@ -349,7 +351,7 @@ function switchProfile(toId){
 async function addProfile(){
   const name = await promptSheet("Название новой базы", "", {title:"Новая база"});
   if(name===null) return;
-  const nm = String(name).replace(/[<>'"\\&\r\n]/g,"").trim().slice(0,40);
+  const nm = cleanName40(name);
   if(!nm){ toast("Пустое название"); return; }
   if(profiles.list.some(x=>x.name.toLowerCase()===nm.toLowerCase())){ toast("База с таким именем уже есть"); return; }
   const init = await chooseSheet(
@@ -375,7 +377,7 @@ async function renameProfile(id){
   const p = profiles.list.find(x=>x.id===id); if(!p) return;
   const name = await promptSheet(`Переименовать «${p.name}»`, p.name, {title:"Переименовать базу"});
   if(name===null) return;
-  const nm = String(name).replace(/[<>'"\\&\r\n]/g,"").trim().slice(0,40);
+  const nm = cleanName40(name);
   if(!nm || nm===p.name) return;
   if(profiles.list.some(x=>x.id!==id && x.name.toLowerCase()===nm.toLowerCase())){ toast("Имя занято"); return; }
   p.name = nm;
@@ -442,6 +444,8 @@ const fmtDate = (s) => { if(!s) return "—"; const [y,m,d]=s.split("-"); return
 const daysLeft = (s) => { if(!s) return null; const a=new Date(s+"T00:00:00"); const b=new Date(todayStr()+"T00:00:00"); if(isNaN(a)||isNaN(b)) return null; return Math.round((a-b)/86400000); };
 // сортировка партий «по ближайшему сроку»: пустой срок уходит в конец
 const byExpiry = (a,b)=>(a.expiry||"9999").localeCompare(b.expiry||"9999");
+// разбор числа из поля ввода: запятая → точка, пусто/мусор → 0 (как и было во всех формах)
+const parseNum = (v)=> Number(String(v==null?"":v).replace(",","."));
 const esc = (s) => (s??"").toString().replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
 /* Округление количеств: устраняет накопление ошибок плавающей точки (0.1+0.2=0.30000000000000004).
@@ -516,6 +520,9 @@ function finalizeBatchMutation(it){
 const SAFE_ID = /^[A-Za-z0-9_\-]{1,64}$/;
 const safeId = (v) => (typeof v==="string" && SAFE_ID.test(v)) ? v : uid();
 const cleanCatName = (s) => (typeof s==="string") ? s.replace(/[<>'"\\\r\n]/g,"").slice(0,40).trim() : "";
+// единый санитайзер коротких имён (места хранения, имена баз и т.п.): убираем опасные символы, ≤40
+function cleanName40(s){ return String(s).replace(/[<>'"\\&\r\n]/g,"").trim().slice(0,40); }
+function hasBadChars(s){ return hasBadChars(s); }
 function sanitizeIds(arr){
   if(!Array.isArray(arr)) return [];
   for(const it of arr){ if(it && typeof it==="object") it.id = safeId(it.id); }
@@ -542,7 +549,7 @@ function validateImport(obj){
   }
   if(obj.locations!==undefined){
     if(typeof obj.locations!=="object" || Array.isArray(obj.locations)) throw new Error("locations не объект");
-    const _cleanLoc = s => String(s).replace(/[<>'"\\&\r\n]/g,"").trim().slice(0,40);
+    const _cleanLoc = cleanName40;
     for(const k of STOCK_TYPE_KEYS){
       if(obj.locations[k]!==undefined && !Array.isArray(obj.locations[k])) throw new Error(`locations.${k} не массив`);
       if(Array.isArray(obj.locations[k])) obj.locations[k] = [...new Set(obj.locations[k].map(_cleanLoc).filter(Boolean))];
@@ -612,7 +619,7 @@ if(!Array.isArray(state.stock)) state.stock = [];
 if(!Array.isArray(state.tasks)) state.tasks = [];
 if(!Array.isArray(state.log))   state.log   = [];
 if(!state.journals || typeof state.journals!=="object" || Array.isArray(state.journals))
-  state.journals = { receipt:[], issue:[], writeoff:[], order:[] };
+  state.journals = emptyJournals();
 for(const k of JOURNAL_KEYS){
   if(!Array.isArray(state.journals[k])) state.journals[k] = [];
 }
@@ -667,7 +674,7 @@ for(const k of STOCK_TYPE_KEYS){
   if(!Array.isArray(state.locations[k]) || !state.locations[k].length) state.locations[k] = (DEFAULT_LOCATIONS[k]||[]).slice();
 }
 // чистим дубликаты, пустоты и опасные символы (XSS-страховка для inline-onclick)
-const cleanLoc = s => String(s).replace(/[<>'"\\&\r\n]/g,"").trim().slice(0,40);
+const cleanLoc = cleanName40;
 for(const k of STOCK_TYPE_KEYS){
   state.locations[k] = [...new Set(state.locations[k].map(cleanLoc).filter(Boolean))];
 }
@@ -1557,7 +1564,7 @@ function saveOp(kind){
   const body = document.getElementById("sheetBody");
   const pid = body.querySelector("#opProdId").value;
   const manualName = body.querySelector("#opName").value.trim();
-  const qty = Number((body.querySelector("#opQty").value||"0").replace(",","."));
+  const qty = parseNum(body.querySelector("#opQty").value);
   const unit = body.querySelector("#opUnit").value;
   const note = body.querySelector("#opNote").value.trim();
   if(!qty || qty<=0){ toast("Укажи количество"); return; }
@@ -1740,8 +1747,9 @@ async function deleteOp(kind, opId){
 function editOp(kind, opId){
   const op = (state.journals[kind]||[]).find(o=>o.id===opId);
   if(!op) return;
-  // блок: зеркальная запись принятого заказа — редактировать через order, иначе рассинхрон
-  if(kind==="receipt" && (op.note||"").startsWith("Из заказа")){
+  // блок: зеркальная запись принятого заказа — редактировать через order, иначе рассинхрон.
+  // Определяем по связи receiptId (надёжно), а не по тексту примечания (его можно изменить).
+  if(kind==="receipt" && (state.journals.order||[]).some(o=>o.receiptId===op.id)){
     toast("Эта запись из заказа — редактируйте сам заказ во вкладке «Заказы»");
     return;
   }
@@ -1809,7 +1817,7 @@ async function saveOpEdit(kind, opId){
   const dtVal = body.querySelector("#eopTs").value;
   const newProdId = body.querySelector("#eopProdId").value;
   const newName = body.querySelector("#eopName").value.trim();
-  const newQty = Number((body.querySelector("#eopQty").value||"0").replace(",","."));
+  const newQty = parseNum(body.querySelector("#eopQty").value);
   const newUnit = body.querySelector("#eopUnit").value;
   const newNote = body.querySelector("#eopNote").value.trim();
   if(!Number.isFinite(newQty) || newQty<=0){ toast("Количество должно быть > 0"); return; }
@@ -2015,13 +2023,13 @@ async function quickAdjust(id, sign){
         if(locVal===null) return;
         const val = await promptSheet(`${it.name}\n${label}`, "1", {numeric:true,title});
         if(val===null) return;
-        const n = roundQty(Number((val||"").replace(",",".")));
+        const n = roundQty(parseNum(val));
         if(!Number.isFinite(n) || n<=0){ toast("Не число"); return; }
-        const newB = { id:uid(), qty:n, expiry:expVal.trim(), location:locVal.replace(/[<>'"\\&\r\n]/g,"").trim().slice(0,40), note:"", createdAt:new Date().toISOString() };
+        const newB = { id:uid(), qty:n, expiry:expVal.trim(), location:cleanName40(locVal), note:"", createdAt:new Date().toISOString() };
         it.batches.push(newB);
         syncItemFromBatches(it);
         state.journals.receipt = state.journals.receipt || [];
-        state.journals.receipt.unshift({ id:uid(), ts:new Date().toISOString(), productId:it.id, productName:it.name, qty:n, unit:it.unit||"", note:`Новая партия${newB.expiry?` (срок ${fmtDate(newB.expiry)})`:""}${newB.location?` в «${newB.location}»`:""}` });
+        state.journals.receipt.unshift({ id:uid(), ts:new Date().toISOString(), productId:it.id, productName:it.name, qty:n, unit:it.unit||"", batchId:newB.id, batchLocation:newB.location||"", batchExpiry:newB.expiry||"", note:`Новая партия${newB.expiry?` (срок ${fmtDate(newB.expiry)})`:""}${newB.location?` в «${newB.location}»`:""}` });
         logOp("IN", `${it.name} +${fmtQty(n)} ${it.unit||""} [новая партия]`);
         saveState(); render(); return;
       }
@@ -2041,7 +2049,7 @@ async function quickAdjust(id, sign){
     if(!targetBatch){ toast("Партия не найдена"); return; }
     const val = await promptSheet(`${it.name}\n${label}\n(в партии ${fmtQty(targetBatch.qty)} ${it.unit||""}${targetBatch.location?", 📍 "+targetBatch.location:""})`, "1", {numeric:true,title});
     if(val===null) return;
-    const n = roundQty(Number((val||"").replace(",",".")));
+    const n = roundQty(parseNum(val));
     if(!Number.isFinite(n) || n<=0){ toast("Не число"); return; }
     const nextBatch = roundQty(Number(targetBatch.qty||0) + sign*n);
     if(nextBatch<0){ toast("Не хватает в этой партии"); return; }
@@ -2068,7 +2076,7 @@ async function quickAdjust(id, sign){
   // === LEGACY ВЕТКА (без партий) ===
   const val = await promptSheet(`${it.name}\n${label} (сейчас ${fmtQty(it.qty)} ${it.unit||""})`, "1", {numeric:true,title});
   if(val===null) return;
-  const n = roundQty(Number((val||"").replace(",",".")));
+  const n = roundQty(parseNum(val));
   if(!Number.isFinite(n) || n<=0){ toast("Не число"); return; }
   const next = roundQty(Number(it.qty||0) + sign*n);
   if(next<0){ toast("Не хватает на складе"); return; }
@@ -2149,7 +2157,7 @@ function saveStock(id, type){
   const body = document.getElementById("sheetBody");
   const name = body.querySelector("#sn").value.trim();
   if(!name){ toast("Название обязательно"); return; }
-  const qty = Number((body.querySelector("#sq").value||"0").replace(",","."));
+  const qty = parseNum(body.querySelector("#sq").value);
   const unit = body.querySelector("#su").value;
   const minStock = body.querySelector("#sm").value===""?"":Number(body.querySelector("#sm").value.replace(",","."));
   const expiry = body.querySelector("#se")?.value || "";
@@ -2204,7 +2212,7 @@ function openBatchAdd(id){
 function saveBatch(id){
   const body = document.getElementById("sheetBody");
   const it = state.stock.find(s=>s.id===id); if(!it){ closeSheet(); return; }
-  const qty = roundQty(Number((body.querySelector("#bq").value||"0").replace(",",".")));
+  const qty = roundQty(parseNum(body.querySelector("#bq").value));
   const expiry = body.querySelector("#be").value || "";
   const location = body.querySelector(".chip.active[data-loc]")?.dataset.loc || "";
   const note = body.querySelector("#bnote")?.value.trim() || "";
@@ -2221,7 +2229,7 @@ function saveBatch(id){
   const newB = { id:uid(), qty, expiry, location, note, createdAt:new Date().toISOString() };
   it.batches.push(newB);
   syncItemFromBatches(it);
-  state.journals = state.journals || { receipt:[], issue:[], writeoff:[], order:[] };
+  state.journals = state.journals || emptyJournals();
   state.journals.receipt = state.journals.receipt || [];
   state.journals.receipt.unshift({
     id: uid(), ts: new Date().toISOString(), productId: it.id, productName: it.name,
@@ -2324,7 +2332,7 @@ async function addLocation(type){
   const name = String(val).trim();
   if(!name){ toast("Пустое название"); return; }
   if(name.length>40){ toast("Слишком длинно (≤40 символов)"); return; }
-  if(/[<>'"\\&\r\n]/.test(name)){ toast("Нельзя символы < > ' \" \\ &"); return; }
+  if(hasBadChars(name)){ toast("Нельзя символы < > ' \" \\ &"); return; }
   const list = state.locations[type] || [];
   if(list.includes(name)){ toast("Уже есть"); return; }
   state.locations[type] = [...list, name];
@@ -2338,7 +2346,7 @@ async function renameLocation(type, oldName){
   const newName = String(val).trim();
   if(!newName || newName===oldName) return;
   if(newName.length>40){ toast("Слишком длинно"); return; }
-  if(/[<>'"\\&\r\n]/.test(newName)){ toast("Нельзя символы < > ' \" \\ &"); return; }
+  if(hasBadChars(newName)){ toast("Нельзя символы < > ' \" \\ &"); return; }
   const list = state.locations[type] || [];
   if(list.includes(newName)){ toast("Такое место уже есть"); return; }
   state.locations[type] = list.map(x => x===oldName ? newName : x);
@@ -2467,7 +2475,7 @@ function addCategory(type){
   if(!inp) return;
   const v = inp.value.trim(); if(!v) return;
   if(v.length>40){ toast("Слишком длинно (≤40 символов)"); return; }
-  if(/[<>'"\\&\r\n]/.test(v)){ toast("Нельзя символы < > ' \" \\ &"); return; }
+  if(hasBadChars(v)){ toast("Нельзя символы < > ' \" \\ &"); return; }
   if(state.categories[type].includes(v)){ toast("Уже есть"); return; }
   state.categories[type].push(v);
   saveState(); openCategoriesEdit(); render();
@@ -2807,7 +2815,7 @@ async function importAllProfiles(payload){
     let st;
     try{ st = validateImport(structuredClone(p.state)); }
     catch(e){ console.warn("Пропущена база", p.name, e); continue; }
-    norm.push({ name: String(p.name||"База").replace(/[<>'"\\&\r\n]/g,"").trim().slice(0,40) || "База", state: st });
+    norm.push({ name: cleanName40(p.name||"База") || "База", state: st });
   }
   if(!norm.length){ toast("Не удалось прочитать базы из файла"); return; }
 
@@ -2975,7 +2983,7 @@ function importData(ev){
       if(mode==="replace"){
         merged.tasks = obj.tasks||[];
         merged.log = obj.log||[];
-        merged.journals = obj.journals || { receipt:[], issue:[], writeoff:[], order:[] };
+        merged.journals = obj.journals || emptyJournals();
         merged.checklists = obj.checklists || merged.checklists;
         merged.theme = obj.theme || base.theme;
         merged.pomodoro = obj.pomodoro || merged.pomodoro;
@@ -2988,7 +2996,7 @@ function importData(ev){
         merged.tasks = mergeById(merged.tasks||[], obj.tasks||[]);
         merged.log   = mergeById(merged.log||[],   obj.log||[]);
         if(obj.journals){
-          merged.journals = merged.journals || { receipt:[], issue:[], writeoff:[], order:[] };
+          merged.journals = merged.journals || emptyJournals();
           JOURNAL_KEYS.forEach(k=>{
             merged.journals[k] = mergeById(merged.journals[k]||[], obj.journals[k]||[]);
           });
@@ -3521,7 +3529,7 @@ async function cloudPull(cid){
       return s;
     });
     const { data:jr } = await sb.from("journal_entries").select("*").eq("base_id",cid);
-    const J={receipt:[],issue:[],writeoff:[],order:[]};
+    const J=emptyJournals();
     (jr||[]).forEach(r=>{ if(J[r.kind]) J[r.kind].push({ ...(r.data||{}), id:safeId(r.id) }); });
     for(const k in J) J[k].sort((a,b)=>(b.ts||"").localeCompare(a.ts||""));
     state.journals = J;
