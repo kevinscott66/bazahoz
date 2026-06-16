@@ -1037,7 +1037,8 @@ let taskFilter = { cat:"Все", showDone:false };
 
 // порядок задач: дата (daysLeft) → время-якорь → ручной order (стрелки ↑/↓) → приоритет
 function taskCompare(a,b){
-  const da = a.due?daysLeft(a.due):999, db=b.due?daysLeft(b.due):999;
+  // невалидная/пустая дата → в конец (999), чтобы da-db не давало NaN и сортировка была стабильной
+  const da = (a.due && daysLeft(a.due)!=null)?daysLeft(a.due):999, db=(b.due && daysLeft(b.due)!=null)?daysLeft(b.due):999;
   if(da!==db) return da-db;
   const ta = a.time||"99:99", tb = b.time||"99:99";
   if(ta!==tb) return ta<tb?-1:1;
@@ -1093,7 +1094,7 @@ function taskRow(t, opts){
   return `
     <div class="card ${t.done?"opacity-60":""}">
       <div class="flex items-start gap-2">
-        <button class="mt-1" onclick="toggleTask('${t.id}')" aria-label="done">
+        <button class="mt-1" onclick="toggleTask('${t.id}')" aria-label="Отметить выполненной">
           <span class="inline-block w-8 h-8 rounded-full border-2 ${t.done?"bg-green-600 border-green-600":"border-gray-500"}">
             ${t.done?'<span class="block text-white text-center leading-7">✓</span>':""}
           </span>
@@ -1108,8 +1109,8 @@ function taskRow(t, opts){
           </div>
         </div>
         ${showMove?`<div class="flex flex-col gap-1">
-          <button class="btn btn-ghost px-2 py-0" onclick="moveTask('${t.id}',-1)" aria-label="up">▲</button>
-          <button class="btn btn-ghost px-2 py-0" onclick="moveTask('${t.id}',1)" aria-label="down">▼</button>
+          <button class="btn btn-ghost px-2 py-0" onclick="moveTask('${t.id}',-1)" aria-label="Поднять выше">▲</button>
+          <button class="btn btn-ghost px-2 py-0" onclick="moveTask('${t.id}',1)" aria-label="Опустить ниже">▼</button>
         </div>`:""}
       </div>
       ${listBlock}
@@ -1463,7 +1464,7 @@ function renderJournal(kind){
     const locBadge = op.batchLocation ? `<span class="badge badge-gray">📍 ${esc(op.batchLocation)}</span>` : "";
     const expBadge = op.batchExpiry ? `<span class="badge badge-gray">⏰ ${fmtDate(op.batchExpiry)}</span>` : "";
     // зеркальные записи из принятого заказа: редактировать нельзя — это рассинхронизирует с order; удалять можно (deleteOp умеет)
-    const linkedToOrder = kind==="receipt" && (op.note||"").startsWith("Из заказа");
+    const linkedToOrder = kind==="receipt" && (state.journals.order||[]).some(o=>o.receiptId===op.id);
     const receiveBtn = (kind==="order" && op.status!=="received")
       ? `<button class="btn btn-success" onclick="orderReceive('${op.id}')">Принять на склад</button>`
       : "";
@@ -2893,10 +2894,11 @@ function importData(ev){
       } else {
         // двухпроходный матчинг: строгий (type|cat|name), затем мягкий (type|name) — чтобы не дублить позиции, у которых где-то пустая категория
         const strict = new Map(); // type|cat|name
-        const loose  = new Map(); // type|name
+        const loose  = new Map(); // type|name -> массив кандидатов
+        const looseAdd = (lk,it)=>{ if(!loose.has(lk)) loose.set(lk,[]); loose.get(lk).push(it); };
         (merged.stock||[]).forEach(it=>{
           strict.set(`${it.type}|${norm(it.category)}|${norm(it.name)}`, it);
-          loose.set(`${it.type}|${norm(it.name)}`, it);
+          looseAdd(`${it.type}|${norm(it.name)}`, it);
         });
         let added=0, updated=0;
         (obj.stock||[]).forEach(src=>{
@@ -2905,9 +2907,10 @@ function importData(ev){
           const looseKey = `${t}|${norm(src.name)}`;
           let found = strict.get(key);
           if(!found){
-            const cand = loose.get(looseKey);
-            // мягкое совпадение разрешаем, только если одна из категорий пустая
-            if(cand && (!norm(cand.category) || !norm(src.category))) found = cand;
+            const cands = loose.get(looseKey) || [];
+            // мягкое совпадение разрешаем, только если одна из категорий пустая;
+            // среди одноимённых выбираем приёмник с пустой категорией, иначе — любого при пустой категории src
+            found = cands.find(c=> !norm(c.category)) || (norm(src.category) ? null : cands[0]) || null;
           }
           if(found){
             // Слияние batches: если у src есть партии — добавляем их к found с новыми id
@@ -2963,7 +2966,7 @@ function importData(ev){
             merged.stock.push({...src, id: src.id || uid()});
             const added_it = merged.stock[merged.stock.length-1];
             strict.set(key, added_it);
-            loose.set(looseKey, added_it);
+            looseAdd(looseKey, added_it);
             added++;
           }
         });
@@ -3037,7 +3040,7 @@ function notify(title, body){
   }catch(e){}
 }
 function pomoStart(){
-  if(state.pomodoro.phase==="idle" || !state.pomodoro.endAt){
+  if(state.pomodoro.phase==="idle" || !state.pomodoro.endAt || state.pomodoro.endAt<=Date.now()){
     state.pomodoro.phase = "work";
     state.pomodoro.endAt = Date.now() + 25*60*1000;
   } else if(state.pomodoro.phase==="paused"){
@@ -3329,9 +3332,20 @@ async function cloudInit(){
   try{
     const sb = await ensureSB();
     const { data } = await sb.auth.getSession();
-    if(data && data.session){ hideLoginGate(); await cloudOnLogin(data.session); }
+    let sess = (data && data.session) || null;
+    const isExpired = s => s && s.expires_at && (s.expires_at*1000 <= Date.now());
+    // access-токен живёт ~1ч; если приложение было закрыто дольше — он протух.
+    // Пока есть refresh-токен — продлеваем сессию, а НЕ выкидываем на экран входа.
+    // Таймаут 6с — на случай зависания auth-клиента в Safari/standalone-PWA.
+    if((!sess || isExpired(sess)) && localStorage.getItem("vahtahoz_auth")){
+      try{
+        const r = await Promise.race([ sb.auth.refreshSession(), new Promise(res=>setTimeout(()=>res(null),6000)) ]);
+        if(r && r.data && r.data.session) sess = r.data.session;
+      }catch(_){}
+    }
+    if(sess && !isExpired(sess)){ hideLoginGate(); await cloudOnLogin(sess); }
     else if(!localStorage.getItem("vahtahoz_login_skipped")){
-      // нет сессии и пользователь не выбрал «работать без облака» → показываем полноэкранный вход
+      // нет живой сессии (и продлить не удалось) и не выбрано «без облака» → показываем вход
       showLoginGate();
     } else { hideLoginGate(); }
   }catch(e){ console.warn("cloudInit", e); }
