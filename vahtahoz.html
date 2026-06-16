@@ -3347,9 +3347,27 @@ function hideLoginGate(){
 }
 async function cloudLogin(email, password){
   const sb = await ensureSB();
-  const { data, error } = await sb.auth.signInWithPassword({ email:(email||"").trim(), password });
-  if(error) throw error;
-  await cloudOnLogin(data.session);
+  // Токен получаем ПРЯМЫМ запросом (быстро, как обычный fetch) — это обходит зависания
+  // auth-клиента Supabase на navigator.locks в Safari/standalone-PWA, из-за которых
+  // штатный signInWithPassword мог висеть. Таймаут запроса — 15с.
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), 15000);
+  let d;
+  try{
+    const r = await fetch(`${CLOUD_CFG.url}/auth/v1/token?grant_type=password`, {
+      method:"POST", signal:ctrl.signal,
+      headers:{ "apikey":CLOUD_CFG.anon, "Content-Type":"application/json" },
+      body: JSON.stringify({ email:(email||"").trim(), password })
+    });
+    d = await r.json().catch(()=>({}));
+    if(!r.ok || !d.access_token) throw new Error(d.error_description || d.msg || "Неверный логин или пароль");
+  }catch(e){
+    if(e.name==="AbortError") throw new Error("превышено время ожидания сети");
+    throw e;
+  }finally{ clearTimeout(t); }
+  // отдаём сессию клиенту (для запросов с правами и realtime); persistSession сохранит её в кэш
+  try{ await sb.auth.setSession({ access_token:d.access_token, refresh_token:d.refresh_token }); }catch(e){ console.warn("setSession", e); }
+  await cloudOnLogin({ access_token:d.access_token, refresh_token:d.refresh_token, user:d.user });
 }
 async function cloudOnLogin(session){
   cloud.session = session;
