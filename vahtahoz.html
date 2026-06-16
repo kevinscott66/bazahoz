@@ -60,6 +60,26 @@
   .light .divider{ background:#e5e7eb; }
   @keyframes pop{0%{transform:scale(.9);opacity:0}100%{transform:scale(1);opacity:1}}
   .pop{ animation:pop .15s ease-out; }
+  /* Утилиты, которые используются в динамической разметке, но не попали в JIT-сборку Tailwind выше */
+  .flex-col{ flex-direction:column; }
+  .gap-1{ gap:.25rem; }
+  .pl-2{ padding-left:.5rem; }
+  .pl-10{ padding-left:2.5rem; }
+  .px-2{ padding-inline:.5rem; }
+  .py-0{ padding-block:0; }
+  .mt-0\.5{ margin-top:.125rem; }
+  .w-5{ width:1.25rem; }
+  .h-5{ height:1.25rem; }
+  .leading-4{ line-height:1rem; }
+  .border-l-2{ border-left-style:solid; border-left-width:2px; }
+  .border-gray-700{ border-color:#374151; }
+  .grayscale{ filter:grayscale(1); }
+  .uppercase{ text-transform:uppercase; }
+  .tracking-wide{ letter-spacing:.025em; }
+  .select-none{ user-select:none; -webkit-user-select:none; }
+  .break-words{ overflow-wrap:break-word; word-break:break-word; }
+  /* видимый фокус только при навигации с клавиатуры — тач/мышь не затрагивает */
+  .btn:focus-visible, .chip:focus-visible, .nav-btn:focus-visible, .input:focus-visible{ outline:2px solid #2563eb; outline-offset:2px; }
 </style>
 <!-- Supabase клиент (self-hosted, тот же origin → кешируется SW, работает офлайн после 1й загрузки) -->
 <script src="./supabase.js"></script>
@@ -75,9 +95,9 @@
       <div id="dateStr" class="text-sm text-gray-400"></div>
     </div>
     <div class="flex items-center gap-2">
-      <button id="syncChip" class="btn btn-ghost text-xs hidden" style="padding:6px 10px" title="Синхронизация с облаком"></button>
-      <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px" title="Сменить базу"></button>
-      <button id="themeBtn" class="btn btn-ghost" style="min-width:52px;padding:0">🌙</button>
+      <button id="syncChip" class="btn btn-ghost text-xs hidden" style="padding:6px 10px" title="Синхронизация с облаком" aria-label="Синхронизация с облаком"></button>
+      <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px;max-width:42vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Сменить базу" aria-label="Сменить базу"></button>
+      <button id="themeBtn" class="btn btn-ghost" style="min-width:52px;padding:0" title="Сменить тему" aria-label="Сменить тему">🌙</button>
     </div>
   </header>
   <!-- тонкий статус-бар синхронизации (под шапкой) -->
@@ -420,6 +440,8 @@ const todayStr = () => {
 };
 const fmtDate = (s) => { if(!s) return "—"; const [y,m,d]=s.split("-"); return `${d}.${m}.${y}`; };
 const daysLeft = (s) => { if(!s) return null; const a=new Date(s+"T00:00:00"); const b=new Date(todayStr()+"T00:00:00"); if(isNaN(a)||isNaN(b)) return null; return Math.round((a-b)/86400000); };
+// сортировка партий «по ближайшему сроку»: пустой срок уходит в конец
+const byExpiry = (a,b)=>(a.expiry||"9999").localeCompare(b.expiry||"9999");
 const esc = (s) => (s??"").toString().replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
 /* Округление количеств: устраняет накопление ошибок плавающей точки (0.1+0.2=0.30000000000000004).
@@ -557,6 +579,8 @@ function validateImport(obj){
   // нормализуем qty: гасим float-эпсилоны на входе, чтобы не тащить мусор из старых экспортов
   if(Array.isArray(obj.stock)){
     for(const s of obj.stock){
+      // type идёт в inline-onclick без esc() → допускаем только известные ключи (иначе XSS из импорта)
+      if(s && !STOCK_TYPE_KEYS.includes(s.type)) s.type = "product";
       if(s && s.qty!=="" && s.qty!=null) s.qty = roundQty(s.qty);
       // нормализуем batches при импорте
       if(s && Array.isArray(s.batches)){
@@ -618,8 +642,6 @@ const DEFAULT_LOCATIONS = {
   household: ["Красный жилой болк","Склад В","Баня","Кунг","Болк хозрабочего"],
   tool: ["Склад В","Кунг","Болк хозрабочего","Мастерская"],
 };
-const DEFAULT_LOCATIONS_PRODUCT = DEFAULT_LOCATIONS.product;   // совместимость
-const DEFAULT_LOCATIONS_HOUSEHOLD = DEFAULT_LOCATIONS.household;
 function getLocations(type){
   const arr = state.locations?.[type];
   return Array.isArray(arr) && arr.length ? arr.slice()
@@ -1013,23 +1035,22 @@ const TASK_CATS = ["Все","Склад","Кухня","База","Баня","О�
 const TASK_PRIOS = ["Низкий","Средний","Высокий"];
 let taskFilter = { cat:"Все", showDone:false };
 
+// порядок задач: дата (daysLeft) → время-якорь → ручной order (стрелки ↑/↓) → приоритет
+function taskCompare(a,b){
+  const da = a.due?daysLeft(a.due):999, db=b.due?daysLeft(b.due):999;
+  if(da!==db) return da-db;
+  const ta = a.time||"99:99", tb = b.time||"99:99";
+  if(ta!==tb) return ta<tb?-1:1;
+  const oa = Number(a.order||0), ob = Number(b.order||0);
+  if(oa!==ob) return oa-ob;
+  return TASK_PRIOS.indexOf(b.priority)-TASK_PRIOS.indexOf(a.priority);
+}
 function renderTasks(){
   const v = document.querySelector('[data-view="tasks"]');
   let list = state.tasks.slice();
   if(taskFilter.cat!=="Все") list = list.filter(t=>t.category===taskFilter.cat);
   if(!taskFilter.showDone) list = list.filter(t=>!t.done);
-  list.sort((a,b)=>{
-    const da = a.due?daysLeft(a.due):999, db=b.due?daysLeft(b.due):999;
-    if(da!==db) return da-db;
-    // время-якорь: если задано время — оно ведёт сортировку внутри дня
-    const ta = a.time||"99:99", tb = b.time||"99:99";
-    if(ta!==tb) return ta<tb?-1:1;
-    // ручной порядок (стрелки ↑/↓): меньше — выше
-    const oa = Number(a.order||0), ob = Number(b.order||0);
-    if(oa!==ob) return oa-ob;
-    const pa = TASK_PRIOS.indexOf(a.priority), pb = TASK_PRIOS.indexOf(b.priority);
-    return pb-pa;
-  });
+  list.sort(taskCompare);
 
   v.innerHTML = `
     <button class="btn btn-primary w-full" onclick="openTaskEdit()">＋ Новая задача</button>
@@ -1106,15 +1127,7 @@ function moveTask(id, dir){
   // иначе сортировка по дате/времени всё равно перетасует независимо от order.
   let list = state.tasks.slice().filter(t=>!t.done);
   if(taskFilter.cat!=="Все") list = list.filter(t=>t.category===taskFilter.cat);
-  list.sort((a,b)=>{
-    const da = a.due?daysLeft(a.due):999, db=b.due?daysLeft(b.due):999;
-    if(da!==db) return da-db;
-    const ta = a.time||"99:99", tb = b.time||"99:99";
-    if(ta!==tb) return ta<tb?-1:1;
-    const oa = Number(a.order||0), ob = Number(b.order||0);
-    if(oa!==ob) return oa-ob;
-    return TASK_PRIOS.indexOf(b.priority)-TASK_PRIOS.indexOf(a.priority);
-  });
+  list.sort(taskCompare);
   const i = list.findIndex(x=>x.id===id);
   const j = i + (dir<0?-1:1);
   if(i<0 || j<0 || j>=list.length){ toast("Дальше двигать некуда"); return; }
@@ -1924,7 +1937,7 @@ function stockRow(it){
     <details class="mt-2" onclick="event.stopPropagation()">
       <summary class="text-xs opacity-70 cursor-pointer select-none">Партии (${bCnt}) ▾</summary>
       <div class="mt-2 space-y-1">
-        ${batchesOf(it).slice().sort((a,b)=>(a.expiry||"9999").localeCompare(b.expiry||"9999")).map(b=>{
+        ${batchesOf(it).slice().sort(byExpiry).map(b=>{
           const d = b.expiry?daysLeft(b.expiry):null;
           const cls = d===null?"badge-gray":(d<0?"badge-red":(d<=3?"badge-red":(d<=14?"badge-yellow":"badge-gray")));
           return `<div class="text-xs flex flex-wrap gap-1 items-center pl-2 border-l-2 border-gray-700">
@@ -1984,7 +1997,7 @@ async function quickAdjust(id, sign){
 
     if(sign>0){
       // приход: выбрать существующую партию или создать новую
-      const opts = batches.slice().sort((a,b)=>(a.expiry||"9999").localeCompare(b.expiry||"9999")).map(b=>({
+      const opts = batches.slice().sort(byExpiry).map(b=>({
         label: `${fmtQty(b.qty)} ${it.unit||""}${b.location?" · 📍 "+b.location:""}${b.expiry?" · ⏰ "+fmtDate(b.expiry):""}`,
         value: b.id, color: "btn-success"
       }));
@@ -2014,7 +2027,7 @@ async function quickAdjust(id, sign){
       targetBatch = batches.find(b=>b.id===choice);
     } else {
       // расход: обязателен выбор партии
-      const opts = batches.filter(b=>roundQty(b.qty||0)>0).slice().sort((a,b)=>(a.expiry||"9999").localeCompare(b.expiry||"9999")).map(b=>({
+      const opts = batches.filter(b=>roundQty(b.qty||0)>0).slice().sort(byExpiry).map(b=>({
         label: `${fmtQty(b.qty)} ${it.unit||""}${b.location?" · 📍 "+b.location:""}${b.expiry?" · ⏰ "+fmtDate(b.expiry):""}`,
         value: b.id, color: kind==="issue"?"btn-danger":"btn-warn"
       }));
@@ -2079,7 +2092,7 @@ function openStockEdit(id, typeDefault){
     <div class="border-t border-gray-700 pt-3">
       <div class="text-sm opacity-70 mb-2">Партии (${bList.length}) — qty/срок/место карточки считаются автоматически</div>
       <div class="space-y-1">
-        ${bList.slice().sort((a,b)=>(a.expiry||"9999").localeCompare(b.expiry||"9999")).map(b=>`
+        ${bList.slice().sort(byExpiry).map(b=>`
           <div class="flex items-center gap-2 text-xs">
             <span class="badge badge-green">${fmtQty(b.qty)} ${esc(it.unit||"")}</span>
             ${b.location?`<span class="badge badge-gray">📍 ${esc(b.location)}</span>`:`<span class="badge badge-gray opacity-50">без места</span>`}
