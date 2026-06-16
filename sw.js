@@ -1,5 +1,5 @@
 /* ВахтаХоз service worker — stale-while-revalidate + offline fallback */
-const CACHE = "vahtahoz-v51-direct-login";
+const CACHE = "vahtahoz-v52-parallel-skip";
 const PRECACHE = [
   "./vahtahoz.html",
   "./manifest.webmanifest",

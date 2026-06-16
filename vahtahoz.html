@@ -3327,19 +3327,19 @@ function showLoginGate(){
   const go = document.getElementById("lgGo"), skip = document.getElementById("lgSkip"),
         em = document.getElementById("lgEmail"), pw = document.getElementById("lgPwd"),
         err = document.getElementById("lgErr");
-  if(go._wired) { try{ em.focus(); }catch(_){}; return; }
-  go._wired = true;
+  if(!go||!skip) return;
   const doLogin = async ()=>{
     const e=(em.value||"").trim(), p=pw.value||"";
     if(!e||!p){ err.textContent="Введите логин и пароль"; return; }
     go.disabled=true; go.textContent="Вход…"; err.textContent="";
-    const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания сети")),35000));
+    const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания сети")),40000));
     try{ await Promise.race([cloudLogin(e,p), timeout]); hideLoginGate(); }
     catch(ex){ go.disabled=false; go.textContent="Войти"; err.textContent="Не удалось войти: "+(ex.message||ex); }
   };
-  go.addEventListener("click", doLogin);
-  pw.addEventListener("keydown", ev=>{ if(ev.key==="Enter") doLogin(); });
-  skip.addEventListener("click", ()=>{ try{ localStorage.setItem("vahtahoz_login_skipped","1"); }catch(_){}; hideLoginGate(); });
+  // прямое присваивание (а не addEventListener) — обработчик гарантированно стоит при каждом показе, без дублей
+  go.onclick = doLogin;
+  pw.onkeydown = ev=>{ if(ev.key==="Enter") doLogin(); };
+  skip.onclick = ()=>{ try{ localStorage.setItem("vahtahoz_login_skipped","1"); }catch(_){}; hideLoginGate(); };
   try{ em.focus(); }catch(_){}
 }
 function hideLoginGate(){
@@ -3351,7 +3351,7 @@ async function cloudLogin(email, password){
   // auth-клиента Supabase на navigator.locks в Safari/standalone-PWA, из-за которых
   // штатный signInWithPassword мог висеть. Таймаут запроса — 15с.
   const ctrl = new AbortController();
-  const t = setTimeout(()=>ctrl.abort(), 15000);
+  const t = setTimeout(()=>ctrl.abort(), 20000);
   let d;
   try{
     const r = await fetch(`${CLOUD_CFG.url}/auth/v1/token?grant_type=password`, {
@@ -3373,10 +3373,15 @@ async function cloudOnLogin(session){
   cloud.session = session;
   const sb = await ensureSB(); const uidv = session.user.id;
   try{
-    const { data:prof } = await sb.from("profiles").select("*").eq("id",uidv).maybeSingle();
-    cloud.profile = prof || { id:uidv, username:session.user.email };
-    const { data:mem } = await sb.from("base_members").select("*"); cloud.members = mem||[];
-    const { data:bs } = await sb.from("bases").select("id,name"); cloud.bases={}; (bs||[]).forEach(b=>cloud.bases[b.id]=b.name);
+    // 3 независимых запроса — ПАРАЛЛЕЛЬНО (последовательно было бы ~3× дольше на медленной сети)
+    const [profR, memR, bsR] = await Promise.all([
+      sb.from("profiles").select("*").eq("id",uidv).maybeSingle(),
+      sb.from("base_members").select("*"),
+      sb.from("bases").select("id,name"),
+    ]);
+    cloud.profile = profR.data || { id:uidv, username:session.user.email };
+    cloud.members = memR.data || [];
+    cloud.bases = {}; (bsR.data||[]).forEach(b=>cloud.bases[b.id]=b.name);
     cloud.ready = true;
     hideLoginGate();                           // успешный вход — прячем полноэкранный гейт
     try{ localStorage.removeItem("vahtahoz_login_skipped"); }catch(e){}
