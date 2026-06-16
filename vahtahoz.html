@@ -3291,10 +3291,12 @@ async function cloudOnLogin(session){
     cloud.ready = true;
     const reloaded = await cloudAutoLink();
     if(reloaded) return;                       // switchProfile перезагрузит страницу
-    const cid = activeCloudId();
-    if(cid) await cloudActivate(cid);
     renderHeader(); render();
     toast(`Облако: ${cloud.profile.username||session.user.email}`);
+    // Тяжёлую синхронизацию (выгрузка/подтягивание сотен позиций) запускаем В ФОНЕ,
+    // НЕ блокируя вход — иначе кнопка «Вход…» висит до конца первой выгрузки.
+    const cid = activeCloudId();
+    if(cid){ setTimeout(()=>{ cloudActivate(cid).catch(e=>console.warn("bg sync",e)); }, 50); }
   }catch(e){ console.warn("cloudOnLogin", e); toast("Ошибка облака: "+(e.message||e)); }
 }
 async function cloudLogout(){
@@ -3398,6 +3400,14 @@ function cloudMaybePush(){
   clearTimeout(cloud.pushTimer);
   cloud.pushTimer = setTimeout(()=>cloudPushNow(), 800);
 }
+// upsert пачками — большой запрос (сотни позиций) на мобильной сети рвётся; чанки надёжнее
+async function cloudUpsertChunked(sb, table, rows, size){
+  size = size || 100;
+  for(let i=0;i<rows.length;i+=size){
+    const { error } = await sb.from(table).upsert(rows.slice(i,i+size));
+    if(error) throw error;
+  }
+}
 async function cloudPushNow(){
   const cid = activeCloudId();
   // на раннем выходе снимаем pushPending (dirty остаётся durable-маркером несинхронизации)
@@ -3419,7 +3429,7 @@ async function cloudPushNow(){
         // порог: не удаляем массово больше, чем остаётся локально (признак сбоя/неполного состояния)
         if(del.length && del.length <= ids.size + 10){ await sb.from("stock_items").delete().in("id",del); }
         else if(del.length){ console.warn("cloudPush: подозрительное массовое удаление склада пропущено", del.length); }
-        if(rows.length) await sb.from("stock_items").upsert(rows);
+        if(rows.length) await cloudUpsertChunked(sb,"stock_items",rows);
         // настройки базы (места/категории) — только вместе с непустым складом
         await sb.from("bases").update({ settings:{ locations:state.locations, categories:state.categories } }).eq("id",cid);
       }
@@ -3435,7 +3445,7 @@ async function cloudPushNow(){
         // тот же порог: журнал в облаке может быть длиннее локального (квота-усечение) — не стираем массово
         if(jdel.length && jdel.length <= jids.size + 10){ await sb.from("journal_entries").delete().in("id",jdel); }
         else if(jdel.length){ console.warn("cloudPush: подозрительное массовое удаление журналов пропущено", jdel.length); }
-        if(jrows.length) await sb.from("journal_entries").upsert(jrows);
+        if(jrows.length) await cloudUpsertChunked(sb,"journal_entries",jrows);
       }
     }
     // ЗАДАЧИ НЕ ВЫГРУЖАЕМ — они общие-локальные (одно расписание на все базы устройства),
