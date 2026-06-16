@@ -125,7 +125,7 @@
     <div style="font-size:56px;line-height:1;margin-bottom:8px">📦</div>
     <div style="font-size:26px;font-weight:800;letter-spacing:.3px">ВахтаХоз</div>
     <div style="font-size:13px;opacity:.65;margin:6px 0 22px">Войдите, чтобы синхронизировать склад</div>
-    <input id="lgEmail" class="input" type="email" inputmode="email" autocomplete="username" placeholder="Логин (email)" style="margin-bottom:10px;text-align:center" />
+    <input id="lgEmail" class="input" type="text" inputmode="email" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username" placeholder="Логин (например worker)" style="margin-bottom:10px;text-align:center" />
     <input id="lgPwd" class="input" type="password" autocomplete="current-password" placeholder="Пароль" style="margin-bottom:14px;text-align:center" />
     <button id="lgGo" class="btn btn-primary" style="width:100%;height:48px;font-size:16px">Войти</button>
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
@@ -3355,12 +3355,15 @@ async function cloudLogin(email, password){
   // штатный signInWithPassword мог висеть. Таймаут запроса — 15с.
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), 20000);
+  // логин можно вводить без домена: «worker» → «worker@bazahoz.app»
+  let em2 = (email||"").trim();
+  if(em2 && !em2.includes("@")) em2 += "@bazahoz.app";
   let d;
   try{
     const r = await fetch(`${CLOUD_CFG.url}/auth/v1/token?grant_type=password`, {
       method:"POST", signal:ctrl.signal,
       headers:{ "apikey":CLOUD_CFG.anon, "Content-Type":"application/json" },
-      body: JSON.stringify({ email:(email||"").trim(), password })
+      body: JSON.stringify({ email:em2, password })
     });
     d = await r.json().catch(()=>({}));
     if(!r.ok || !d.access_token) throw new Error(d.error_description || d.msg || "Неверный логин или пароль");
