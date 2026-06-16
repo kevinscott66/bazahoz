@@ -119,6 +119,20 @@
 <!-- Toast -->
 <div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[80] hidden px-4 py-3 rounded-xl bg-gray-800 text-white text-sm shadow-xl"></div>
 
+<!-- Полноэкранный вход (показывается при первом заходе без сессии; интерфейс скрыт) -->
+<div id="loginGate" class="hidden" style="position:fixed;inset:0;z-index:90;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:28px;background:radial-gradient(120% 90% at 50% 0%, #1e293b 0%, #0b1220 60%);">
+  <div style="width:100%;max-width:360px;text-align:center">
+    <div style="font-size:56px;line-height:1;margin-bottom:8px">📦</div>
+    <div style="font-size:26px;font-weight:800;letter-spacing:.3px">ВахтаХоз</div>
+    <div style="font-size:13px;opacity:.65;margin:6px 0 22px">Войдите, чтобы синхронизировать склад</div>
+    <input id="lgEmail" class="input" type="email" inputmode="email" autocomplete="username" placeholder="Логин (email)" style="margin-bottom:10px;text-align:center" />
+    <input id="lgPwd" class="input" type="password" autocomplete="current-password" placeholder="Пароль" style="margin-bottom:14px;text-align:center" />
+    <button id="lgGo" class="btn btn-primary" style="width:100%;height:48px;font-size:16px">Войти</button>
+    <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
+    <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:13px;opacity:.7">Позже — работать без облака</button>
+  </div>
+</div>
+
 <script id="xlsx-inline">
 /* SheetJS xlsx@0.18.5 inlined for offline */
 /*! xlsx.js (C) 2013-present SheetJS -- http://sheetjs.com */
@@ -3073,6 +3087,8 @@ function pomoTick(){
 
 /* ---------- Expiry notice on open ---------- */
 function expiryNoticeOnOpen(){
+  // не показываем поверх полноэкранного входа
+  const gate=document.getElementById("loginGate"); if(gate && !gate.classList.contains("hidden")) return;
   if(state.lastExpiryNoticeDate===todayStr()) return;
   const expired = state.stock.filter(s=> s.type==="product" && s.expiry && daysLeft(s.expiry)<0 && Number(s.qty||0)>0);
   const soon    = state.stock.filter(s=>{ if(s.type!=="product"||!s.expiry) return false; const d=daysLeft(s.expiry); return d!==null && d>=0 && d<=3; });
@@ -3309,13 +3325,37 @@ async function cloudInit(){
   try{
     const sb = await ensureSB();
     const { data } = await sb.auth.getSession();
-    if(data && data.session){ await cloudOnLogin(data.session); }
-    else if(!localStorage.getItem("vahtahoz_login_shown")){
-      // первый запуск без сессии — сразу предлагаем вход (один раз; потом сессия кэшируется)
-      try{ localStorage.setItem("vahtahoz_login_shown","1"); }catch(e){}
-      if(cloudOnline()) setTimeout(()=>{ try{ cloudLoginPrompt(); }catch(e){} }, 600);
-    }
+    if(data && data.session){ hideLoginGate(); await cloudOnLogin(data.session); }
+    else if(!localStorage.getItem("vahtahoz_login_skipped")){
+      // нет сессии и пользователь не выбрал «работать без облака» → показываем полноэкранный вход
+      showLoginGate();
+    } else { hideLoginGate(); }
   }catch(e){ console.warn("cloudInit", e); }
+}
+/* ---- Полноэкранный логин-гейт ---- */
+function showLoginGate(){
+  const g = document.getElementById("loginGate"); if(!g) return;
+  g.classList.remove("hidden");
+  const go = document.getElementById("lgGo"), skip = document.getElementById("lgSkip"),
+        em = document.getElementById("lgEmail"), pw = document.getElementById("lgPwd"),
+        err = document.getElementById("lgErr");
+  if(go._wired) { try{ em.focus(); }catch(_){}; return; }
+  go._wired = true;
+  const doLogin = async ()=>{
+    const e=(em.value||"").trim(), p=pw.value||"";
+    if(!e||!p){ err.textContent="Введите логин и пароль"; return; }
+    go.disabled=true; go.textContent="Вход…"; err.textContent="";
+    const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания сети")),35000));
+    try{ await Promise.race([cloudLogin(e,p), timeout]); hideLoginGate(); }
+    catch(ex){ go.disabled=false; go.textContent="Войти"; err.textContent="Не удалось войти: "+(ex.message||ex); }
+  };
+  go.addEventListener("click", doLogin);
+  pw.addEventListener("keydown", ev=>{ if(ev.key==="Enter") doLogin(); });
+  skip.addEventListener("click", ()=>{ try{ localStorage.setItem("vahtahoz_login_skipped","1"); }catch(_){}; hideLoginGate(); });
+  try{ em.focus(); }catch(_){}
+}
+function hideLoginGate(){
+  const g = document.getElementById("loginGate"); if(g) g.classList.add("hidden");
 }
 async function cloudLogin(email, password){
   const sb = await ensureSB();
@@ -3332,6 +3372,8 @@ async function cloudOnLogin(session){
     const { data:mem } = await sb.from("base_members").select("*"); cloud.members = mem||[];
     const { data:bs } = await sb.from("bases").select("id,name"); cloud.bases={}; (bs||[]).forEach(b=>cloud.bases[b.id]=b.name);
     cloud.ready = true;
+    hideLoginGate();                           // успешный вход — прячем полноэкранный гейт
+    try{ localStorage.removeItem("vahtahoz_login_skipped"); }catch(e){}
     const reloaded = await cloudAutoLink();
     if(reloaded) return;                       // switchProfile перезагрузит страницу
     renderHeader(); render();
@@ -3344,8 +3386,10 @@ async function cloudOnLogin(session){
 }
 async function cloudLogout(){
   try{ if(cloud.channel) await cloud.sb.removeChannel(cloud.channel); }catch(e){}
-  try{ await cloud.sb && cloud.sb.auth.signOut(); }catch(e){}
+  try{ if(cloud.sb) await cloud.sb.auth.signOut(); }catch(e){}   // дожидаемся выхода (был баг приоритета await/&&)
   cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
+  // снимаем флаг «без облака» — при следующем запуске снова покажется вход (нет сессии → гейт)
+  try{ localStorage.removeItem("vahtahoz_login_skipped"); }catch(e){}
   renderHeader(); render(); toast("Выход из облака");
 }
 /* привязываем облачные базы к локальным (по имени) или создаём новые; для одной базы — переключаемся */
@@ -3639,6 +3683,14 @@ applyTheme();
   }catch(e){ console.warn("seed failed",e); }
 })();
 nav("dashboard");
+// СИНХРОННО на старте: если нет сохранённой сессии и пользователь не выбрал «без облака» —
+// сразу показываем полноэкранный вход (интерфейс под ним не виден, без мелькания).
+(function gateEarly(){
+  try{
+    if(localStorage.getItem("vahtahoz_login_skipped")) return;
+    if(!localStorage.getItem("vahtahoz_auth")) showLoginGate();   // нет сессии → гейт
+  }catch(e){}
+})();
 pomoTick();  // чтобы таймер Pomodoro работал в фоне независимо от вкладки
 setTimeout(expiryNoticeOnOpen, 400);
 // восстановление облачной сессии (если был вход) — тихо, не блокирует загрузку

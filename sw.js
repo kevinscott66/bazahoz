@@ -1,5 +1,5 @@
 /* ВахтаХоз service worker — stale-while-revalidate + offline fallback */
-const CACHE = "vahtahoz-v47-safari-login-log";
+const CACHE = "vahtahoz-v48-login-gate";
 const PRECACHE = [
   "./vahtahoz.html",
   "./manifest.webmanifest",
