@@ -147,7 +147,7 @@
     <div style="font-size:13px;opacity:.65;margin:6px 0 22px">Войдите, чтобы синхронизировать склад</div>
     <input id="lgEmail" class="input" type="text" inputmode="email" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username" placeholder="Логин (например worker)" style="margin-bottom:10px;text-align:center" />
     <input id="lgPwd" class="input" type="password" autocomplete="current-password" placeholder="Пароль" style="margin-bottom:14px;text-align:center" />
-    <button id="lgGo" class="btn btn-primary" style="width:100%;height:48px;font-size:16px">Войти</button>
+    <button id="lgGo" class="btn btn-primary" style="width:100%;font-size:16px">Войти</button>
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
@@ -446,6 +446,8 @@ const daysLeft = (s) => { if(!s) return null; const a=new Date(s+"T00:00:00"); c
 const byExpiry = (a,b)=>(a.expiry||"9999").localeCompare(b.expiry||"9999");
 // разбор числа из поля ввода: запятая → точка, пусто/мусор → 0 (как и было во всех формах)
 const parseNum = (v)=> Number(String(v==null?"":v).replace(",","."));
+// русское склонение: plural(2,"место","места","мест") → "места"
+const plural = (n,one,few,many)=>{ const a=Math.abs(n)%100, b=a%10; if(a>10&&a<20) return many; if(b>1&&b<5) return few; if(b===1) return one; return many; };
 const esc = (s) => (s??"").toString().replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
 /* Округление количеств: устраняет накопление ошибок плавающей точки (0.1+0.2=0.30000000000000004).
@@ -522,7 +524,7 @@ const safeId = (v) => (typeof v==="string" && SAFE_ID.test(v)) ? v : uid();
 const cleanCatName = (s) => (typeof s==="string") ? s.replace(/[<>'"\\\r\n]/g,"").slice(0,40).trim() : "";
 // единый санитайзер коротких имён (места хранения, имена баз и т.п.): убираем опасные символы, ≤40
 function cleanName40(s){ return String(s).replace(/[<>'"\\&\r\n]/g,"").trim().slice(0,40); }
-function hasBadChars(s){ return hasBadChars(s); }
+function hasBadChars(s){ return /[<>'"\\&\r\n]/.test(String(s)); }
 function sanitizeIds(arr){
   if(!Array.isArray(arr)) return [];
   for(const it of arr){ if(it && typeof it==="object") it.id = safeId(it.id); }
@@ -1390,7 +1392,7 @@ function renderStock(){
       <button class="chip" onclick="openLocationsEdit()">📍 Места</button>
     </div>
 
-    <input class="input" id="stockSearchInp" placeholder="Поиск..." value="${esc(stockSearch)}" autocomplete="off" />
+    <input class="input" id="stockSearchInp" placeholder="Поиск по складу…" value="${esc(stockSearch)}" autocomplete="off" />
 
     <div id="stockListBox"></div>
   `;
@@ -1516,7 +1518,7 @@ function openOpEdit(kind){
     <div class="space-y-3">
       <div>
         <div class="text-sm opacity-70 mb-1">Поиск позиции на складе</div>
-        <input class="input" id="opSearch" placeholder="Начни вводить название..." autocomplete="off" />
+        <input class="input" id="opSearch" placeholder="Поиск по складу…" autocomplete="off" />
         <div id="opList" class="mt-2 space-y-1 max-h-60 overflow-y-auto" style="border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:4px"></div>
         <div class="text-xs opacity-60 mt-1" id="opSel">Ничего не выбрано. Можно ввести название вручную ниже.</div>
         <input type="hidden" id="opProdId" value="" />
@@ -1767,7 +1769,7 @@ function editOp(kind, opId){
       </div>
       <div>
         <div class="text-sm opacity-70 mb-1">Сменить позицию (опц.)</div>
-        <input class="input" id="eopSearch" placeholder="Поиск по складу..." autocomplete="off" />
+        <input class="input" id="eopSearch" placeholder="Поиск по складу…" autocomplete="off" />
         <div id="eopList" class="mt-2 space-y-1 max-h-48 overflow-y-auto" style="border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:4px"></div>
         <div class="text-xs opacity-60 mt-1" id="eopSel">Текущая: ${esc(op.productName)}${op.productId?" (привязана к складу)":" (вручную)"}</div>
         <input type="hidden" id="eopProdId" value="${esc(op.productId||"")}" />
