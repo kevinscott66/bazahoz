@@ -3496,7 +3496,9 @@ function cloudLoginPrompt(){
     const em=body.querySelector("#clEmail").value, pw=body.querySelector("#clPwd").value;
     if(!em||!pw){ toast("Введи логин и пароль"); return; }
     const btn=body.querySelector("#clGo"); btn.disabled=true; btn.textContent="Вход…";
-    try{ await cloudLogin(em,pw); closeSheet(); }
+    // таймаут: если сеть зависла, кнопка не должна висеть вечно
+    const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания сети")), 25000));
+    try{ await Promise.race([cloudLogin(em,pw), timeout]); closeSheet(); }
     catch(e){ btn.disabled=false; btn.textContent="Войти"; toast("Не удалось войти: "+(e.message||e)); }
   });
 }

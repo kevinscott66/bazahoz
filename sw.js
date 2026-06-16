@@ -1,5 +1,5 @@
 /* ВахтаХоз service worker — stale-while-revalidate + offline fallback */
-const CACHE = "vahtahoz-v44-login-bg-sync";
+const CACHE = "vahtahoz-v45-login-timeout";
 const PRECACHE = [
   "./vahtahoz.html",
   "./manifest.webmanifest",
