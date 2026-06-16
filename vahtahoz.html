@@ -2604,14 +2604,14 @@ function renderMore(){
 
     <div class="card">
       <div class="font-bold mb-2">📜 Журнал операций</div>
-      ${state.log.length
-        ? `<div class="space-y-1 max-h-72 overflow-y-auto pr-1">${state.log.slice(0,50).map(l=>`
+      ${(()=>{ const _log = visibleLog(); return _log.length
+        ? `<div class="space-y-1 max-h-72 overflow-y-auto pr-1">${_log.slice(0,50).map(l=>`
           <div class="text-sm flex justify-between gap-2 py-1 border-b border-white/5">
             <span>${esc(l.action)} — ${esc(l.detail||"")}</span>
             <span class="opacity-60 shrink-0">${new Date(l.ts).toLocaleString("ru-RU",{hour:"2-digit",minute:"2-digit",day:"2-digit",month:"2-digit"})}</span>
           </div>`).join("")}</div>
           <button class="btn btn-ghost mt-2 w-full" onclick="clearLog()">Очистить журнал</button>`
-        : `<div class="opacity-70 text-sm">Пусто</div>`}
+        : `<div class="opacity-70 text-sm">Пусто</div>`; })()}
     </div>
 
     <div class="card">
@@ -3228,7 +3228,11 @@ async function ensureSB(){
   const lib = window.supabase;
   if(!lib || !lib.createClient) throw new Error("Библиотека облака не загрузилась (нет сети при первом запуске?)");
   cloud.sb = lib.createClient(CLOUD_CFG.url, CLOUD_CFG.anon, {
-    auth:{ persistSession:true, autoRefreshToken:true, storageKey:"vahtahoz_auth" }
+    auth:{
+      persistSession:true, autoRefreshToken:true, storageKey:"vahtahoz_auth",
+      // обход зависания navigator.locks в Safari (вход висел до таймаута): сквозная блокировка
+      lock: async (_name, _timeout, fn) => await fn()
+    }
   });
   return cloud.sb;
 }
@@ -3267,6 +3271,13 @@ function activeMember(){
 }
 const cloudDirtyKey = (cid)=>`vahtahoz_dirty_${cid}`;
 function cloudOnline(){ return navigator.onLine!==false; }
+/* «ограниченный» пользователь — вошёл в облако и НЕ имеет права на задачи (начальник):
+   ему показываем только складскую часть (журнал операций без задач). */
+function isRestrictedUser(){ const m = activeMember(); return !!(m && !m.can_view_tasks); }
+function visibleLog(){
+  if(!isRestrictedUser()) return state.log;
+  return (state.log||[]).filter(l => !String(l.action||"").toUpperCase().startsWith("TASK"));
+}
 
 /* статус-бар синхронизации: syncing | offline | synced | error | hidden */
 let _syncHideT = null;
@@ -3547,7 +3558,7 @@ function cloudLoginPrompt(){
     if(!em||!pw){ toast("Введи логин и пароль"); return; }
     const btn=body.querySelector("#clGo"); btn.disabled=true; btn.textContent="Вход…";
     // таймаут: если сеть зависла, кнопка не должна висеть вечно
-    const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания сети")), 25000));
+    const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания сети")), 35000));
     try{ await Promise.race([cloudLogin(em,pw), timeout]); closeSheet(); }
     catch(e){ btn.disabled=false; btn.textContent="Войти"; toast("Не удалось войти: "+(e.message||e)); }
   });
