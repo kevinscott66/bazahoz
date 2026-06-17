@@ -151,6 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v63</div>
   </div>
 </div>
 
@@ -2641,7 +2642,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · v1</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v63</div>
   `;
   pomoTick();
 }
@@ -3465,7 +3466,8 @@ async function cloudLogin(email, password){
     new Promise(res=>setTimeout(res,8000))
   ]);
 }
-async function cloudOnLogin(session){
+async function cloudOnLogin(session, attempt){
+  attempt = attempt||0;
   cloud.session = session;
   await ensureSB(); const uidv = session.user.id;   // клиент нужен для setSession/realtime; запросы ниже — прямым fetch
   try{
@@ -3494,7 +3496,19 @@ async function cloudOnLogin(session){
     // НЕ блокируя вход — иначе кнопка «Вход…» висит до конца первой выгрузки.
     const cid = activeCloudId();
     if(cid){ setTimeout(()=>{ cloudActivate(cid).catch(e=>console.warn("bg sync",e)); }, 50); }
-  }catch(e){ console.warn("cloudOnLogin", e); toast("Ошибка облака: "+(e.message||e)); }
+  }catch(e){
+    console.warn("cloudOnLogin", e);
+    // Токен валиден → пользователь АУТЕНТИФИЦИРОВАН, даже если профиль/базы не загрузились
+    // (медленная сеть / зависший запрос в standalone-PWA). НЕ показываем «Войти» — помечаем вход
+    // состоявшимся с фолбэком и догружаем данные ретраем (4с/8с/12с).
+    if(!cloud.profile) cloud.profile = { id:uidv, username:(session.user.email||"").split("@")[0] };
+    cloud.ready = true;
+    hideLoginGate();
+    try{ localStorage.removeItem("vahtahoz_login_skipped"); }catch(_){}
+    renderHeader(); render();
+    if(attempt===0) toast("Вход выполнен, данные догружаются…");
+    if(attempt < 3) setTimeout(()=>{ cloudOnLogin(session, attempt+1).catch(()=>{}); }, 4000);
+  }
 }
 async function cloudLogout(){
   try{ if(cloud.channel) await cloud.sb.removeChannel(cloud.channel); }catch(e){}
