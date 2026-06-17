@@ -988,15 +988,19 @@ function renderDashboard(){
     const d = daysLeft(s.expiry); return d!==null && d<=14;
   });
   const lowStock = state.stock.filter(s=> inStock(s) && s.minStock!=="" && s.minStock!=null && totalQtyOf(s) <= Number(s.minStock));
+  // роль: у начальника (нет права на задачи) дашборд складской — задачные блоки скрываем
+  const _m = activeMember();
+  const showTasks = !isRestrictedUser();
+  const canEditTasks = !_m || _m.can_edit_tasks;
 
   v.innerHTML = `
     <div class="grid grid-cols-2 gap-3">
-      <button class="card tap text-left" onclick="nav('tasks')">
+      ${showTasks?`<button class="card tap text-left" onclick="nav('tasks')">
         <div class="text-3xl">✅</div>
         <div class="text-2xl font-bold mt-1">${todayTasks.length}</div>
         <div class="text-sm opacity-70">Задачи сегодня</div>
         ${overdueTasks.length?`<div class="mt-1 badge badge-red">Просрочено: ${overdueTasks.length}</div>`:""}
-      </button>
+      </button>`:""}
       <button class="card tap text-left" onclick="nav('stock')">
         <div class="text-3xl">⏰</div>
         <div class="text-2xl font-bold mt-1">${expiringSoon.length}</div>
@@ -1014,12 +1018,12 @@ function renderDashboard(){
       </button>
     </div>
 
-    <button class="btn btn-primary w-full mt-2" onclick="openTaskEdit()">＋ Задача</button>
+    ${canEditTasks?`<button class="btn btn-primary w-full mt-2" onclick="openTaskEdit()">＋ Задача</button>`:""}
     <div class="grid grid-cols-3 gap-2 mt-2">
       ${STOCK_TYPES.map(t=>`<button class="btn ${t.key==='product'?'btn-success':(t.key==='household'?'btn-warn':'btn-ghost')}" onclick="openStockEdit(null,'${t.key}')">＋ ${t.short}</button>`).join("")}
     </div>
 
-    ${todayTasks.length?`
+    ${showTasks && todayTasks.length?`
       <div class="card">
         <div class="font-bold mb-2">Задачи на сегодня</div>
         <div class="space-y-2">${todayTasks.map(t=>taskRow(t,{showMove:false})).join("")}</div>
@@ -3680,8 +3684,7 @@ function cloudLoginPrompt(){
 }
 /* прячем «Задачи», если у пользователя нет права смотреть задачи на активной облачной базе */
 function cloudGateTasks(){
-  const m = activeMember();
-  const hideTasks = !!(m && !m.can_view_tasks);
+  const hideTasks = isRestrictedUser();   // та же проверка прав, единый источник
   const tb = document.querySelector('#navbar .nav-btn[data-nav="tasks"]');
   if(tb) tb.style.display = hideTasks ? "none" : "";
   if(hideTasks && currentView==="tasks") nav("dashboard");
@@ -3701,7 +3704,7 @@ function cloudCardHtml(){
         <div><div class="font-bold">☁ Облако</div><div class="text-xs opacity-70 mt-0.5">Не подключено · работает офлайн</div></div>
         <button class="btn btn-primary" onclick="cloudLoginPrompt()">Войти</button>
       </div>
-      <div class="text-xs opacity-70 mt-2">Вход нужен начальнику (просмотр/правка склада База 2) и для синхронизации между телефонами.</div>
+      <div class="text-xs opacity-70 mt-2">Вход нужен начальнику (просмотр/правка склада своей базы) и для синхронизации между телефонами.</div>
     </div>`;
   }
   const m = activeMember();
