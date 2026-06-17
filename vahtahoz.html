@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v72</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v73</div>
   </div>
 </div>
 
@@ -2657,7 +2657,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v72</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v73</div>
   `;
   pomoTick();
 }
@@ -3699,6 +3699,13 @@ async function cloudPull(cid){
     const jr    = await cloudRest(`journal_entries?select=*&base_id=eq.${encodeURIComponent(cid)}`, tok, {timeout:45000});
     const baseArr = await cloudRest(`bases?select=settings&id=eq.${encodeURIComponent(cid)}`, tok);
     const base = Array.isArray(baseArr) ? baseArr[0] : null;
+    // ЗАЩИТА ОТ ГОНКИ: пока шла загрузка (долгие await выше), пользователь мог
+    // успеть отредактировать данные → cloudMaybePush уже выставил dirty. НЕ затираем
+    // его правку облачными данными — выходим, finally до-выгрузит локальное (push).
+    if(localStorage.getItem(cloudDirtyKey(cid))){
+      setSyncStatus("syncing","Локальные правки — выгружаю");
+      return;
+    }
     // ошибок нет → применяем (только теперь перезаписываем локальные данные)
     // id из БД проходят safeId (защита inline-onclick на случай порчи данных в облаке)
     state.stock = (items||[]).map(rowToStock).map(s=>{
@@ -3735,15 +3742,23 @@ async function cloudPull(cid){
     // слабая сеть/таймаут → повторим (мягкий backoff), пока онлайн
     if(cloudOnline()) setTimeout(()=>{ if(!cloud.busy) cloudPull(cid).catch(()=>{}); }, 8000);
   }
-  finally{ cloud.applying=false; render(); }
+  finally{
+    cloud.applying=false;
+    // если во время загрузки появилась несинхронизированная правка — до-выгружаем её
+    if(localStorage.getItem(cloudDirtyKey(cid))) cloudMaybePush();
+    render();
+  }
 }
 function cloudMaybePush(){
-  if(!cloud.ready || cloud.applying) return;
+  if(!cloud.ready) return;
   const cid = activeCloudId(); if(!cid) return;
   // помечаем «не синхронизировано» СРАЗУ — флаг снимется только после успешной выгрузки.
   // Так переключение базы/перезагрузка не теряет отложенные правки: при возврате
   // cloudActivate увидит dirty и выгрузит локальное, а не затрёт его pull-ом.
+  // ВАЖНО: dirty ставим ДО проверки cloud.applying — если прямо сейчас идёт cloudPull,
+  // правка пользователя в это окно иначе осталась бы непомеченной и была бы затёрта.
   try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(e){}
+  if(cloud.applying) return;   // идёт pull — он сам увидит dirty, НЕ затрёт правку и до-выгрузит её
   if(!cloudOnline()){ setSyncStatus("offline"); return; }   // ждём сеть — уйдёт по событию "online"
   cloud.pushPending = true;                  // есть ожидающая выгрузка — realtime-pull её не затрёт
   setSyncStatus("syncing","Сохранение в облако…");
@@ -3757,7 +3772,7 @@ function _stableStr(o){
   if(o && typeof o==="object") return "{"+Object.keys(o).sort().map(k=>JSON.stringify(k)+":"+_stableStr(o[k])).join(",")+"}";
   return JSON.stringify(o);
 }
-function _sigOf(obj){ const s=_stableStr(obj); let h=0; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))|0; return h.toString(36)+":"+s.length; }
+function _sigOf(obj){ const s=_stableStr(obj); let h1=0x811c9dc5, h2=0; for(let i=0;i<s.length;i++){ const c=s.charCodeAt(i); h1=(h1^c)>>>0; h1=Math.imul(h1,0x01000193)>>>0; h2=(h2*131+c)|0; } return h1.toString(36)+h2.toString(36)+":"+s.length; }
 function loadSyncSig(cid, kind){ try{ return JSON.parse(localStorage.getItem(`vahtahoz_sig_${kind}_${cid}`)||"{}"); }catch(_){ return {}; } }
 function saveSyncSig(cid, kind, map){ try{ localStorage.setItem(`vahtahoz_sig_${kind}_${cid}`, JSON.stringify(map)); }catch(_){} }
 // upsert пачками прямым fetch (merge по первичному ключу id)
@@ -3791,9 +3806,13 @@ async function cloudPushNow(){
       const rows = state.stock.map(s=>stockToRow(s,cid));
       const curSig = {}; rows.forEach(r=>{ curSig[r.id]=_sigOf(r); });
       const prevSig = loadSyncSig(cid,"stock");
-      // ЗАЩИТА: пустой локальный склад НЕ стирает непустой облачный снимок
-      if(rows.length===0 && Object.keys(prevSig).length>0){
-        console.warn("cloudPush: локальный склад пуст — выгрузка склада пропущена (защита)");
+      const prevCount = Object.keys(prevSig).length;
+      // ЗАЩИТА: пустой ИЛИ подозрительно усохший локальный склад НЕ стирает облако.
+      // Если осталось <10% от снимка (а снимок крупный) — это похоже на порчу слота,
+      // а не на осознанное удаление → пропускаем ВСЮ выгрузку склада (cloud цел, восстановится pull-ом).
+      const suspectWipe = prevCount>=20 && rows.length < prevCount*0.1;
+      if((rows.length===0 || suspectWipe) && prevCount>0){
+        console.warn("cloudPush: склад подозрительно мал ("+rows.length+" из "+prevCount+") — выгрузка склада пропущена (защита от порчи)");
       } else {
         const upsert = rows.filter(r=> curSig[r.id] !== prevSig[r.id]);   // новое/изменённое
         const del = Object.keys(prevSig).filter(id=> !(id in curSig));    // удалённое локально
@@ -3813,9 +3832,11 @@ async function cloudPushNow(){
       const prevJSig = loadSyncSig(cid,"jr");
       if(!(jrows.length===0 && Object.keys(prevJSig).length>0)){
         const jup = jrows.filter(r=> curJSig[r.id]!==prevJSig[r.id]);
-        const jdel = Object.keys(prevJSig).filter(id=> !(id in curJSig));
-        // облачный журнал — полный архив, локальный усекается по квоте → массовое удаление НЕ синхронизируем
-        if(jdel.length && jdel.length <= Object.keys(curJSig).length + 10) await cloudRestDelete("journal_entries", jdel, tok);
+        // ЖУРНАЛЫ НЕ УДАЛЯЕМ из облака вообще: облачный журнал — полный архив,
+        // а локальный усекается по квоте localStorage (slice(-500) при QuotaExceeded).
+        // Любое локальное «исчезновение» записи (усечение ИЛИ ручное удаление) НЕ должно
+        // стирать запись из облачного архива. Записи журнала append-only, у каждой уникальный id —
+        // повторного появления при pull это не вызовет конфликтов. Только добавляем/обновляем.
         if(jup.length) await cloudRestUpsert("journal_entries", jup, tok);
         saveSyncSig(cid,"jr",curJSig);
       }
