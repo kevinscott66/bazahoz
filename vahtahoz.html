@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v65</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v66</div>
   </div>
 </div>
 
@@ -2618,6 +2618,12 @@ function renderMore(){
       <div class="text-xs opacity-70 mt-2">«Экспорт базы» — только текущая. «Все базы» — один файл со всеми профилями (главный бэкап). Импорт принимает оба формата. Сохраняй регулярно — пригодится, если телефон сбросится!</div>
     </div>
 
+    ${profiles.list.length>1 ? `<div class="card">
+      <div class="font-bold mb-2">🔗 Общий каталог</div>
+      <button class="btn btn-ghost w-full" onclick="mergeCatalogs()">Объединить наименования всех баз</button>
+      <div class="text-xs opacity-70 mt-2">Сводит список наименований одинаковым во всех базах: добавляет недостающие позиции с нулём. Остатки, места и сроки у каждой базы остаются свои.</div>
+    </div>` : ""}
+
     <div class="card">
       <div class="font-bold mb-2">📊 Экспорт в Excel</div>
       <div class="grid grid-cols-2 gap-2">
@@ -2645,7 +2651,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v65</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v66</div>
   `;
   pomoTick();
 }
@@ -2800,6 +2806,46 @@ function exportAllProfiles(){
   } else {
     toast(`Сохранены все базы (${list.length})`);
   }
+}
+/* ОБЩИЙ КАТАЛОГ: добавить во ВСЕ базы устройства те наименования (тип+имя+ед.), которых там нет,
+   с количеством 0. Существующие позиции, остатки, места, сроки, партии НЕ трогаются. */
+async function mergeCatalogs(){
+  const bases = profiles.list.map(p=>({
+    p, active: p.id===profiles.activeId,
+    st: p.id===profiles.activeId ? state : (()=>{ try{ return JSON.parse(localStorage.getItem(slotKey(p.id))||"null"); }catch(_){ return null; } })()
+  })).filter(b=> b.st && Array.isArray(b.st.stock));
+  if(bases.length<2){ toast("Нужно минимум 2 базы на этом устройстве"); return; }
+  const keyOf = s => `${s.type}|${(s.name||"").trim().toLowerCase()}`;
+  const catalog = new Map();   // union: type|имя → {type,name,unit}
+  for(const b of bases) for(const s of b.st.stock){
+    const k = keyOf(s);
+    if(s.name && !catalog.has(k)) catalog.set(k, { type:s.type, name:s.name, unit:s.unit||"шт" });
+  }
+  let willAdd = 0;
+  for(const b of bases){
+    const have = new Set(b.st.stock.map(keyOf));
+    for(const k of catalog.keys()) if(!have.has(k)) willAdd++;
+  }
+  if(willAdd===0){ toast("Каталоги уже одинаковы"); return; }
+  const ok = await confirmSheet(`Объединить наименования: добавить ${willAdd} позиций (с нулём) туда, где их нет? Остатки/места/сроки не меняются.`,{yes:"Объединить"});
+  if(!ok) return;
+  let added=0;
+  for(const b of bases){
+    const have = new Set(b.st.stock.map(keyOf));
+    for(const [k,c] of catalog){
+      if(!have.has(k)){
+        b.st.stock.push({ id:uid(), type:c.type, name:c.name, qty:0, unit:c.unit, minStock:"", expiry:"", location:"", category:"", note:"", createdAt:new Date().toISOString() });
+        added++;
+      }
+    }
+    if(b.active) saveState();
+    else { try{ localStorage.setItem(slotKey(b.p.id), JSON.stringify(b.st)); }catch(_){} }
+    if(b.p.cloudId){ try{ localStorage.setItem(cloudDirtyKey(b.p.cloudId),"1"); }catch(_){} }   // к выгрузке в облако
+  }
+  render();
+  const cid = activeCloudId();
+  if(cid && cloud.ready) setTimeout(()=>{ cloudActivate(cid).catch(e=>console.warn(e)); }, 50);   // активную — сразу в облако
+  toast(`Готово: добавлено ${added} наименований. Остальные базы выгрузятся при открытии.`);
 }
 async function importAllProfiles(payload){
   const incoming = (payload.profiles||[]).filter(p=>p && p.state && typeof p.state==="object");
