@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v63</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v64</div>
   </div>
 </div>
 
@@ -397,6 +397,7 @@ async function deleteProfile(id){
   const ok2 = await confirmSheet(`Точно удалить «${p.name}»? Данные этой базы будут стёрты навсегда.`,{danger:true,yes:"Да, удалить"});
   if(!ok2) return;
   try{ localStorage.removeItem(slotKey(id)); }catch(e){ console.error(e); }
+  if(p.cloudId) try{ localStorage.removeItem(cloudDirtyKey(p.cloudId)); }catch(_){}   // чистим осиротевший dirty-маркер
   profiles.list = profiles.list.filter(x=>x.id!==id);
   saveProfiles(profiles);
   logOp("PROFILE_DEL", `База «${p.name}»`);
@@ -1485,7 +1486,7 @@ function renderJournal(kind){
     return `<div class="card">
       <div class="flex items-start gap-2">
         <div class="flex-1 min-w-0">
-          <div class="font-semibold">${esc(op.productName)}</div>
+          <div class="font-semibold break-words">${esc(op.productName)}</div>
           <div class="text-xs opacity-70 mt-1 flex flex-wrap gap-2 items-center">
             ${qtyBadge}
             ${locBadge} ${expBadge}
@@ -1495,8 +1496,8 @@ function renderJournal(kind){
           ${op.note?`<div class="text-xs opacity-80 mt-1">${esc(op.note)}</div>`:""}
         </div>
         <div class="flex flex-col gap-1">
-          ${linkedToOrder ? `<button class="btn btn-ghost opacity-40" disabled title="Редактируйте исходный заказ">✏️</button>` : `<button class="btn btn-ghost" onclick="editOp('${kind}','${op.id}')">✏️</button>`}
-          <button class="btn btn-ghost" onclick="deleteOp('${kind}','${op.id}')">🗑</button>
+          ${linkedToOrder ? `<button class="btn btn-ghost opacity-40" disabled title="Редактируйте исходный заказ" aria-label="Редактировать (через заказ)">✏️</button>` : `<button class="btn btn-ghost" onclick="editOp('${kind}','${op.id}')" aria-label="Редактировать запись">✏️</button>`}
+          <button class="btn btn-ghost" onclick="deleteOp('${kind}','${op.id}')" aria-label="Удалить запись">🗑</button>
         </div>
       </div>
       ${receiveBtn?`<div class="mt-2">${receiveBtn}</div>`:""}
@@ -1970,7 +1971,7 @@ function stockRow(it){
       <div class="flex items-start gap-3">
         <div class="text-2xl${out?" grayscale":""}">${icon}</div>
         <div class="flex-1 min-w-0" onclick="openStockEdit('${it.id}')">
-          <div class="font-semibold${out?" line-through opacity-80":""}">${esc(it.name)}</div>
+          <div class="font-semibold break-words${out?" line-through opacity-80":""}">${esc(it.name)}</div>
           <div class="text-xs opacity-70 mt-1 flex flex-wrap gap-2 items-center">
             ${qtyBadge}
             ${cat} ${loc} ${exp} ${badge}
@@ -2114,8 +2115,8 @@ function openStockEdit(id, typeDefault){
             ${b.location?`<span class="badge badge-gray">📍 ${esc(b.location)}</span>`:`<span class="badge badge-gray opacity-50">без места</span>`}
             ${b.expiry?`<span class="badge badge-gray">⏰ ${fmtDate(b.expiry)}</span>`:`<span class="badge badge-gray opacity-50">без срока</span>`}
             <span class="flex-1"></span>
-            <button class="btn btn-ghost text-xs" onclick="openBatchEdit('${id}','${b.id}')">✏️</button>
-            <button class="btn btn-ghost text-xs" onclick="deleteBatch('${id}','${b.id}')">🗑</button>
+            <button class="btn btn-ghost text-xs" onclick="openBatchEdit('${id}','${b.id}')" aria-label="Редактировать партию">✏️</button>
+            <button class="btn btn-ghost text-xs" onclick="deleteBatch('${id}','${b.id}')" aria-label="Удалить партию">🗑</button>
           </div>
         `).join("")}
       </div>
@@ -2352,7 +2353,7 @@ async function renameLocation(type, oldName){
   if(val===null) return;
   const newName = String(val).trim();
   if(!newName || newName===oldName) return;
-  if(newName.length>40){ toast("Слишком длинно"); return; }
+  if(newName.length>40){ toast("Слишком длинно (≤40 символов)"); return; }
   if(hasBadChars(newName)){ toast("Нельзя символы < > ' \" \\ &"); return; }
   const list = state.locations[type] || [];
   if(list.includes(newName)){ toast("Такое место уже есть"); return; }
@@ -2642,7 +2643,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v63</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v64</div>
   `;
   pomoTick();
 }
@@ -3569,8 +3570,10 @@ async function cloudActivate(cid){
     const localHasData = (state.stock&&state.stock.length) ||
       JOURNAL_KEYS.some(k=>(state.journals?.[k]||[]).length);
     if((dirty || (cloudEmpty && localHasData)) && perm && perm.can_edit_stock){
-      await cloudPushNow();                   // локальное — источник (первый раз или были оффлайн-правки)
-      localStorage.removeItem(cloudDirtyKey(cid));
+      // локальное — источник (первый раз или были оффлайн-правки).
+      // dirty снимает САМ cloudPushNow и ТОЛЬКО при успехе — здесь снимать нельзя,
+      // иначе при сбое выгрузки маркер «не синхронизировано» потеряется и pull затрёт правки.
+      await cloudPushNow();
     } else {
       await cloudPull(cid);
     }
@@ -3579,6 +3582,8 @@ async function cloudActivate(cid){
 }
 async function cloudPull(cid){
   if(!cid || !cloudOnline()) return;
+  // защита: не затирать НЕсинхронизированные локальные правки облачными данными
+  if(cloud.pushPending || localStorage.getItem(cloudDirtyKey(cid))){ cloudMaybePush(); return; }
   const sb = await ensureSB(); const perm = activeMember();
   cloud.applying=true;
   setSyncStatus("syncing","Загрузка из облака…");
@@ -3605,9 +3610,11 @@ async function cloudPull(cid){
     // ЗАДАЧИ НЕ ТЯНЕМ из облака — они общие-локальные (одно расписание на все базы),
     // не зависят от базы и не видны начальнику. state.tasks остаётся как есть (из loadGlobalTasks).
     if(base && base.settings){
+      // санитайзим имена из облака (их мог задать любой участник с edit_stock) — как при локальной загрузке
+      const clean = arr => [...new Set(arr.map(cleanName40).filter(Boolean))];
       for(const k of STOCK_TYPE_KEYS){
-        if(Array.isArray(base.settings.locations?.[k]) && base.settings.locations[k].length) state.locations[k]=base.settings.locations[k];
-        if(Array.isArray(base.settings.categories?.[k]) && base.settings.categories[k].length) state.categories[k]=base.settings.categories[k];
+        if(Array.isArray(base.settings.locations?.[k]) && base.settings.locations[k].length) state.locations[k]=clean(base.settings.locations[k]);
+        if(Array.isArray(base.settings.categories?.[k]) && base.settings.categories[k].length) state.categories[k]=clean(base.settings.categories[k]);
       }
     }
     saveState();                              // cloud.applying=true → push не сработает (без эха)
@@ -3712,11 +3719,11 @@ function cloudUnsubscribe(){
   cloud.channel=null; cloud.subscribedBase=null;
 }
 function cloudOnRemote(){
+  clearTimeout(cloud.pullTimer);               // всегда гасим прежний отложенный pull, иначе он сработает после dirty и затрёт правки
   if(cloud.busy || cloud.pushPending) return;  // идёт/ждёт наша выгрузка — pull её не затрёт
   // есть несинхронизированные локальные правки → не тянем (затёрли бы своё); сначала выгрузим их
   const cid0 = activeCloudId();
   if(cid0 && localStorage.getItem(cloudDirtyKey(cid0))){ cloudMaybePush(); return; }
-  clearTimeout(cloud.pullTimer);
   cloud.pullTimer = setTimeout(()=>{ const cid=activeCloudId(); if(cid) cloudPull(cid); }, 400);
 }
 /* UI: вход */
