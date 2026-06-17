@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v69</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v70</div>
   </div>
 </div>
 
@@ -2657,7 +2657,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v69</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v70</div>
   `;
   pomoTick();
 }
@@ -3350,12 +3350,21 @@ async function ensureSB(){
 /* Прямой REST-запрос к PostgREST с пользовательским токеном в заголовке.
    Не зависит от setSession/состояния auth-клиента: в iOS standalone-PWA sb.from
    мог уходить без JWT (сессия ещё не зарегистрирована) или подвисать. */
-async function cloudRest(path, token){
-  const r = await fetch(`${CLOUD_CFG.url}/rest/v1/${path}`, {
-    headers:{ apikey:CLOUD_CFG.anon, Authorization:`Bearer ${token}` }
-  });
-  if(!r.ok) throw new Error("REST "+r.status);
-  return r.json();
+async function cloudRest(path, token, opts){
+  opts = opts || {};
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), opts.timeout || 15000);   // НЕ виснем вечно (в отличие от sb.from)
+  try{
+    const r = await fetch(`${CLOUD_CFG.url}/rest/v1/${path}`, {
+      method: opts.method || "GET", signal: ctrl.signal,
+      headers: Object.assign({ apikey:CLOUD_CFG.anon, Authorization:`Bearer ${token}` }, opts.headers||{}),
+      body: opts.body
+    });
+    if(!r.ok) throw new Error("REST "+r.status+" "+(await r.text().catch(()=>"")).slice(0,120));
+    if(opts.returnResponse) return r;
+    const txt = await r.text();
+    return txt ? JSON.parse(txt) : null;
+  } finally { clearTimeout(t); }
 }
 /* Своё хранилище сессии (синхронное) — переживает reload от cloudAutoLink, в отличие от
    фонового setSession в supabase-клиенте. Восстановление при запуске идёт отсюда, прямым fetch. */
@@ -3646,16 +3655,15 @@ async function cloudActivate(cid, attempt){
   attempt = attempt||0;
   if(!cid || !cloud.ready) return;
   if(!cloudOnline()){ setSyncStatus("offline"); return; }
-  const sb = await ensureSB(); const perm = activeMember();
-  // дождаться регистрации сессии после прямого fetch-логина (иначе sb.from уйдёт без JWT в standalone-PWA)
-  try{ await Promise.race([cloud._sessionReady||0, new Promise(r=>setTimeout(r,4000))]); }catch(_){}
+  await ensureSB(); const perm = activeMember();
   cloud.busy=true;
   setSyncStatus("syncing","Проверка облака…");
   try{
     const dirty = localStorage.getItem(cloudDirtyKey(cid));
-    const { count, error:eCnt } = await sb.from("stock_items").select("id",{count:"exact",head:true}).eq("base_id",cid);
-    if(eCnt) throw eCnt;   // ошибка/нет сессии → count=null дал бы ложный cloudEmpty=true и push пустого поверх облака
-    const cloudEmpty = !count;
+    // count через прямой fetch (не sb.from — он висел в standalone). cloudRest кинет исключение при ошибке.
+    const tok = cloud.session && cloud.session.access_token;
+    const cIds = await cloudRest(`stock_items?select=id&base_id=eq.${encodeURIComponent(cid)}`, tok);
+    const cloudEmpty = !(Array.isArray(cIds) && cIds.length);
     // решение «выгружать» — по складу/журналам (задачи не синкаются и тут не учитываются)
     const localHasData = (state.stock&&state.stock.length) ||
       JOURNAL_KEYS.some(k=>(state.journals?.[k]||[]).length);
@@ -3678,18 +3686,18 @@ async function cloudPull(cid){
   if(!cid || !cloudOnline()) return;
   // защита: не затирать НЕсинхронизированные локальные правки облачными данными
   if(cloud.pushPending || localStorage.getItem(cloudDirtyKey(cid))){ cloudMaybePush(); return; }
-  const sb = await ensureSB(); const perm = activeMember();
+  const perm = activeMember();
   cloud.applying=true;
   setSyncStatus("syncing","Загрузка из облака…");
   try{
-    // СНАЧАЛА все запросы с проверкой error — supabase-js НЕ кидает исключение на ошибке,
-    // а возвращает {data:null, error}. Раньше error игнорировался → null → state затирался пустым.
-    const { data:items, error:e1 } = await sb.from("stock_items").select("*").eq("base_id",cid);
-    if(e1) throw e1;
-    const { data:jr, error:e2 } = await sb.from("journal_entries").select("*").eq("base_id",cid);
-    if(e2) throw e2;
-    const { data:base, error:e3 } = await sb.from("bases").select("settings").eq("id",cid).maybeSingle();
-    if(e3) throw e3;
+    // ПРЯМОЙ fetch с токеном (cloudRest) — не зависит от регистрации сессии в supabase-клиенте,
+    // который в iOS standalone-PWA мог ВИСНУТЬ без таймаута («Загрузка из облака» навсегда).
+    // cloudRest кидает исключение при ошибке/таймауте → попадём в catch и НЕ затрём локальное пустым.
+    const tok = cloud.session && cloud.session.access_token;
+    const items = await cloudRest(`stock_items?select=*&base_id=eq.${encodeURIComponent(cid)}`, tok);
+    const jr    = await cloudRest(`journal_entries?select=*&base_id=eq.${encodeURIComponent(cid)}`, tok);
+    const baseArr = await cloudRest(`bases?select=settings&id=eq.${encodeURIComponent(cid)}`, tok);
+    const base = Array.isArray(baseArr) ? baseArr[0] : null;
     // ошибок нет → применяем (только теперь перезаписываем локальные данные)
     // id из БД проходят safeId (защита inline-onclick на случай порчи данных в облаке)
     state.stock = (items||[]).map(rowToStock).map(s=>{
