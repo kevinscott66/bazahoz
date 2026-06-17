@@ -3273,6 +3273,16 @@ async function ensureSB(){
   });
   return cloud.sb;
 }
+/* Прямой REST-запрос к PostgREST с пользовательским токеном в заголовке.
+   Не зависит от setSession/состояния auth-клиента: в iOS standalone-PWA sb.from
+   мог уходить без JWT (сессия ещё не зарегистрирована) или подвисать. */
+async function cloudRest(path, token){
+  const r = await fetch(`${CLOUD_CFG.url}/rest/v1/${path}`, {
+    headers:{ apikey:CLOUD_CFG.anon, Authorization:`Bearer ${token}` }
+  });
+  if(!r.ok) throw new Error("REST "+r.status);
+  return r.json();
+}
 /* --- маппинг строк БД <-> локальные объекты --- */
 function rowToStock(r){
   return { id:r.id, type:r.type, name:r.name, category:r.category||"", unit:r.unit||"шт",
@@ -3431,21 +3441,22 @@ async function cloudLogin(email, password){
 }
 async function cloudOnLogin(session){
   cloud.session = session;
-  const sb = await ensureSB(); const uidv = session.user.id;
+  await ensureSB(); const uidv = session.user.id;   // клиент нужен для setSession/realtime; запросы ниже — прямым fetch
   try{
     // 3 независимых запроса — ПАРАЛЛЕЛЬНО (последовательно было бы ~3× дольше на медленной сети).
     // Общий таймаут 12с: зависший PostgREST-запрос не должен оставлять загрузку висеть вечно.
-    const [profR, memR, bsR] = await Promise.race([
+    const tok = session.access_token;
+    const [prof, mem, bs] = await Promise.race([
       Promise.all([
-        sb.from("profiles").select("*").eq("id",uidv).maybeSingle(),
-        sb.from("base_members").select("*"),
-        sb.from("bases").select("id,name"),
+        cloudRest(`profiles?select=*&id=eq.${encodeURIComponent(uidv)}`, tok),
+        cloudRest(`base_members?select=*`, tok),
+        cloudRest(`bases?select=id,name`, tok),
       ]),
       new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания облака")),12000))
     ]);
-    cloud.profile = profR.data || { id:uidv, username:session.user.email };
-    cloud.members = memR.data || [];
-    cloud.bases = {}; (bsR.data||[]).forEach(b=>cloud.bases[b.id]=b.name);
+    cloud.profile = (Array.isArray(prof) && prof[0]) || { id:uidv, username:session.user.email };
+    cloud.members = Array.isArray(mem) ? mem : [];
+    cloud.bases = {}; (Array.isArray(bs)?bs:[]).forEach(b=>cloud.bases[b.id]=b.name);
     cloud.ready = true;
     hideLoginGate();                           // успешный вход — прячем полноэкранный гейт
     try{ localStorage.removeItem("vahtahoz_login_skipped"); }catch(e){}
