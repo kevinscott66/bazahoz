@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v70</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v71</div>
   </div>
 </div>
 
@@ -2657,7 +2657,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v70</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v71</div>
   `;
   pomoTick();
 }
@@ -3353,7 +3353,7 @@ async function ensureSB(){
 async function cloudRest(path, token, opts){
   opts = opts || {};
   const ctrl = new AbortController();
-  const t = setTimeout(()=>ctrl.abort(), opts.timeout || 15000);   // НЕ виснем вечно (в отличие от sb.from)
+  const t = setTimeout(()=>ctrl.abort(), opts.timeout || 30000);   // НЕ виснем вечно; запас под слабый интернет
   try{
     const r = await fetch(`${CLOUD_CFG.url}/rest/v1/${path}`, {
       method: opts.method || "GET", signal: ctrl.signal,
@@ -3676,7 +3676,7 @@ async function cloudActivate(cid, attempt){
       await cloudPull(cid);
     }
   }catch(e){
-    console.warn("cloudActivate", e); setSyncStatus("error");
+    console.warn("cloudActivate", e); setSyncStatus("error", "Синк: "+(e.message||e).toString().slice(0,60));
     // транзиентная ошибка (сессия не успела зарегистрироваться и т.п.) → повтор с backoff, чтобы синк состоялся
     if(cloudOnline() && attempt < 6) setTimeout(()=>{ cloudActivate(cid, attempt+1).catch(()=>{}); }, Math.min(3000+attempt*2000, 15000));
   }
@@ -3694,8 +3694,8 @@ async function cloudPull(cid){
     // который в iOS standalone-PWA мог ВИСНУТЬ без таймаута («Загрузка из облака» навсегда).
     // cloudRest кидает исключение при ошибке/таймауте → попадём в catch и НЕ затрём локальное пустым.
     const tok = cloud.session && cloud.session.access_token;
-    const items = await cloudRest(`stock_items?select=*&base_id=eq.${encodeURIComponent(cid)}`, tok);
-    const jr    = await cloudRest(`journal_entries?select=*&base_id=eq.${encodeURIComponent(cid)}`, tok);
+    const items = await cloudRest(`stock_items?select=*&base_id=eq.${encodeURIComponent(cid)}`, tok, {timeout:60000});  // тяжёлый — большой запас под слабую сеть
+    const jr    = await cloudRest(`journal_entries?select=*&base_id=eq.${encodeURIComponent(cid)}`, tok, {timeout:45000});
     const baseArr = await cloudRest(`bases?select=settings&id=eq.${encodeURIComponent(cid)}`, tok);
     const base = Array.isArray(baseArr) ? baseArr[0] : null;
     // ошибок нет → применяем (только теперь перезаписываем локальные данные)
@@ -3721,7 +3721,12 @@ async function cloudPull(cid){
     }
     saveState();                              // cloud.applying=true → push не сработает (без эха)
     setSyncStatus("synced","Загружено из облака");
-  }catch(e){ console.warn("cloudPull", e); setSyncStatus("error"); }
+  }catch(e){
+    console.warn("cloudPull", e);
+    setSyncStatus("error", "Не загрузилось: "+(e.message||e).toString().slice(0,60));
+    // слабая сеть/таймаут → повторим (мягкий backoff), пока онлайн
+    if(cloudOnline()) setTimeout(()=>{ if(!cloud.busy) cloudPull(cid).catch(()=>{}); }, 8000);
+  }
   finally{ cloud.applying=false; render(); }
 }
 function cloudMaybePush(){
