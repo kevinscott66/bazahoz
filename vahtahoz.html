@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v66</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v67</div>
   </div>
 </div>
 
@@ -2174,8 +2174,11 @@ function saveStock(id, type){
   const note = body.querySelector("#sno").value.trim();
   const category = body.querySelector(".chip.active[data-cat]")?.dataset.cat || "";
   const location = body.querySelector(".chip.active[data-loc]")?.dataset.loc || "";
+  let propType=type, propOld=null;
   if(id){
     const it = state.stock.find(s=>s.id===id);
+    const oldName = it ? it.name : name;
+    if(it) propType = it.type;
     if(hasBatches(it)){
       // в режиме партий qty/expiry/location — производные, перезаписывать вручную нельзя
       Object.assign(it,{name,unit,minStock,category,note,updatedAt:new Date().toISOString()});
@@ -2184,10 +2187,13 @@ function saveStock(id, type){
       Object.assign(it,{name,qty:roundQty(qty),unit,minStock,expiry,location,category,note,updatedAt:new Date().toISOString()});
     }
     logOp("STOCK_EDIT", name);
+    if(oldName && oldName!==name) propOld = oldName;   // переименование — распространим
   } else {
     state.stock.push({id:uid(),type,name,qty:roundQty(qty),unit,minStock,expiry,location,category,note,createdAt:new Date().toISOString()});
     logOp("STOCK_ADD", `${name} +${qty} ${unit}`);
   }
+  // общий каталог: новое имя / переименование → в остальные базы (qty 0)
+  try{ propagateName(propType, name, unit, propOld); }catch(e){ console.warn("propagateName", e); }
   saveState(); closeSheet(); render();
 }
 function openBatchAdd(id){
@@ -2651,7 +2657,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v66</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v67</div>
   `;
   pomoTick();
 }
@@ -2833,10 +2839,7 @@ async function mergeCatalogs(){
   for(const b of bases){
     const have = new Set(b.st.stock.map(keyOf));
     for(const [k,c] of catalog){
-      if(!have.has(k)){
-        b.st.stock.push({ id:uid(), type:c.type, name:c.name, qty:0, unit:c.unit, minStock:"", expiry:"", location:"", category:"", note:"", createdAt:new Date().toISOString() });
-        added++;
-      }
+      if(!have.has(k)){ b.st.stock.push(catalogItem(c.type, c.name, c.unit)); added++; }
     }
     if(b.active) saveState();
     else { try{ localStorage.setItem(slotKey(b.p.id), JSON.stringify(b.st)); }catch(_){} }
@@ -2846,6 +2849,34 @@ async function mergeCatalogs(){
   const cid = activeCloudId();
   if(cid && cloud.ready) setTimeout(()=>{ cloudActivate(cid).catch(e=>console.warn(e)); }, 50);   // активную — сразу в облако
   toast(`Готово: добавлено ${added} наименований. Остальные базы выгрузятся при открытии.`);
+}
+/* каталожная позиция-«заготовка» (только наименование, без остатка/мест/сроков) */
+function catalogItem(type, name, unit){
+  return { id:uid(), type, name, qty:0, unit:unit||"шт", minStock:"", expiry:"", location:"", category:"", note:"", createdAt:new Date().toISOString() };
+}
+/* АВТО-РАСПРОСТРАНЕНИЕ наименования на ОСТАЛЬНЫЕ базы (их слоты), с qty 0.
+   add → добавить, если нет; rename (oldName→name) → переименовать совпадение (или добавить).
+   Остатки/места/сроки других баз не трогаются. Базы помечаются к выгрузке в облако. */
+function propagateName(type, name, unit, oldName){
+  const norm = s => (s||"").trim().toLowerCase();
+  for(const p of profiles.list){
+    if(p.id===profiles.activeId) continue;          // активную уже изменили
+    let st; try{ st = JSON.parse(localStorage.getItem(slotKey(p.id))||"null"); }catch(_){ st=null; }
+    if(!st || !Array.isArray(st.stock)) continue;
+    const exists = st.stock.some(s=>s.type===type && norm(s.name)===norm(name));
+    let changed=false;
+    if(oldName && norm(oldName)!==norm(name)){
+      const it = st.stock.find(s=>s.type===type && norm(s.name)===norm(oldName));
+      if(it && !exists){ it.name=name; changed=true; }       // переименовать совпадение
+      else if(!exists){ st.stock.push(catalogItem(type,name,unit)); changed=true; }  // не нашли — добавить
+    } else if(!exists){
+      st.stock.push(catalogItem(type,name,unit)); changed=true;   // новое имя — добавить
+    }
+    if(changed){
+      try{ localStorage.setItem(slotKey(p.id), JSON.stringify(st)); }catch(_){}
+      if(p.cloudId) try{ localStorage.setItem(cloudDirtyKey(p.cloudId),"1"); }catch(_){}
+    }
+  }
 }
 async function importAllProfiles(payload){
   const incoming = (payload.profiles||[]).filter(p=>p && p.state && typeof p.state==="object");
