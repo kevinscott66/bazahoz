@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v68</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v69</div>
   </div>
 </div>
 
@@ -2657,7 +2657,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v68</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v69</div>
   `;
   pomoTick();
 }
@@ -3445,8 +3445,18 @@ function setSyncStatus(kind, text){
 async function cloudInit(){
   if(cloud._initDone) return; cloud._initDone = true;   // защита от повторного запуска (дубль listener)
   // авто-пуш/синхронизация при возврате сети
-  window.addEventListener("online", ()=>{
-    if(cloud.session && cloud.basesLoaded===false){ cloudOnLogin(cloud.session).catch(()=>{}); return; }   // базы не загрузились — дозагрузим
+  window.addEventListener("online", async ()=>{
+    if((cloud.session || loadCloudSess()) && cloud.basesLoaded!==true){
+      // базы не загрузились — продлеваем токен при необходимости и дозагружаем базы
+      try{
+        let s = loadCloudSess() || cloud.session;
+        if(s && s.refresh_token && (!s.expires_at || s.expires_at<=Date.now()+60000)){
+          const d = await cloudRefresh(s.refresh_token); saveCloudSess(d); s = loadCloudSess();
+        }
+        if(s && s.access_token) await cloudOnLogin({ access_token:s.access_token, refresh_token:s.refresh_token, user:s.user });
+      }catch(e){ console.warn("online-reload", e); }
+      return;
+    }
     if(cloud.ready && activeCloudId()){ setSyncStatus("syncing","Сеть появилась — синхронизирую…"); cloudActivate(activeCloudId()); }
   });
   window.addEventListener("offline", ()=>{ if(cloud.ready && activeCloudId()) setSyncStatus("offline"); });
@@ -3459,7 +3469,7 @@ async function cloudInit(){
       try{
         const d = await Promise.race([ cloudRefresh(s.refresh_token), new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),8000)) ]);
         saveCloudSess(d); s = loadCloudSess();
-      }catch(_){ s = null; }   // продлить не удалось (refresh отозван/нет сети) → потребуется вход
+      }catch(_){ if(cloudOnline()) s = null; }   // онлайн и refresh не прошёл → токен отозван, нужен вход; оффлайн → сессию храним, подтянем при сети
     }
     if(s && s.access_token && s.user && s.user.id){
       hideLoginGate();
@@ -3632,7 +3642,8 @@ async function cloudAutoLink(){
   return false;
 }
 /* активация облачной базы: первичная выгрузка / подтягивание / разрешение оффлайн-правок */
-async function cloudActivate(cid){
+async function cloudActivate(cid, attempt){
+  attempt = attempt||0;
   if(!cid || !cloud.ready) return;
   if(!cloudOnline()){ setSyncStatus("offline"); return; }
   const sb = await ensureSB(); const perm = activeMember();
@@ -3656,7 +3667,11 @@ async function cloudActivate(cid){
     } else {
       await cloudPull(cid);
     }
-  }catch(e){ console.warn("cloudActivate", e); setSyncStatus("error"); }
+  }catch(e){
+    console.warn("cloudActivate", e); setSyncStatus("error");
+    // транзиентная ошибка (сессия не успела зарегистрироваться и т.п.) → повтор с backoff, чтобы синк состоялся
+    if(cloudOnline() && attempt < 6) setTimeout(()=>{ cloudActivate(cid, attempt+1).catch(()=>{}); }, Math.min(3000+attempt*2000, 15000));
+  }
   finally{ cloud.busy=false; cloudSubscribe(cid); }
 }
 async function cloudPull(cid){
@@ -3741,9 +3756,10 @@ async function cloudPushNow(){
         console.warn("cloudPush: локальный склад пуст, облако непусто — выгрузка склада пропущена (защита)");
       } else {
         const del = (cIds||[]).map(r=>r.id).filter(id=>!ids.has(id));
-        // порог: не удаляем массово больше, чем остаётся локально (признак сбоя/неполного состояния)
-        if(del.length && del.length <= ids.size + 10){ await sb.from("stock_items").delete().in("id",del); }
-        else if(del.length){ console.warn("cloudPush: подозрительное массовое удаление склада пропущено", del.length); }
+        // склад НЕ усекается по квоте (в отличие от журналов) → удаление здесь намеренное, синхронизируем.
+        // Катастрофу (пустой локальный склад поверх непустого облака) уже отсёк guard выше (rows.length===0).
+        // Иначе удалённые позиции «воскресали» из облака при следующем pull.
+        if(del.length){ await sb.from("stock_items").delete().in("id",del); }
         if(rows.length) await cloudUpsertChunked(sb,"stock_items",rows,100,(d,t)=>{ if(t>100) setSyncStatus("syncing",`Выгрузка склада ${d}/${t}`); });
         // настройки базы (места/категории) — только вместе с непустым складом
         await sb.from("bases").update({ settings:{ locations:state.locations, categories:state.categories } }).eq("id",cid);
@@ -3909,7 +3925,7 @@ nav("dashboard");
 (function gateEarly(){
   try{
     if(localStorage.getItem("vahtahoz_login_skipped")) return;
-    if(!localStorage.getItem("vahtahoz_auth")) showLoginGate();   // нет сессии → гейт
+    if(!localStorage.getItem("vahtahoz_sess")) showLoginGate();   // нет своей сессии → гейт (тот же ключ, что и в cloudInit)
   }catch(e){}
 })();
 pomoTick();  // чтобы таймер Pomodoro работал в фоне независимо от вкладки
