@@ -44,7 +44,7 @@
   .light .nav-btn.active{ color:#2563eb; }
   .badge{ font-size:11px; font-weight:700; padding:3px 8px; border-radius:999px; }
   .badge-red{ background:#dc2626; color:#fff; }
-  .badge-yellow{ background:#d97706; color:#fff; }
+  .badge-yellow{ background:#b45309; color:#fff; }
   .badge-green{ background:#16a34a; color:#fff; }
   .badge-gray{ background:#374151; color:#e5e7eb; }
   .sheet{ position:fixed; inset:0; z-index:60; display:none; }
@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v64</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v65</div>
   </div>
 </div>
 
@@ -448,6 +448,8 @@ const daysLeft = (s) => { if(!s) return null; const a=new Date(s+"T00:00:00"); c
 const byExpiry = (a,b)=>(a.expiry||"9999").localeCompare(b.expiry||"9999");
 // разбор числа из поля ввода: запятая → точка, пусто/мусор → 0 (как и было во всех формах)
 const parseNum = (v)=> Number(String(v==null?"":v).replace(",","."));
+// тег движения для журнала операций (logOp)
+const opTag = k => k==="receipt"?"IN":(k==="issue"?"OUT":"WRITEOFF");
 // русское склонение: plural(2,"место","места","мест") → "места"
 const plural = (n,one,few,many)=>{ const a=Math.abs(n)%100, b=a%10; if(a>10&&a<20) return many; if(b>1&&b<5) return few; if(b===1) return one; return many; };
 const esc = (s) => (s??"").toString().replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -1529,7 +1531,7 @@ function openOpEdit(kind){
         <div class="text-xs opacity-60 mt-1" id="opSel">Ничего не выбрано. Можно ввести название вручную ниже.</div>
         <input type="hidden" id="opProdId" value="" />
       </div>
-      <input class="input" id="opName" placeholder="Название вручную (если не на складе)" />
+      <input class="input" id="opName" placeholder="Название вручную (если нет на складе)" />
       <div class="grid grid-cols-2 gap-2">
         <input class="input" id="opQty" type="number" inputmode="decimal" placeholder="Количество" />
         <select class="input" id="opUnit">${UNITS.map(u=>`<option>${u}</option>`).join("")}</select>
@@ -1780,7 +1782,7 @@ function editOp(kind, opId){
         <div class="text-xs opacity-60 mt-1" id="eopSel">Текущая: ${esc(op.productName)}${op.productId?" (привязана к складу)":" (вручную)"}</div>
         <input type="hidden" id="eopProdId" value="${esc(op.productId||"")}" />
       </div>
-      <input class="input" id="eopName" placeholder="Название (если ручной ввод)" value="${esc(op.productName||"")}" />
+      <input class="input" id="eopName" placeholder="Название вручную (если нет на складе)" value="${esc(op.productName||"")}" />
       <div class="grid grid-cols-2 gap-2">
         <input class="input" id="eopQty" type="number" inputmode="decimal" value="${esc(fmtQty(op.qty))}" />
         <select class="input" id="eopUnit">${UNITS.map(u=>`<option ${u===op.unit?"selected":""}>${u}</option>`).join("")}</select>
@@ -2076,7 +2078,7 @@ async function quickAdjust(id, sign){
       batchId: targetBatch.id, batchLocation: targetBatch.location||"", batchExpiry: targetBatch.expiry||"",
       note: opNote + (noteParts.length?` ${noteParts.join(" · ")}`:"")
     });
-    const tag = kind==="receipt"?"IN":(kind==="issue"?"OUT":"WRITEOFF");
+    const tag = opTag(kind);
     logOp(tag, `${it.name} ${sign>0?"+":"-"}${fmtQty(n)} ${it.unit||""}${noteParts.length?` [${noteParts.join(" · ")}]`:""}`);
     saveState(); render(); return;
   }
@@ -2091,7 +2093,7 @@ async function quickAdjust(id, sign){
   it.qty = next; it.updatedAt = new Date().toISOString();
   state.journals[kind] = state.journals[kind]||[];
   state.journals[kind].unshift({ id:uid(), ts:new Date().toISOString(), productId:it.id, productName:it.name, qty:n, unit:it.unit||"", note:opNote });
-  const tag = kind==="receipt"?"IN":(kind==="issue"?"OUT":"WRITEOFF");
+  const tag = opTag(kind);
   logOp(tag, `${it.name} ${sign>0?"+":"-"}${fmtQty(n)} ${it.unit||""}`);
   saveState(); render();
 }
@@ -2643,7 +2645,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v64</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v65</div>
   `;
   pomoTick();
 }
@@ -2759,19 +2761,12 @@ function exportCsv(){
     const str = String(v??"");
     return /[;"\n\r]/.test(str) ? `"${str.replace(/"/g,'""')}"` : str;
   }).join(";")).join("\r\n");
-  const blob = new Blob([csv],{type:"text/csv;charset=utf-8"});
-  const a = document.createElement("a");
-  const url = URL.createObjectURL(blob);
-  a.href = url;
-  a.download = `vahtahoz-sklad-${todayStr()}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(()=>{ a.remove(); URL.revokeObjectURL(url); }, 1500);
+  triggerDownload(csv, `vahtahoz-sklad-${todayStr()}.csv`, "text/csv;charset=utf-8");
   toast("CSV сохранён");
 }
 
-function triggerDownload(text, filename){
-  const blob = new Blob([text],{type:"application/json"});
+function triggerDownload(text, filename, mime){
+  const blob = new Blob([text],{type:mime||"application/json"});
   const a = document.createElement("a");
   const url = URL.createObjectURL(blob);
   a.href = url; a.download = filename;
