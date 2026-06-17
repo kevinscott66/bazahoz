@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v67</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v68</div>
   </div>
 </div>
 
@@ -2657,7 +2657,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v67</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v68</div>
   `;
   pomoTick();
 }
@@ -3445,7 +3445,10 @@ function setSyncStatus(kind, text){
 async function cloudInit(){
   if(cloud._initDone) return; cloud._initDone = true;   // защита от повторного запуска (дубль listener)
   // авто-пуш/синхронизация при возврате сети
-  window.addEventListener("online", ()=>{ if(cloud.ready && activeCloudId()){ setSyncStatus("syncing","Сеть появилась — синхронизирую…"); cloudActivate(activeCloudId()); } });
+  window.addEventListener("online", ()=>{
+    if(cloud.session && cloud.basesLoaded===false){ cloudOnLogin(cloud.session).catch(()=>{}); return; }   // базы не загрузились — дозагрузим
+    if(cloud.ready && activeCloudId()){ setSyncStatus("syncing","Сеть появилась — синхронизирую…"); cloudActivate(activeCloudId()); }
+  });
   window.addEventListener("offline", ()=>{ if(cloud.ready && activeCloudId()) setSyncStatus("offline"); });
   try{
     await ensureSB();   // клиент нужен для realtime/setSession ниже
@@ -3558,7 +3561,7 @@ async function cloudOnLogin(session, attempt){
     cloud.profile = (Array.isArray(prof) && prof[0]) || { id:uidv, username:session.user.email };
     cloud.members = Array.isArray(mem) ? mem : [];
     cloud.bases = {}; (Array.isArray(bs)?bs:[]).forEach(b=>cloud.bases[b.id]=b.name);
-    cloud.ready = true;
+    cloud.ready = true; cloud.basesLoaded = true;   // базы реально получены из облака
     hideLoginGate();                           // успешный вход — прячем полноэкранный гейт
     try{ localStorage.removeItem("vahtahoz_login_skipped"); }catch(e){}
     const reloaded = await cloudAutoLink();
@@ -3575,12 +3578,19 @@ async function cloudOnLogin(session, attempt){
     // (медленная сеть / зависший запрос в standalone-PWA). НЕ показываем «Войти» — помечаем вход
     // состоявшимся с фолбэком и догружаем данные ретраем (4с/8с/12с).
     if(!cloud.profile) cloud.profile = { id:uidv, username:(session.user.email||"").split("@")[0] };
-    cloud.ready = true;
+    cloud.ready = true; cloud.basesLoaded = false;   // базы НЕ загрузились
     hideLoginGate();
     try{ localStorage.removeItem("vahtahoz_login_skipped"); }catch(_){}
     renderHeader(); render();
-    if(attempt===0) toast("Вход выполнен, данные догружаются…");
-    if(attempt < 3) setTimeout(()=>{ cloudOnLogin(session, attempt+1).catch(()=>{}); }, 4000);
+    if(attempt===0) toast("Вход выполнен, загружаю базы…");
+    // НАСТОЙЧИВО грузим базы — НЕ оставляем пользователя с «ничего». Пока онлайн — ретраим с backoff.
+    if(cloudOnline()){
+      setSyncStatus("syncing","Загрузка баз из облака…");
+      const delay = Math.min(3000 + attempt*2000, 20000);   // 3,5,7,… до 20с
+      setTimeout(()=>{ cloudOnLogin(session, attempt+1).catch(()=>{}); }, delay);
+    } else {
+      setSyncStatus("offline","Нет сети — базы подтянутся при подключении");
+    }
   }
 }
 async function cloudLogout(){
@@ -3603,15 +3613,12 @@ async function cloudAutoLink(){
     const exist = profiles.list.find(x=>!x.cloudId && x.name===name);
     if(exist){
       exist.cloudId=cid; changed=true;
-      // если у связываемой локальной базы есть данные — помечаем «к выгрузке»,
-      // чтобы при активации они ушли В облако, а не были затёрты pull-ом.
-      // (пустую базу НЕ метим — иначе пустое затёрло бы заполненное облако)
-      try{
-        const raw = exist.id===profiles.activeId ? JSON.stringify(state) : localStorage.getItem(slotKey(exist.id));
-        const st = raw ? JSON.parse(raw) : null;
-        // только синкаемые данные (склад/журналы); задачи не синкаются и не должны провоцировать push пустого склада
-        if(st && ((st.stock&&st.stock.length) || JOURNAL_KEYS.some(k=>(st.journals?.[k]||[]).length))) localStorage.setItem(cloudDirtyKey(cid),"1");
-      }catch(e){}
+      // НЕ помечаем dirty при авто-привязке: ОБЛАКО — источник истины.
+      // Раньше свежезасеянная локальная база метилась «к выгрузке» и при активации
+      // ПУШИЛА сид ПОВЕРХ облака (потеря данных после чистки кэша). Теперь:
+      //  • облако непусто → cloudActivate сделает PULL (облако победит сид);
+      //  • облако пусто → cloudActivate сам выгрузит локальное (cloudEmpty && localHasData);
+      //  • реальные офлайн-правки помечаются dirty обычным путём (cloudMaybePush) — не теряются.
     }
     else {
       const id=uid();
