@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v87</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v88</div>
   </div>
 </div>
 
@@ -603,11 +603,20 @@ function normalizeImportIds(obj){
     sanitizeIds(obj.tasks);
     // чек-листы задач: id пунктов идут в inline-onclick → санитизируем при импорте (XSS)
     for(const t of obj.tasks){
-      if(t && Array.isArray(t.items)){
+      if(!t || typeof t!=="object") continue;
+      if(Array.isArray(t.items)){
         t.items = t.items.filter(i=>i&&typeof i==="object")
           .map(i=>({ id:safeId(i.id), text:String(i.text||"").slice(0,200), done:!!i.done }))
           .filter(i=>i.text);
       }
+      // поля задачи идут в HTML формы редактирования (due/time — в value атрибута) → валидируем при импорте,
+      // иначе мусорная/вредоносная строка в due/time = XSS и ломает daysLeft/сортировку
+      t.due  = (typeof t.due==="string"  && /^\d{4}-\d{2}-\d{2}$/.test(t.due))  ? t.due  : "";
+      t.time = (typeof t.time==="string" && /^\d{2}:\d{2}$/.test(t.time))       ? t.time : "";
+      t.title    = typeof t.title==="string" ? t.title.slice(0,200) : "";
+      t.category = typeof t.category==="string" ? cleanCatName(t.category) : "";
+      t.priority = TASK_PRIOS.includes(t.priority) ? t.priority : "Средний";
+      t.repeat   = ["Нет","День","Неделя","Месяц"].includes(t.repeat) ? t.repeat : "Нет";
     }
   }
   if(obj.log)   sanitizeIds(obj.log);
@@ -1302,11 +1311,11 @@ function openTaskEdit(id){
       <div class="grid grid-cols-2 gap-2">
         <div>
           <div class="text-sm opacity-70 mb-1">Дедлайн</div>
-          <input type="date" class="input" id="td" value="${t.due||""}" />
+          <input type="date" class="input" id="td" value="${esc(t.due||"")}" />
         </div>
         <div>
           <div class="text-sm opacity-70 mb-1">Время (опц.)</div>
-          <input type="time" class="input" id="ttime" value="${t.time||""}" />
+          <input type="time" class="input" id="ttime" value="${esc(t.time||"")}" />
         </div>
       </div>
       <div>
@@ -2738,7 +2747,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v87</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v88</div>
   `;
   pomoTick();
 }
@@ -3711,6 +3720,8 @@ async function cloudLogout(){
   try{ if(cloud.tasksChannel) await cloud.sb.removeChannel(cloud.tasksChannel); }catch(e){}   // снимаем и канал задач
   try{ if(cloud.sb) await cloud.sb.auth.signOut(); }catch(e){}   // дожидаемся выхода (был баг приоритета await/&&)
   clearTimeout(cloud.tasksTimer); clearTimeout(cloud.tasksRetry); clearTimeout(cloud.tasksPullTimer);
+  // задачи привязаны к аккаунту (owner) — при выходе НЕ оставляем их локально, иначе следующий юзер их увидит/выгрузит
+  state.tasks=[]; try{ localStorage.removeItem(TASKS_KEY); localStorage.removeItem(TASKS_DIRTY); }catch(e){}
   cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
   cloud.tasksChannel=null; cloud.tasksSubUid=null; cloud.tasksBusy=false; cloud.basesLoaded=false;   // сброс задач: иначе после входа другим юзером realtime молчит
   clearCloudSess();   // чистим своё хранилище сессии, иначе при запуске восстановит вход
@@ -3845,7 +3856,7 @@ async function cloudPull(cid){
     console.warn("cloudPull", e);
     setSyncStatus("error", "Не загрузилось: "+(e.message||e).toString().slice(0,60));
     // слабая сеть/таймаут → повторим (мягкий backoff), пока онлайн
-    if(cloudOnline()) setTimeout(()=>{ if(!cloud.busy) cloudPull(cid).catch(()=>{}); }, 8000);
+    if(cloudOnline()) setTimeout(()=>{ if(!cloud.busy && activeCloudId()===cid) cloudPull(cid).catch(()=>{}); }, 8000);  // не тянуть базу, если за время ожидания сменили профиль
   }
   finally{
     cloud.applying=false;
@@ -3882,8 +3893,8 @@ function loadSyncSig(cid, kind){ try{ return JSON.parse(localStorage.getItem(`va
 function saveSyncSig(cid, kind, map){ try{ localStorage.setItem(`vahtahoz_sig_${kind}_${cid}`, JSON.stringify(map)); }catch(_){} }
 // ОБЪЕДИНЕНИЕ настроек (места/категории) с облаком — union списков по каждому типу.
 // Так одновременная выгрузка двух устройств НЕ затирает чужие добавления (последний-победил
-// заменился бы на сложение). Удаление места/категории при этом не распространяется (имена
-// сохраняются — как и на pull, где пустые массивы не применяются). Это осознанный компромисс.
+// заменился бы на сложение). Удаление РАСПРОСТРАНЯЕТСЯ через надгробия (deletedLocations/Categories):
+// union имён минус актуальные надгробия. Повторное добавление имени снимает надгробие (revive).
 function mergeSettings(cloudSet, localSet){
   const out={ locations:{}, categories:{}, deletedLocations:{}, deletedCategories:{} };
   const u = unionClean;
@@ -4004,6 +4015,7 @@ async function cloudPushNow(){
 // в таблице tasks, привязанной к owner_id = uid пользователя (RLS: видишь только свои).
 // Не зависят от активной базы; синкаются отдельно от склада/журналов. Дельта, как у склада.
 const TASKS_DIRTY = "vahtahoz_tasks_dirty";
+const TASKS_OWNER = "vahtahoz_tasks_owner";   // uid владельца локальных задач — защита от утечки при смене аккаунта на устройстве
 function activeUid(){ return (cloud.session && cloud.session.user && cloud.session.user.id) || null; }
 function _tasksSigMap(){ const m={}; for(const t of (state.tasks||[])){ if(t && t.id!=null) m[String(t.id)]=_sigOf({data:t}); } return m; }
 function tasksChangedVsCloud(uid){
@@ -4039,7 +4051,7 @@ async function cloudPushTasksNow(){
     if(del.length && rows.length>0) await cloudRestDelete("tasks", del, tok);
     if(upsert.length) await cloudRestUpsert("tasks", upsert, tok);
     saveSyncSig(uid,"tasks",curSig);
-    try{ localStorage.removeItem(TASKS_DIRTY); }catch(e){}
+    try{ localStorage.removeItem(TASKS_DIRTY); localStorage.setItem(TASKS_OWNER, uid); }catch(e){}
   }catch(e){
     console.warn("cloudPushTasks", e);
     if(cloudOnline()){ clearTimeout(cloud.tasksRetry); cloud.tasksRetry=setTimeout(()=>{ if(localStorage.getItem(TASKS_DIRTY)) cloudPushTasksNow(); }, 6000); }
@@ -4063,6 +4075,7 @@ async function cloudPullTasks(){
     sanitizeIds(state.tasks);
     try{ localStorage.setItem(TASKS_KEY, JSON.stringify(state.tasks)); }catch(e){}   // прямо в localStorage, БЕЗ повторного push
     saveSyncSig(uid,"tasks",_tasksSigMap());
+    try{ localStorage.setItem(TASKS_OWNER, uid); }catch(e){}
     if(currentView==="tasks") render();
   }catch(e){ console.warn("cloudPullTasks", e); }
 }
@@ -4070,6 +4083,14 @@ async function cloudPullTasks(){
 async function cloudSyncTasks(){
   const uid=activeUid(); if(!uid || !cloudOnline()) return;
   if(localStorage.getItem(TASKS_DIRTY)){ cloudMaybePushTasks(); return; }
+  // ЗАЩИТА ОТ УТЕЧКИ: если локальные задачи принадлежат ДРУГОМУ пользователю (вход другим аккаунтом
+  // на этом устройстве) — чистим их, чтобы не выгрузить чужие задачи в облако текущего юзера.
+  const owner=localStorage.getItem(TASKS_OWNER);
+  if(owner && owner!==uid){
+    state.tasks=[]; try{ localStorage.setItem(TASKS_KEY,"[]"); }catch(_){}
+    saveSyncSig(uid,"tasks",{});
+    if(currentView==="tasks") render();
+  }
   try{
     const tok=cloud.session.access_token;
     const ids=await cloudRest(`tasks?select=id&owner_id=eq.${encodeURIComponent(uid)}`, tok);
