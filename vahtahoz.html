@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v82</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v83</div>
   </div>
 </div>
 
@@ -1240,6 +1240,7 @@ function toggleTask(id){
 
 function openTaskEdit(id){
   const t = id?state.tasks.find(x=>x.id===id):{ id:"", title:"", category:"Общее", priority:"Средний", due:todayStr(), time:"", repeat:"Нет", done:false };
+  if(id && !t){ toast("Задача изменилась в другой вкладке"); render(); return; }   // удалена/синкнута до открытия формы → не падаем на t.title
   openSheet(`
     <div class="font-bold text-xl mb-3">${id?"Редактировать":"Новая"} задача</div>
     <div class="space-y-3">
@@ -2113,6 +2114,7 @@ const UNITS = ["шт","кг","г","л","мл","упаковка","пачка","�
 function openStockEdit(id, typeDefault){
   const it = id ? state.stock.find(s=>s.id===id)
                : { id:"", type:typeDefault||"product", name:"", qty:"", unit:"шт", minStock:"", expiry:"", location:"", category:"", note:"" };
+  if(id && !it){ toast("Позиция изменилась в другой вкладке"); render(); return; }   // удалена/синкнута, пока вкладка была открыта → не падаем на it.type
   const tk = it.type;
   const isProd = tk==="product";
   const expiryLabel = isProd ? "Срок годности" : (tk==="tool" ? "Срок/гарантия (опц.)" : "Срок годности (опц.)");
@@ -2178,7 +2180,7 @@ function saveStock(id, type){
   const body = document.getElementById("sheetBody");
   const name = body.querySelector("#sn").value.trim();
   if(!name){ toast("Название обязательно"); return; }
-  const qty = parseNum(body.querySelector("#sq").value);
+  const qty = Math.max(0, roundQty(parseNum(body.querySelector("#sq").value)));   // ручной ввод: отрицательное/мусор → 0 (нет смысла в минусовом остатке)
   const unit = body.querySelector("#su").value;
   const _smRaw = body.querySelector("#sm").value, _smN = Number(_smRaw.replace(",","."));
   const minStock = (_smRaw===""||!Number.isFinite(_smN)) ? "" : _smN;   // мусор/NaN → "" (иначе сравнение «низкий запас» молча отключалось)
@@ -2678,7 +2680,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v82</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v83</div>
   `;
   pomoTick();
 }
