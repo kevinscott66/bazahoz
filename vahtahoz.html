@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v79</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v80</div>
   </div>
 </div>
 
@@ -404,7 +404,7 @@ async function deleteProfile(id){
   const ok2 = await confirmSheet(`Точно удалить «${p.name}»? Данные этой базы будут стёрты навсегда.`,{danger:true,yes:"Да, удалить"});
   if(!ok2) return;
   try{ localStorage.removeItem(slotKey(id)); }catch(e){ console.error(e); }
-  if(p.cloudId) try{ localStorage.removeItem(cloudDirtyKey(p.cloudId)); }catch(_){}   // чистим осиротевший dirty-маркер
+  if(p.cloudId) clearBaseSyncKeys(p.cloudId);   // чистим осиротевшие маркеры синка (dirty + снимки подписей)
   profiles.list = profiles.list.filter(x=>x.id!==id);
   saveProfiles(profiles);
   logOp("PROFILE_DEL", `База «${p.name}»`);
@@ -2233,6 +2233,7 @@ function openBatchAdd(id){
   `);
 }
 function saveBatch(id){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   const body = document.getElementById("sheetBody");
   const it = state.stock.find(s=>s.id===id); if(!it){ closeSheet(); return; }
   const qty = roundQty(parseNum(body.querySelector("#bq").value));
@@ -2289,6 +2290,7 @@ function openBatchEdit(itemId, batchId){
   `);
 }
 function saveBatchEdit(itemId, batchId){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   const body = document.getElementById("sheetBody");
   const it = state.stock.find(s=>s.id===itemId); if(!it){ closeSheet(); return; }
   const b = (it.batches||[]).find(x=>x.id===batchId); if(!b){ closeSheet(); return; }
@@ -2302,6 +2304,7 @@ function saveBatchEdit(itemId, batchId){
   toast("Партия обновлена");
 }
 async function deleteBatch(itemId, batchId){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   const it = state.stock.find(s=>s.id===itemId); if(!it) return;
   const b = (it.batches||[]).find(x=>x.id===batchId); if(!b) return;
   if(!await confirmSheet(`Удалить партию ${fmtQty(b.qty)} ${it.unit||""}${b.location?` (📍 ${b.location})`:""}${b.expiry?` (⏰ ${fmtDate(b.expiry)})`:""}?`,{danger:true,yes:"Удалить"})) return;
@@ -2323,6 +2326,7 @@ async function deleteBatch(itemId, batchId){
 }
 
 async function deleteStock(id){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   const it = state.stock.find(s=>s.id===id);
   if(!await confirmSheet(`Удалить «${it?.name||""}»?`,{danger:true,yes:"Удалить"})) return;
   state.stock = state.stock.filter(s=>s.id!==id);
@@ -2349,6 +2353,7 @@ function locationUsageCount(type, name){
   return n;
 }
 async function addLocation(type){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   const val = await promptSheet(`Новое место хранения (${typeMeta(type).label})`, "", {title:"Добавить место"});
   if(val===null) return;
   const name = String(val).trim();
@@ -2362,6 +2367,7 @@ async function addLocation(type){
   toast("Место добавлено");
 }
 async function renameLocation(type, oldName){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   const val = await promptSheet(`Переименовать «${oldName}»`, oldName, {title:"Переименовать"});
   if(val===null) return;
   const newName = String(val).trim();
@@ -2388,6 +2394,7 @@ async function renameLocation(type, oldName){
   toast(`Переименовано (${touched} ссылок)`);
 }
 async function deleteLocation(type, name){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   const cnt = locationUsageCount(type, name);
   if(cnt>0){
     const ok = await confirmSheet(
@@ -2491,6 +2498,7 @@ function openCategoriesEdit(){
   `);
 }
 function addCategory(type){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   const inp = document.getElementById(`catNew_${type}`);
   if(!inp) return;
   const v = inp.value.trim(); if(!v) return;
@@ -2500,6 +2508,7 @@ function addCategory(type){
   saveState(); openCategoriesEdit(); render();
 }
 async function renameCategory(type, oldName){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   const next = await promptSheet("Новое название:", oldName, {title:"Переименовать категорию"});
   if(next===null) return;
   const nextT = (next||"").trim(); if(!nextT || nextT===oldName) return;
@@ -2512,6 +2521,7 @@ async function renameCategory(type, oldName){
   saveState(); openCategoriesEdit(); render();
 }
 async function deleteCategory(type, name){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   const cnt = state.stock.filter(s=>s.type===type && s.category===name).length;
   const msg = cnt>0
     ? `В категории «${name}» ${cnt} позиций. Перенести в «Прочее» и удалить?`
@@ -2660,7 +2670,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v79</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v80</div>
   `;
   pomoTick();
 }
@@ -2746,20 +2756,22 @@ async function exportXlsx(){
   jSheet("writeoff","Списание");
   jSheet("order","Заказы");
 
-  // лист с задачами
-  const taskRows = (state.tasks||[]).slice().sort((a,b)=>(a.due||"").localeCompare(b.due||"")).map(t=>({
-    "Задача": t.title||"",
-    "Категория": t.category||"",
-    "Приоритет": t.priority||"",
-    "Повтор": t.repeat||"Нет",
-    "Срок": t.due||"",
-    "Время": t.time||"",
-    "Порядок": (t.order==null)?"":Number(t.order),
-    "Готово": t.done?"✓":"",
-  }));
-  const tsh = XLSX.utils.json_to_sheet(taskRows.length?taskRows:[{"Задача":"","Категория":"","Приоритет":"","Повтор":"","Срок":"","Время":"","Порядок":"","Готово":""}]);
-  tsh["!cols"] = [{wch:40},{wch:16},{wch:12},{wch:10},{wch:12},{wch:8},{wch:8},{wch:10}];
-  XLSX.utils.book_append_sheet(wb, tsh, "Задачи");
+  // лист с задачами — НЕ добавляем для ограниченного пользователя (начальник): у него вкладка задач скрыта
+  if(!isRestrictedUser()){
+    const taskRows = (state.tasks||[]).slice().sort((a,b)=>(a.due||"").localeCompare(b.due||"")).map(t=>({
+      "Задача": t.title||"",
+      "Категория": t.category||"",
+      "Приоритет": t.priority||"",
+      "Повтор": t.repeat||"Нет",
+      "Срок": t.due||"",
+      "Время": t.time||"",
+      "Порядок": (t.order==null)?"":Number(t.order),
+      "Готово": t.done?"✓":"",
+    }));
+    const tsh = XLSX.utils.json_to_sheet(taskRows.length?taskRows:[{"Задача":"","Категория":"","Приоритет":"","Повтор":"","Срок":"","Время":"","Порядок":"","Готово":""}]);
+    tsh["!cols"] = [{wch:40},{wch:16},{wch:12},{wch:10},{wch:12},{wch:8},{wch:8},{wch:10}];
+    XLSX.utils.book_append_sheet(wb, tsh, "Задачи");
+  }
 
   XLSX.writeFile(wb, `vahtahoz-${todayStr()}.xlsx`);
   toast("Excel сохранён");
@@ -2925,10 +2937,12 @@ async function importAllProfiles(payload){
       return;
     }
     // все новые слоты на месте — теперь безопасно удалить старые и переключить активную
-    const oldIds = profiles.list.map(p=>p.id);
+    const oldProfs = profiles.list.slice();   // старые базы (с cloudId) — для чистки осиротевших sync-маркеров
+    const oldIds = oldProfs.map(p=>p.id);
     try{ localStorage.setItem(STORE_KEY, localStorage.getItem(slotKey(activeId))); }catch(e){ console.error(e); }
     saveProfiles({ activeId, list: newList });
     for(const id of oldIds){ if(id!==activeId){ try{ localStorage.removeItem(slotKey(id)); }catch(_){} } }
+    for(const op of oldProfs){ if(op.cloudId) clearBaseSyncKeys(op.cloudId); }   // dirty + снимки подписей старых баз не нужны
     toast("Восстановлено. Перезагрузка…");
     setTimeout(()=>location.reload(), 600);
   } else {
@@ -3410,19 +3424,6 @@ function stockToRow(s, cid){
     min_stock:(s.minStock===""||s.minStock==null)?null:Number(s.minStock), note:s.note||"",
     qty:roundQty(s.qty||0), expiry:s.expiry||"", location:s.location||"", batches:Array.isArray(s.batches)?s.batches:[] };
 }
-function rowToTask(r){
-  const t = { id:r.id, title:r.title, category:r.category||"Общее", priority:r.priority||"Средний",
-    repeat:r.repeat||"Нет", due:r.due||"", time:r.time||"", order:(r.order==null?undefined:Number(r.order)),
-    done:!!r.done };
-  if(r.parent_id) t.parentId=r.parent_id;
-  if(Array.isArray(r.items) && r.items.length) t.items=r.items;
-  return t;
-}
-function taskToRow(t, cid){
-  return { id:t.id, base_id:cid, title:t.title, category:t.category||"Общее", priority:t.priority||"Средний",
-    repeat:t.repeat||"Нет", due:t.due||"", time:t.time||"", order:(t.order==null?null:Number(t.order)),
-    done:!!t.done, parent_id:t.parentId||null, items:Array.isArray(t.items)?t.items:[] };
-}
 /* --- связь активной базы с облаком и права --- */
 function activeCloudId(){ const p=profiles.list.find(x=>x.id===profiles.activeId); return p?(p.cloudId||null):null; }
 function memberOf(cid){ return cloud.members.find(m=>m.base_id===cid)||null; }
@@ -3436,6 +3437,8 @@ function activeMember(){
 // (cloudPushNow её молча отбрасывает) и затиралась следующим pull — потеря без обратной связи.
 function canEditStock(){ const m=activeMember(); return !m || !!m.can_edit_stock; }
 const cloudDirtyKey = (cid)=>`vahtahoz_dirty_${cid}`;
+// удалить все sync-маркеры базы (dirty + снимки подписей) — при удалении/замене базы, чтобы не копить мусор
+function clearBaseSyncKeys(cid){ if(!cid) return; try{ localStorage.removeItem(cloudDirtyKey(cid)); for(const k of ["stock","jr","settings"]) localStorage.removeItem(`vahtahoz_sig_${k}_${cid}`); }catch(_){} }
 function cloudOnline(){ return navigator.onLine!==false; }
 /* «ограниченный» пользователь — вошёл в облако и НЕ имеет права на задачи (начальник):
    ему показываем только складскую часть (журнал операций без задач). */
