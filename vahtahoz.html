@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v86</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v87</div>
   </div>
 </div>
 
@@ -726,7 +726,7 @@ function ensureTomb(){
 function tombAdd(map,type,name){ ensureTomb(); const a=map[type]; if(name && !a.includes(name)) a.push(name); }      // удалили имя → в надгробия
 function tombRevive(map,type,name){ ensureTomb(); const i=(map[type]||[]).indexOf(name); if(i>=0) map[type].splice(i,1); } // снова добавили/переименовали в это имя → снимаем надгробие
 /* state.locations — пользовательские места хранения. При первом запуске сидим из дефолтов.
-   Поля внутри: product[], household[]. */
+   Поля внутри: product[], household[], tool[]. */
 if(!state.locations || typeof state.locations!=="object" || Array.isArray(state.locations)){
   state.locations = {};
   for(const k of STOCK_TYPE_KEYS) state.locations[k] = DEFAULT_LOCATIONS[k].slice();
@@ -2228,7 +2228,7 @@ function saveStock(id, type){
   if(!name){ toast("Название обязательно"); return; }
   const qty = Math.max(0, roundQty(parseNum(body.querySelector("#sq").value)));   // ручной ввод: отрицательное/мусор → 0 (нет смысла в минусовом остатке)
   const unit = body.querySelector("#su").value;
-  const _smRaw = body.querySelector("#sm").value, _smN = Number(_smRaw.replace(",","."));
+  const _smRaw = body.querySelector("#sm").value, _smN = parseNum(_smRaw);
   const minStock = (_smRaw===""||!Number.isFinite(_smN)) ? "" : _smN;   // мусор/NaN → "" (иначе сравнение «низкий запас» молча отключалось)
   const expiry = body.querySelector("#se")?.value || "";
   const note = body.querySelector("#sno").value.trim();
@@ -2738,7 +2738,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v86</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v87</div>
   `;
   pomoTick();
 }
@@ -3414,7 +3414,7 @@ document.addEventListener("click", e=>{
 
 /* ---------- Expose for inline handlers ---------- */
 Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTaskItem,moveTask,taskFilter,
-  openStockEdit,saveStock,deleteStock,openBatchAdd,saveBatch,openBatchEdit,saveBatchEdit,deleteBatch,quickAdjust,stockTab,stockSearch,stockCat,stockMode,
+  openStockEdit,saveStock,deleteStock,openBatchAdd,saveBatch,openBatchEdit,saveBatchEdit,deleteBatch,quickAdjust,
   openOpEdit,saveOp,deleteOp,editOp,saveOpEdit,orderReceive,
   openCategoriesEdit,addCategory,renameCategory,deleteCategory,
   openLocationsEdit,addLocation,renameLocation,deleteLocation,
