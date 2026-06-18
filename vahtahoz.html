@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v74</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v75</div>
   </div>
 </div>
 
@@ -2659,7 +2659,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v74</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v75</div>
   `;
   pomoTick();
 }
@@ -3732,6 +3732,8 @@ async function cloudPull(cid){
         if(Array.isArray(base.settings.locations?.[k]) && base.settings.locations[k].length) state.locations[k]=clean(base.settings.locations[k]);
         if(Array.isArray(base.settings.categories?.[k]) && base.settings.categories[k].length) state.categories[k]=clean(base.settings.categories[k]);
       }
+      // подпись настроек = только что загруженное → не будем зря пере-выгружать на следующем push
+      try{ saveSyncSig(cid,"settings",{ v:_sigOf({ locations:state.locations, categories:state.categories }) }); }catch(_){}
     }
     saveState();                              // cloud.applying=true → push не сработает (без эха)
     // снимок подписей = только что загруженное из облака → следующий push пойдёт ДЕЛЬТОЙ (не вся база)
@@ -3781,6 +3783,20 @@ function _stableStr(o){
 function _sigOf(obj){ const s=_stableStr(obj); let h1=0x811c9dc5, h2=0; for(let i=0;i<s.length;i++){ const c=s.charCodeAt(i); h1=(h1^c)>>>0; h1=Math.imul(h1,0x01000193)>>>0; h2=(h2*131+c)|0; } return h1.toString(36)+h2.toString(36)+":"+s.length; }
 function loadSyncSig(cid, kind){ try{ return JSON.parse(localStorage.getItem(`vahtahoz_sig_${kind}_${cid}`)||"{}"); }catch(_){ return {}; } }
 function saveSyncSig(cid, kind, map){ try{ localStorage.setItem(`vahtahoz_sig_${kind}_${cid}`, JSON.stringify(map)); }catch(_){} }
+// ОБЪЕДИНЕНИЕ настроек (места/категории) с облаком — union списков по каждому типу.
+// Так одновременная выгрузка двух устройств НЕ затирает чужие добавления (последний-победил
+// заменился бы на сложение). Удаление места/категории при этом не распространяется (имена
+// сохраняются — как и на pull, где пустые массивы не применяются). Это осознанный компромисс.
+function mergeSettings(cloudSet, localSet){
+  const out={ locations:{}, categories:{} };
+  for(const k of STOCK_TYPE_KEYS){
+    const lL=(localSet.locations&&localSet.locations[k])||[], cL=(cloudSet.locations&&cloudSet.locations[k])||[];
+    out.locations[k]=[...new Set([...cL,...lL].map(cleanName40).filter(Boolean))];
+    const lC=(localSet.categories&&localSet.categories[k])||[], cC=(cloudSet.categories&&cloudSet.categories[k])||[];
+    out.categories[k]=[...new Set([...cC,...lC].map(cleanName40).filter(Boolean))];
+  }
+  return out;
+}
 // upsert пачками прямым fetch (merge по первичному ключу id)
 async function cloudRestUpsert(table, rows, tok, onProgress){
   const size=100;
@@ -3824,13 +3840,25 @@ async function cloudPushNow(){
         const del = Object.keys(prevSig).filter(id=> !(id in curSig));    // удалённое локально
         if(del.length) await cloudRestDelete("stock_items", del, tok);
         if(upsert.length) await cloudRestUpsert("stock_items", upsert, tok, (d,t)=>{ if(t>20) setSyncStatus("syncing",`Выгрузка ${d}/${t}`); });
-        if(del.length || upsert.length){
-          // настройки (места/категории) — только при реальных изменениях склада
-          await cloudRest(`bases?id=eq.${encodeURIComponent(cid)}`, tok, { method:"PATCH", returnResponse:true,
-            headers:{ "Content-Type":"application/json", "Prefer":"return=minimal" },
-            body: JSON.stringify({ settings:{ locations:state.locations, categories:state.categories } }) });
-        }
         saveSyncSig(cid,"stock",curSig);   // снимок = текущее (следующий push будет дельтой)
+        // === НАСТРОЙКИ (места/категории) — СВОЯ дельта, НЕ на каждое изменение склада ===
+        // Шлём ТОЛЬКО если списки реально менялись (иначе смена количества зря переписывала
+        // блоб и могла затереть чужие правки). При выгрузке ОБЪЕДИНЯЕМ с облаком (union) —
+        // одновременная выгрузка двух устройств не теряет добавления ни одного из них.
+        const setObj={ locations:state.locations, categories:state.categories };
+        const setSig=_sigOf(setObj);
+        const prevSet=loadSyncSig(cid,"settings");
+        if(setSig !== prevSet.v){
+          try{
+            const cur=await cloudRest(`bases?select=settings&id=eq.${encodeURIComponent(cid)}`, tok);
+            const cloudSet=(Array.isArray(cur)&&cur[0]&&cur[0].settings)||{};
+            const merged=mergeSettings(cloudSet, setObj);
+            await cloudRest(`bases?id=eq.${encodeURIComponent(cid)}`, tok, { method:"PATCH", returnResponse:true,
+              headers:{ "Content-Type":"application/json", "Prefer":"return=minimal" },
+              body: JSON.stringify({ settings: merged }) });
+            saveSyncSig(cid,"settings",{ v:setSig });   // помним подпись локальных настроек
+          }catch(e){ console.warn("settings push", e); }
+        }
       }
       // === ЖУРНАЛЫ (дельта upsert; удаление — только явное, под порогом архива) ===
       const jrows=[]; const curJSig={};
