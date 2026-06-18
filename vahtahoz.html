@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v75</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v76</div>
   </div>
 </div>
 
@@ -172,6 +172,8 @@ if(typeof structuredClone!=="function"){
 /* ---------- Storage ---------- */
 const STORE_KEY = "vahtahoz:v1";
 const JOURNAL_KEYS = ["receipt","issue","writeoff","order"];  // виды журналов движений
+// onclick выбора чипа: снять active со всех соседних чипов и подсветить нажатый (был продублирован 7×)
+const CHIP_PICK = "this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');";
 // свежий пустой набор журналов (каждый вызов — новый объект, безопасно для присваивания в state)
 function emptyJournals(){ return Object.fromEntries(JOURNAL_KEYS.map(k=>[k,[]])); }
 /* Задачи/планы — ОБЩИЕ для всех баз устройства (у хоза одно расписание на обе базы).
@@ -531,6 +533,13 @@ const cleanCatName = (s) => (typeof s==="string") ? s.replace(/[<>'"\\\r\n]/g,""
 // единый санитайзер коротких имён (места хранения, имена баз и т.п.): убираем опасные символы, ≤40
 function cleanName40(s){ return String(s).replace(/[<>'"\\&\r\n]/g,"").trim().slice(0,40); }
 function hasBadChars(s){ return /[<>'"\\&\r\n]/.test(String(s)); }
+// проверка короткого имени (место/категория): ≤40 символов и без опасных символов.
+// показывает тост и возвращает false, если не прошло; true — если ОК (было продублировано 3×)
+function validShortName(s){
+  if(String(s).length>40){ toast("Слишком длинно (≤40 символов)"); return false; }
+  if(hasBadChars(s)){ toast("Нельзя символы < > ' \" \\ &"); return false; }
+  return true;
+}
 function sanitizeIds(arr){
   if(!Array.isArray(arr)) return [];
   for(const it of arr){ if(it && typeof it==="object") it.id = safeId(it.id); }
@@ -557,10 +566,9 @@ function validateImport(obj){
   }
   if(obj.locations!==undefined){
     if(typeof obj.locations!=="object" || Array.isArray(obj.locations)) throw new Error("locations не объект");
-    const _cleanLoc = cleanName40;
     for(const k of STOCK_TYPE_KEYS){
       if(obj.locations[k]!==undefined && !Array.isArray(obj.locations[k])) throw new Error(`locations.${k} не массив`);
-      if(Array.isArray(obj.locations[k])) obj.locations[k] = [...new Set(obj.locations[k].map(_cleanLoc).filter(Boolean))];
+      if(Array.isArray(obj.locations[k])) obj.locations[k] = [...new Set(obj.locations[k].map(cleanName40).filter(Boolean))];
     }
   }
   if(obj.checklists!==undefined){
@@ -672,6 +680,8 @@ function getLocationsWithOrphan(type, orphanValues){
     .filter(v => v && !set.has(v));
   return [...orphans, ...base];
 }
+// места для выбора партии: дефолтные места типа + «осиротевшие» (фактически используемые в позиции/её партиях)
+function batchLocs(it){ return getLocationsWithOrphan(it.type, (it.batches||[]).map(b=>b.location).concat([it.location])); }
 /* state.locations — пользовательские места хранения. При первом запуске сидим из дефолтов.
    Поля внутри: product[], household[]. */
 if(!state.locations || typeof state.locations!=="object" || Array.isArray(state.locations)){
@@ -682,9 +692,8 @@ for(const k of STOCK_TYPE_KEYS){
   if(!Array.isArray(state.locations[k]) || !state.locations[k].length) state.locations[k] = (DEFAULT_LOCATIONS[k]||[]).slice();
 }
 // чистим дубликаты, пустоты и опасные символы (XSS-страховка для inline-onclick)
-const cleanLoc = cleanName40;
 for(const k of STOCK_TYPE_KEYS){
-  state.locations[k] = [...new Set(state.locations[k].map(cleanLoc).filter(Boolean))];
+  state.locations[k] = [...new Set(state.locations[k].map(cleanName40).filter(Boolean))];
 }
 // общие задачи накладываем ДО санитизации — чтобы их id/чек-листы тоже прошли проверку
 loadGlobalTasks();
@@ -1235,11 +1244,11 @@ function openTaskEdit(id){
       <input class="input" id="tt" placeholder="Что сделать?" value="${esc(t.title)}" />
       <div>
         <div class="text-sm opacity-70 mb-1">Категория</div>
-        <div class="scroll-x flex gap-2">${["Склад","Кухня","База","Баня","Общее"].map(c=>`<button class="chip ${t.category===c?"active":""}" onclick="this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');" data-cat="${c}">${c}</button>`).join("")}</div>
+        <div class="scroll-x flex gap-2">${["Склад","Кухня","База","Баня","Общее"].map(c=>`<button class="chip ${t.category===c?"active":""}" onclick="${CHIP_PICK}" data-cat="${c}">${c}</button>`).join("")}</div>
       </div>
       <div>
         <div class="text-sm opacity-70 mb-1">Приоритет</div>
-        <div class="scroll-x flex gap-2">${TASK_PRIOS.map(p=>`<button class="chip ${t.priority===p?"active":""}" data-prio="${p}" onclick="this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');">${p}</button>`).join("")}</div>
+        <div class="scroll-x flex gap-2">${TASK_PRIOS.map(p=>`<button class="chip ${t.priority===p?"active":""}" data-prio="${p}" onclick="${CHIP_PICK}">${p}</button>`).join("")}</div>
       </div>
       <div class="grid grid-cols-2 gap-2">
         <div>
@@ -1253,7 +1262,7 @@ function openTaskEdit(id){
       </div>
       <div>
         <div class="text-sm opacity-70 mb-1">Повтор</div>
-        <div class="scroll-x flex gap-2">${["Нет","День","Неделя","Месяц"].map(r=>`<button class="chip ${t.repeat===r?"active":""}" data-rep="${r}" onclick="this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');">${r}</button>`).join("")}</div>
+        <div class="scroll-x flex gap-2">${["Нет","День","Неделя","Месяц"].map(r=>`<button class="chip ${t.repeat===r?"active":""}" data-rep="${r}" onclick="${CHIP_PICK}">${r}</button>`).join("")}</div>
       </div>
       <div>
         <div class="text-sm opacity-70 mb-1">Список (по одной позиции в строке) — напр. что принести со склада</div>
@@ -2142,11 +2151,11 @@ function openStockEdit(id, typeDefault){
 
       <div>
         <div class="text-sm opacity-70 mb-1">Категория</div>
-        <div class="scroll-x flex gap-2">${(state.categories[tk]||[]).map(c=>`<button class="chip ${it.category===c?"active":""}" data-cat="${esc(c)}" onclick="this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');">${esc(c)}</button>`).join("")}</div>
+        <div class="scroll-x flex gap-2">${(state.categories[tk]||[]).map(c=>`<button class="chip ${it.category===c?"active":""}" data-cat="${esc(c)}" onclick="${CHIP_PICK}">${esc(c)}</button>`).join("")}</div>
       </div>
       <div>
         <div class="text-sm opacity-70 mb-1">Место хранения</div>
-        <div class="scroll-x flex gap-2">${getLocationsWithOrphan(tk, it.location).map(l=>`<button class="chip ${it.location===l?"active":""}" data-loc="${esc(l)}" onclick="this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');">${esc(l)}</button>`).join("")}</div>
+        <div class="scroll-x flex gap-2">${getLocationsWithOrphan(tk, it.location).map(l=>`<button class="chip ${it.location===l?"active":""}" data-loc="${esc(l)}" onclick="${CHIP_PICK}">${esc(l)}</button>`).join("")}</div>
       </div>
       <div>
         <div class="text-sm opacity-70 mb-1">${expiryLabel}</div>
@@ -2201,8 +2210,7 @@ function saveStock(id, type){
 function openBatchAdd(id){
   const it = state.stock.find(s=>s.id===id); if(!it) return;
   // в форме партии включаем orphan-локации существующих партий, чтобы не «потерять» их при сохранении
-  const existingLocs = (it.batches||[]).map(b=>b.location).concat([it.location]);
-  const LOCS = getLocationsWithOrphan(it.type, existingLocs);
+  const LOCS = batchLocs(it);
   openSheet(`
     <div class="space-y-3">
       <div class="font-bold text-xl">Новая партия</div>
@@ -2217,7 +2225,7 @@ function openBatchAdd(id){
       </div>
       <div>
         <div class="text-sm opacity-70 mb-1">Место хранения</div>
-        <div class="scroll-x flex gap-2">${LOCS.map(l=>`<button class="chip" data-loc="${esc(l)}" onclick="this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');">${esc(l)}</button>`).join("")}</div>
+        <div class="scroll-x flex gap-2">${LOCS.map(l=>`<button class="chip" data-loc="${esc(l)}" onclick="${CHIP_PICK}">${esc(l)}</button>`).join("")}</div>
       </div>
       <input class="input" id="bnote" placeholder="Примечание (опц.)" />
       <div class="flex gap-2 pt-2">
@@ -2262,8 +2270,7 @@ function saveBatch(id){
 function openBatchEdit(itemId, batchId){
   const it = state.stock.find(s=>s.id===itemId); if(!it) return;
   const b = (it.batches||[]).find(x=>x.id===batchId); if(!b) return;
-  const existingLocs = (it.batches||[]).map(x=>x.location).concat([it.location]);
-  const LOCS = getLocationsWithOrphan(it.type, existingLocs);
+  const LOCS = batchLocs(it);
   openSheet(`
     <div class="space-y-3">
       <div class="font-bold text-xl">Партия: ${esc(it.name)}</div>
@@ -2274,7 +2281,7 @@ function openBatchEdit(itemId, batchId){
       </div>
       <div>
         <div class="text-sm opacity-70 mb-1">Место хранения</div>
-        <div class="scroll-x flex gap-2">${LOCS.map(l=>`<button class="chip ${b.location===l?"active":""}" data-loc="${esc(l)}" onclick="this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');">${esc(l)}</button>`).join("")}</div>
+        <div class="scroll-x flex gap-2">${LOCS.map(l=>`<button class="chip ${b.location===l?"active":""}" data-loc="${esc(l)}" onclick="${CHIP_PICK}">${esc(l)}</button>`).join("")}</div>
       </div>
       <input class="input" id="bnote2" placeholder="Примечание (опц.)" value="${esc(b.note||"")}" />
       <div class="flex gap-2 pt-2">
@@ -2349,8 +2356,7 @@ async function addLocation(type){
   if(val===null) return;
   const name = String(val).trim();
   if(!name){ toast("Пустое название"); return; }
-  if(name.length>40){ toast("Слишком длинно (≤40 символов)"); return; }
-  if(hasBadChars(name)){ toast("Нельзя символы < > ' \" \\ &"); return; }
+  if(!validShortName(name)) return;
   const list = state.locations[type] || [];
   if(list.includes(name)){ toast("Уже есть"); return; }
   state.locations[type] = [...list, name];
@@ -2363,8 +2369,7 @@ async function renameLocation(type, oldName){
   if(val===null) return;
   const newName = String(val).trim();
   if(!newName || newName===oldName) return;
-  if(newName.length>40){ toast("Слишком длинно (≤40 символов)"); return; }
-  if(hasBadChars(newName)){ toast("Нельзя символы < > ' \" \\ &"); return; }
+  if(!validShortName(newName)) return;
   const list = state.locations[type] || [];
   if(list.includes(newName)){ toast("Такое место уже есть"); return; }
   state.locations[type] = list.map(x => x===oldName ? newName : x);
@@ -2492,8 +2497,7 @@ function addCategory(type){
   const inp = document.getElementById(`catNew_${type}`);
   if(!inp) return;
   const v = inp.value.trim(); if(!v) return;
-  if(v.length>40){ toast("Слишком длинно (≤40 символов)"); return; }
-  if(hasBadChars(v)){ toast("Нельзя символы < > ' \" \\ &"); return; }
+  if(!validShortName(v)) return;
   if(state.categories[type].includes(v)){ toast("Уже есть"); return; }
   state.categories[type].push(v);
   saveState(); openCategoriesEdit(); render();
@@ -2659,7 +2663,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v75</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v76</div>
   `;
   pomoTick();
 }
