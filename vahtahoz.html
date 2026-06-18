@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v73</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v74</div>
   </div>
 </div>
 
@@ -182,6 +182,8 @@ function loadGlobalTasks(){
 }
 function saveGlobalTasks(){
   try{ localStorage.setItem(TASKS_KEY, JSON.stringify(Array.isArray(state.tasks)?state.tasks:[])); }catch(e){}
+  // задачи изменились → отложенная выгрузка в облако (функция сама проверит, реально ли менялись)
+  try{ if(typeof cloudMaybePushTasks==="function") cloudMaybePushTasks(); }catch(e){}
 }
 const defaultState = {
   theme: "dark",
@@ -2657,7 +2659,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v73</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v74</div>
   `;
   pomoTick();
 }
@@ -3467,6 +3469,8 @@ async function cloudInit(){
       return;
     }
     if(cloud.ready && activeCloudId()){ setSyncStatus("syncing","Сеть появилась — синхронизирую…"); cloudActivate(activeCloudId()); }
+    // задачи: до-выгружаем отложенные правки и пере-синкаем (не зависят от базы)
+    if(cloud.ready){ if(localStorage.getItem(TASKS_DIRTY)) cloudPushTasksNow().catch(()=>{}); else cloudSyncTasks().catch(()=>{}); }
   });
   window.addEventListener("offline", ()=>{ if(cloud.ready && activeCloudId()) setSyncStatus("offline"); });
   try{
@@ -3591,6 +3595,8 @@ async function cloudOnLogin(session, attempt){
     // НЕ блокируя вход — иначе кнопка «Вход…» висит до конца первой выгрузки.
     const cid = activeCloudId();
     if(cid){ setTimeout(()=>{ cloudActivate(cid).catch(e=>console.warn("bg sync",e)); }, 50); }
+    // задачи синкаем отдельно (scope по владельцу, не по базе) — в фоне, не блокируя вход
+    setTimeout(()=>{ cloudSyncTasks().catch(e=>console.warn("tasks sync",e)); cloudSubscribeTasks(); }, 80);
   }catch(e){
     console.warn("cloudOnLogin", e);
     // Токен валиден → пользователь АУТЕНТИФИЦИРОВАН, даже если профиль/базы не загрузились
@@ -3856,6 +3862,82 @@ async function cloudPushNow(){
   }
   finally{ cloud.busy=false; cloud.pushPending=false; }
 }
+// ===================== ЗАДАЧИ В ОБЛАКЕ (scope по владельцу, не по базе) =====================
+// Задачи — ОБЩИЕ для всех баз устройства (одно расписание у хоза). В облаке хранятся
+// в таблице tasks, привязанной к owner_id = uid пользователя (RLS: видишь только свои).
+// Не зависят от активной базы; синкаются отдельно от склада/журналов. Дельта, как у склада.
+const TASKS_DIRTY = "vahtahoz_tasks_dirty";
+function activeUid(){ return (cloud.session && cloud.session.user && cloud.session.user.id) || null; }
+function _tasksSigMap(){ const m={}; for(const t of (state.tasks||[])){ if(t && t.id!=null) m[String(t.id)]=_sigOf({data:t}); } return m; }
+function tasksChangedVsCloud(uid){
+  const cur=_tasksSigMap(); const prev=loadSyncSig(uid,"tasks");
+  const ck=Object.keys(cur), pk=Object.keys(prev);
+  if(ck.length!==pk.length) return true;
+  for(const k of ck){ if(cur[k]!==prev[k]) return true; }
+  return false;
+}
+// помечаем задачи к выгрузке и планируем push — но ТОЛЬКО при реальном изменении задач
+// (saveGlobalTasks зовётся на каждом saveState, в т.ч. при правках склада — там задачи не менялись)
+function cloudMaybePushTasks(){
+  if(!cloud.ready) return;
+  const uid=activeUid(); if(!uid) return;
+  if(!tasksChangedVsCloud(uid)) return;       // задачи не изменились — тихо выходим
+  try{ localStorage.setItem(TASKS_DIRTY,"1"); }catch(e){}
+  if(!cloudOnline()) return;                   // уйдёт по событию online
+  clearTimeout(cloud.tasksTimer);
+  cloud.tasksTimer=setTimeout(()=>cloudPushTasksNow(), 700);
+}
+async function cloudPushTasksNow(){
+  const uid=activeUid(); if(!uid || !cloud.ready || !cloudOnline()) return;
+  try{
+    const tok=cloud.session.access_token;
+    const rows=(state.tasks||[]).filter(t=>t&&t.id!=null).map(t=>({ id:String(t.id), owner_id:uid, data:t }));
+    const curSig={}; rows.forEach(r=>{ curSig[r.id]=_sigOf({data:r.data}); });
+    const prevSig=loadSyncSig(uid,"tasks");
+    const upsert=rows.filter(r=> curSig[r.id]!==prevSig[r.id]);
+    const del=Object.keys(prevSig).filter(id=> !(id in curSig));
+    if(del.length) await cloudRestDelete("tasks", del, tok);
+    if(upsert.length) await cloudRestUpsert("tasks", upsert, tok);
+    saveSyncSig(uid,"tasks",curSig);
+    try{ localStorage.removeItem(TASKS_DIRTY); }catch(e){}
+  }catch(e){
+    console.warn("cloudPushTasks", e);
+    if(cloudOnline()){ clearTimeout(cloud.tasksRetry); cloud.tasksRetry=setTimeout(()=>{ if(localStorage.getItem(TASKS_DIRTY)) cloudPushTasksNow(); }, 6000); }
+  }
+}
+async function cloudPullTasks(){
+  const uid=activeUid(); if(!uid || !cloudOnline()) return;
+  if(localStorage.getItem(TASKS_DIRTY)){ cloudMaybePushTasks(); return; }   // есть несинхр. правки — не затираем
+  try{
+    const tok=cloud.session.access_token;
+    const rows=await cloudRest(`tasks?select=*&owner_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:30000});
+    if(localStorage.getItem(TASKS_DIRTY)) return;                            // успел отредактировать во время загрузки → не затираем
+    state.tasks=(rows||[]).map(r=> ({ ...(r.data||{}), id:safeId(r.id) }));
+    sanitizeIds(state.tasks);
+    try{ localStorage.setItem(TASKS_KEY, JSON.stringify(state.tasks)); }catch(e){}   // прямо в localStorage, БЕЗ повторного push
+    saveSyncSig(uid,"tasks",_tasksSigMap());
+    if(currentView==="tasks") render();
+  }catch(e){ console.warn("cloudPullTasks", e); }
+}
+// решает: выгрузить локальные задачи (первая миграция) или подтянуть облачные (восстановление)
+async function cloudSyncTasks(){
+  const uid=activeUid(); if(!uid || !cloudOnline()) return;
+  if(localStorage.getItem(TASKS_DIRTY)){ cloudMaybePushTasks(); return; }
+  try{
+    const tok=cloud.session.access_token;
+    const ids=await cloudRest(`tasks?select=id&owner_id=eq.${encodeURIComponent(uid)}`, tok);
+    const cloudEmpty=!(Array.isArray(ids)&&ids.length);
+    const localHas=(state.tasks||[]).length>0;
+    const neverSynced=Object.keys(loadSyncSig(uid,"tasks")).length===0;
+    if(cloudEmpty && localHas && neverSynced){
+      // первый раз: облако пусто, локально есть задачи → выгружаем (НЕ затираем локальное!)
+      saveSyncSig(uid,"tasks",{});            // дельта против пустого снимка = всё
+      await cloudPushTasksNow();
+    } else {
+      await cloudPullTasks();                  // облачные задачи — источник (в т.ч. после чистки кэша)
+    }
+  }catch(e){ console.warn("cloudSyncTasks", e); }
+}
 /* realtime: на любое изменение в облаке — отложенный пере-pull активной базы */
 function cloudSubscribe(cid){
   if(!cid || cloud.subscribedBase===cid) return;
@@ -3872,6 +3954,21 @@ function cloudSubscribe(cid){
 function cloudUnsubscribe(){
   try{ if(cloud.channel) cloud.sb.removeChannel(cloud.channel); }catch(e){}
   cloud.channel=null; cloud.subscribedBase=null;
+}
+// realtime для задач — отдельный канал по владельцу (не зависит от активной базы, не пересоздаётся при смене базы)
+function cloudSubscribeTasks(){
+  const uid=activeUid(); if(!uid || cloud.tasksSubUid===uid) return;
+  try{
+    if(cloud.tasksChannel) cloud.sb.removeChannel(cloud.tasksChannel);
+    cloud.tasksChannel = cloud.sb.channel("tasks-"+uid)
+      .on("postgres_changes",{event:"*",schema:"public",table:"tasks",filter:"owner_id=eq."+uid}, ()=>{
+        clearTimeout(cloud.tasksPullTimer);
+        if(localStorage.getItem(TASKS_DIRTY)){ cloudMaybePushTasks(); return; }   // свои правки важнее — не затираем
+        cloud.tasksPullTimer=setTimeout(()=>cloudPullTasks(), 400);
+      })
+      .subscribe();
+    cloud.tasksSubUid=uid;
+  }catch(e){ console.warn("cloudSubscribeTasks", e); }
 }
 function cloudOnRemote(){
   clearTimeout(cloud.pullTimer);               // всегда гасим прежний отложенный pull, иначе он сработает после dirty и затрёт правки

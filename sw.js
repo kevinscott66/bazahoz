@@ -1,7 +1,7 @@
 /* ВахтаХоз service worker — network-first для оболочки + offline fallback.
    network-first важен: после деплоя фикса пользователь получает свежий vahtahoz.html
    сразу при наличии сети, а кэш используется только как офлайн-резерв. */
-const CACHE = "vahtahoz-v73-race-fixes";
+const CACHE = "vahtahoz-v74-tasks-cloud";
 const PRECACHE = [
   "./vahtahoz.html",
   "./manifest.webmanifest",
