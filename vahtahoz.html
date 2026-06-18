@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v76</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v77</div>
   </div>
 </div>
 
@@ -274,6 +274,9 @@ const cloud = {
   sb:null, session:null, profile:null, members:[], bases:{},
   channel:null, subscribedBase:null,
   pushTimer:null, pullTimer:null, applying:false, ready:false, busy:false,
+  pushPending:false, retryTimer:null, basesLoaded:false,
+  // синк задач (scope по владельцу): отдельные таймеры/канал/флаги
+  tasksTimer:null, tasksRetry:null, tasksPullTimer:null, tasksChannel:null, tasksSubUid:null, tasksBusy:false,
 };
 
 /* ---------- Utils ---------- */
@@ -454,9 +457,7 @@ const byExpiry = (a,b)=>(a.expiry||"9999").localeCompare(b.expiry||"9999");
 const parseNum = (v)=> Number(String(v==null?"":v).replace(",","."));
 // тег движения для журнала операций (logOp)
 const opTag = k => k==="receipt"?"IN":(k==="issue"?"OUT":"WRITEOFF");
-// русское склонение: plural(2,"место","места","мест") → "места"
-const plural = (n,one,few,many)=>{ const a=Math.abs(n)%100, b=a%10; if(a>10&&a<20) return many; if(b>1&&b<5) return few; if(b===1) return one; return many; };
-const esc = (s) => (s??"").toString().replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const esc = (s) =>(s??"").toString().replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
 /* Округление количеств: устраняет накопление ошибок плавающей точки (0.1+0.2=0.30000000000000004).
    3 знака достаточно для кг/л (граммы/мл), для шт/кор/уп/меш — фактически целое число. */
@@ -1208,11 +1209,10 @@ function toggleTask(id){
       const nextDue = localDateStr(next);
       // корневой id серии: если t уже копия — берём её parentId, чтобы цепочка оставалась плоской
       const rootId = t.parentId || t.id;
-      // дубликат — только незавершённая копия с тем же rootId или открытая задача с тем же названием/датой/повтором
-      const exists = state.tasks.some(x=>
-        (!x.done && (x.parentId||x.id)===rootId) ||
-        (!x.done && x.title===t.title && x.due===nextDue && x.repeat===t.repeat)
-      );
+      // дубликат — только незавершённая копия с тем же rootId серии.
+      // (эвристику по названию/дате убрали: две независимые серии с одинаковым названием
+      //  и совпавшей следующей датой ложно подавляли создание копии второй серии)
+      const exists = state.tasks.some(x=> !x.done && (x.parentId||x.id)===rootId);
       if(!exists){
         // order сбрасываем — ручной порядок не имеет смысла переносить на новую дату
         // список (items) переносим с обнулёнными галочками и новыми id (чтобы завтра собирать заново)
@@ -1585,7 +1585,7 @@ function saveOp(kind){
   const body = document.getElementById("sheetBody");
   const pid = body.querySelector("#opProdId").value;
   const manualName = body.querySelector("#opName").value.trim();
-  const qty = parseNum(body.querySelector("#opQty").value);
+  const qty = roundQty(parseNum(body.querySelector("#opQty").value));   // округляем в источнике: op.qty, склад и лог единообразны (иначе float-хвост ломает авто-удаление орфана)
   const unit = body.querySelector("#opUnit").value;
   const note = body.querySelector("#opNote").value.trim();
   if(!qty || qty<=0){ toast("Укажи количество"); return; }
@@ -2180,7 +2180,8 @@ function saveStock(id, type){
   if(!name){ toast("Название обязательно"); return; }
   const qty = parseNum(body.querySelector("#sq").value);
   const unit = body.querySelector("#su").value;
-  const minStock = body.querySelector("#sm").value===""?"":Number(body.querySelector("#sm").value.replace(",","."));
+  const _smRaw = body.querySelector("#sm").value, _smN = Number(_smRaw.replace(",","."));
+  const minStock = (_smRaw===""||!Number.isFinite(_smN)) ? "" : _smN;   // мусор/NaN → "" (иначе сравнение «низкий запас» молча отключалось)
   const expiry = body.querySelector("#se")?.value || "";
   const note = body.querySelector("#sno").value.trim();
   const category = body.querySelector(".chip.active[data-cat]")?.dataset.cat || "";
@@ -2663,7 +2664,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v76</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v77</div>
   `;
   pomoTick();
 }
@@ -3624,8 +3625,11 @@ async function cloudOnLogin(session, attempt){
 }
 async function cloudLogout(){
   try{ if(cloud.channel) await cloud.sb.removeChannel(cloud.channel); }catch(e){}
+  try{ if(cloud.tasksChannel) await cloud.sb.removeChannel(cloud.tasksChannel); }catch(e){}   // снимаем и канал задач
   try{ if(cloud.sb) await cloud.sb.auth.signOut(); }catch(e){}   // дожидаемся выхода (был баг приоритета await/&&)
+  clearTimeout(cloud.tasksTimer); clearTimeout(cloud.tasksRetry); clearTimeout(cloud.tasksPullTimer);
   cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
+  cloud.tasksChannel=null; cloud.tasksSubUid=null; cloud.tasksBusy=false; cloud.basesLoaded=false;   // сброс задач: иначе после входа другим юзером realtime молчит
   clearCloudSess();   // чистим своё хранилище сессии, иначе при запуске восстановит вход
   // снимаем флаг «без облака» — при следующем запуске снова покажется вход (нет сессии → гейт)
   try{ localStorage.removeItem("vahtahoz_login_skipped"); }catch(e){}
@@ -3860,7 +3864,11 @@ async function cloudPushNow(){
             await cloudRest(`bases?id=eq.${encodeURIComponent(cid)}`, tok, { method:"PATCH", returnResponse:true,
               headers:{ "Content-Type":"application/json", "Prefer":"return=minimal" },
               body: JSON.stringify({ settings: merged }) });
-            saveSyncSig(cid,"settings",{ v:setSig });   // помним подпись локальных настроек
+            // в облако ушёл merged (объединение). Применяем его И локально, чтобы локальное == облако,
+            // и сохраняем подпись MERGED. Иначе локальная подпись (≠ merged) расходится с облаком →
+            // следующий push снова считает настройки «изменёнными» и шлёт PATCH каждый раз (лишний трафик).
+            state.locations=merged.locations; state.categories=merged.categories;
+            saveSyncSig(cid,"settings",{ v:_sigOf(merged) });
           }catch(e){ console.warn("settings push", e); }
         }
       }
@@ -3921,6 +3929,7 @@ function cloudMaybePushTasks(){
 }
 async function cloudPushTasksNow(){
   const uid=activeUid(); if(!uid || !cloud.ready || !cloudOnline()) return;
+  cloud.tasksBusy=true;                       // своя выгрузка идёт — realtime-эхо не должно дёргать pull
   try{
     const tok=cloud.session.access_token;
     const rows=(state.tasks||[]).filter(t=>t&&t.id!=null).map(t=>({ id:String(t.id), owner_id:uid, data:t }));
@@ -3928,7 +3937,9 @@ async function cloudPushTasksNow(){
     const prevSig=loadSyncSig(uid,"tasks");
     const upsert=rows.filter(r=> curSig[r.id]!==prevSig[r.id]);
     const del=Object.keys(prevSig).filter(id=> !(id in curSig));
-    if(del.length) await cloudRestDelete("tasks", del, tok);
+    // ЗАЩИТА: пустой локальный список НЕ стирает облако (порча слота / частичная загрузка),
+    // как у склада. Если задач реально 0, удаление не шлём — облако переживёт, восстановится pull-ом.
+    if(del.length && rows.length>0) await cloudRestDelete("tasks", del, tok);
     if(upsert.length) await cloudRestUpsert("tasks", upsert, tok);
     saveSyncSig(uid,"tasks",curSig);
     try{ localStorage.removeItem(TASKS_DIRTY); }catch(e){}
@@ -3936,6 +3947,7 @@ async function cloudPushTasksNow(){
     console.warn("cloudPushTasks", e);
     if(cloudOnline()){ clearTimeout(cloud.tasksRetry); cloud.tasksRetry=setTimeout(()=>{ if(localStorage.getItem(TASKS_DIRTY)) cloudPushTasksNow(); }, 6000); }
   }
+  finally{ cloud.tasksBusy=false; }
 }
 async function cloudPullTasks(){
   const uid=activeUid(); if(!uid || !cloudOnline()) return;
@@ -3944,7 +3956,13 @@ async function cloudPullTasks(){
     const tok=cloud.session.access_token;
     const rows=await cloudRest(`tasks?select=*&owner_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:30000});
     if(localStorage.getItem(TASKS_DIRTY)) return;                            // успел отредактировать во время загрузки → не затираем
-    state.tasks=(rows||[]).map(r=> ({ ...(r.data||{}), id:safeId(r.id) }));
+    // САНИТАЙЗ: id задачи И id пунктов чек-листа — оба идут из облака (jsonb от любого участника)
+    // и подставляются в inline-onclick (toggleTaskItem). Без safeId на items[].id — XSS-вектор.
+    state.tasks=(rows||[]).map(r=>{
+      const t={ ...(r.data||{}), id:safeId(r.id) };
+      if(Array.isArray(t.items)) t.items=t.items.map(i=>({ id:safeId(i&&i.id), text:String((i&&i.text)||"").slice(0,200), done:!!(i&&i.done) }));
+      return t;
+    });
     sanitizeIds(state.tasks);
     try{ localStorage.setItem(TASKS_KEY, JSON.stringify(state.tasks)); }catch(e){}   // прямо в localStorage, БЕЗ повторного push
     saveSyncSig(uid,"tasks",_tasksSigMap());
@@ -3995,6 +4013,7 @@ function cloudSubscribeTasks(){
     cloud.tasksChannel = cloud.sb.channel("tasks-"+uid)
       .on("postgres_changes",{event:"*",schema:"public",table:"tasks",filter:"owner_id=eq."+uid}, ()=>{
         clearTimeout(cloud.tasksPullTimer);
+        if(cloud.tasksBusy) return;                                              // эхо собственной выгрузки — игнор
         if(localStorage.getItem(TASKS_DIRTY)){ cloudMaybePushTasks(); return; }   // свои правки важнее — не затираем
         cloud.tasksPullTimer=setTimeout(()=>cloudPullTasks(), 400);
       })
