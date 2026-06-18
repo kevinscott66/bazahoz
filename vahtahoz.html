@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v78</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v79</div>
   </div>
 </div>
 
@@ -1590,6 +1590,7 @@ function openOpEdit(kind){
 }
 
 function saveOp(kind){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   const m = JOURNAL_META[kind];
   const body = document.getElementById("sheetBody");
   const pid = body.querySelector("#opProdId").value;
@@ -1636,6 +1637,7 @@ function saveOp(kind){
 }
 
 function orderReceive(opId){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   const op = state.journals.order.find(o=>o.id===opId); if(!op) return;
   if(op.status==="received") return;
   op.status = "received";
@@ -1697,6 +1699,7 @@ async function maybeDropOrphanProduct(prod, exceptOpId){
 }
 
 async function deleteOp(kind, opId){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   const op = (state.journals[kind]||[]).find(o=>o.id===opId);
   if(!op) return;
   // зеркальная receipt-запись принятого заказа: удалять только через сам заказ,
@@ -1824,6 +1827,7 @@ function editOp(kind, opId){
 }
 
 async function saveOpEdit(kind, opId){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   const op = (state.journals[kind]||[]).find(o=>o.id===opId); if(!op) return;
   const m = JOURNAL_META[kind];
   const body = document.getElementById("sheetBody");
@@ -1987,6 +1991,7 @@ function stockRow(it){
 }
 
 async function quickAdjust(id, sign){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   const it = state.stock.find(s=>s.id===id); if(!it) return;
   // для расхода — спрашиваем тип движения: выдача персоналу или списание (порча/просрочка/бой)
   let kind, label, title, opNote;
@@ -2033,6 +2038,7 @@ async function quickAdjust(id, sign){
         if(val===null) return;
         const n = roundQty(parseNum(val));
         if(!Number.isFinite(n) || n<=0){ toast("Не число"); return; }
+        if(state.stock.find(s=>s.id===id)!==it){ toast("Данные обновились — повтори операцию"); render(); return; }   // pull/смена базы во время диалога пересоздал объект → не теряем правку на «осиротевшем»
         const newB = { id:uid(), qty:n, expiry:expVal.trim(), location:cleanName40(locVal), note:"", createdAt:new Date().toISOString() };
         it.batches.push(newB);
         syncItemFromBatches(it);
@@ -2059,6 +2065,7 @@ async function quickAdjust(id, sign){
     if(val===null) return;
     const n = roundQty(parseNum(val));
     if(!Number.isFinite(n) || n<=0){ toast("Не число"); return; }
+    if(state.stock.find(s=>s.id===id)!==it){ toast("Данные обновились — повтори операцию"); render(); return; }   // объект пересоздан pull-ом во время диалога → targetBatch тоже устарел, не мутируем
     const nextBatch = roundQty(Number(targetBatch.qty||0) + sign*n);
     if(nextBatch<0){ toast("Не хватает в этой партии"); return; }
     targetBatch.qty = nextBatch;
@@ -2086,6 +2093,7 @@ async function quickAdjust(id, sign){
   if(val===null) return;
   const n = roundQty(parseNum(val));
   if(!Number.isFinite(n) || n<=0){ toast("Не число"); return; }
+  if(state.stock.find(s=>s.id===id)!==it){ toast("Данные обновились — повтори операцию"); render(); return; }   // объект пересоздан pull-ом во время диалога → не теряем правку
   const next = roundQty(Number(it.qty||0) + sign*n);
   if(next<0){ toast("Не хватает на складе"); return; }
   it.qty = next; it.updatedAt = new Date().toISOString();
@@ -2162,6 +2170,7 @@ function openStockEdit(id, typeDefault){
 }
 
 function saveStock(id, type){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   const body = document.getElementById("sheetBody");
   const name = body.querySelector("#sn").value.trim();
   if(!name){ toast("Название обязательно"); return; }
@@ -2651,7 +2660,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v78</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v79</div>
   `;
   pomoTick();
 }
@@ -3241,6 +3250,7 @@ function openExpiredView(){
 }
 
 async function writeoffExpired(){
+  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
   // считаем «единицу для списания» точечно:
   //  — для batches-карточек: каждая просроченная партия списывается отдельно (свежие НЕ трогаем)
   //  — для legacy: вся карточка целиком (как раньше)
@@ -3259,8 +3269,14 @@ async function writeoffExpired(){
   if(!await confirmSheet(`Списать по сроку ${targets.length} ${targets.some(t=>t.batch)?"партий/позиций":"поз."}? Свежие партии НЕ трогаются.`,{danger:true,yes:"Списать"})) return;
   const now = new Date().toISOString();
   state.journals.writeoff = state.journals.writeoff || [];
-  for(const {it, batch} of targets){
-    if(batch){
+  let done = 0;
+  for(const t of targets){
+    // ПЕРЕРЕЗОЛВ по id: ссылки собраны ДО await confirmSheet — pull/смена базы могли пересоздать
+    // объекты склада. Работаем только с актуальными; исчезнувшие/уже списанные пропускаем.
+    const it = state.stock.find(s=>s.id===t.it.id); if(!it) continue;
+    if(t.batch){
+      const batch = (it.batches||[]).find(b=>b.id===t.batch.id);
+      if(!batch || roundQty(batch.qty||0)<=0 || !(batch.expiry && daysLeft(batch.expiry)<0)) continue;   // партия изменилась/свежая — не трогаем
       const d = daysLeft(batch.expiry);
       state.journals.writeoff.unshift({
         id: uid(), ts: now, productId: it.id, productName: it.name,
@@ -3272,6 +3288,7 @@ async function writeoffExpired(){
       it.batches = it.batches.filter(b=>b.id!==batch.id);
       finalizeBatchMutation(it);
     } else {
+      if(hasBatches(it) || !(it.expiry && daysLeft(it.expiry)<0) || Number(it.qty||0)<=0) continue;   // стала партийной/срок изменился — не трогаем
       const d = daysLeft(it.expiry);
       state.journals.writeoff.unshift({
         id: uid(), ts: now, productId: it.id, productName: it.name,
@@ -3280,9 +3297,10 @@ async function writeoffExpired(){
       logOp("WRITEOFF", `${it.name} -${fmtQty(it.qty)} ${it.unit||""} (срок)`);
       it.qty = 0; it.updatedAt = now;
     }
+    done++;
   }
   saveState(); closeSheet(); render();
-  toast(`Списано: ${targets.length}`);
+  toast(`Списано: ${done}`);
 }
 
 /* ---------- Nav events ---------- */
@@ -3413,6 +3431,10 @@ function activeMember(){
   if(cloud.profile && cloud.profile.is_admin) return {can_view_stock:true,can_edit_stock:true,can_view_tasks:true,can_edit_tasks:true};
   return memberOf(cid);
 }
+// право править склад: вне облака (локальный режим) — всегда да; в облаке — по флагу участника.
+// Гард на точках мутации: иначе правка view-only-участника применялась бы локально, не выгружалась
+// (cloudPushNow её молча отбрасывает) и затиралась следующим pull — потеря без обратной связи.
+function canEditStock(){ const m=activeMember(); return !m || !!m.can_edit_stock; }
 const cloudDirtyKey = (cid)=>`vahtahoz_dirty_${cid}`;
 function cloudOnline(){ return navigator.onLine!==false; }
 /* «ограниченный» пользователь — вошёл в облако и НЕ имеет права на задачи (начальник):
