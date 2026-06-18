@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v85</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v86</div>
   </div>
 </div>
 
@@ -174,6 +174,8 @@ const STORE_KEY = "vahtahoz:v1";
 const JOURNAL_KEYS = ["receipt","issue","writeoff","order"];  // виды журналов движений
 // onclick выбора чипа: снять active со всех соседних чипов и подсветить нажатый (был продублирован 7×)
 const CHIP_PICK = "this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');";
+// бейдж количества партии (повторялся дословно в stockRow и openStockEdit)
+const batchQtyBadge = (b, it) => `<span class="badge badge-green">${fmtQty(b.qty)} ${esc(it.unit||"")}</span>`;
 // свежий пустой набор журналов (каждый вызов — новый объект, безопасно для присваивания в state)
 function emptyJournals(){ return Object.fromEntries(JOURNAL_KEYS.map(k=>[k,[]])); }
 /* Задачи/планы — ОБЩИЕ для всех баз устройства (у хоза одно расписание на обе базы).
@@ -552,11 +554,11 @@ function sanitizeIds(arr){
   for(const it of arr){ if(it && typeof it==="object") it.id = safeId(it.id); }
   return arr;
 }
-function validateImport(obj){
-  if(!obj || typeof obj!=="object" || Array.isArray(obj)) throw new Error("корневой объект некорректен");
-  if(obj.stock!==undefined && !Array.isArray(obj.stock)) throw new Error("поле stock не массив");
-  if(obj.tasks!==undefined && !Array.isArray(obj.tasks)) throw new Error("поле tasks не массив");
-  if(obj.log!==undefined   && !Array.isArray(obj.log))   throw new Error("поле log не массив");
+/* --- per-field валидаторы импорта (структура + нормализация); поведение идентично исходному validateImport --- */
+function validateArrayField(obj, field){
+  if(obj[field]!==undefined && !Array.isArray(obj[field])) throw new Error(`поле ${field} не массив`);
+}
+function validateJournalsField(obj){
   if(obj.journals!==undefined){
     if(typeof obj.journals!=="object" || Array.isArray(obj.journals)) throw new Error("journals не объект");
     for(const k of JOURNAL_KEYS){
@@ -564,6 +566,8 @@ function validateImport(obj){
       if(obj.journals[k]===undefined) obj.journals[k] = [];
     }
   }
+}
+function validateCategoriesField(obj){
   if(obj.categories!==undefined){
     if(typeof obj.categories!=="object" || Array.isArray(obj.categories)) throw new Error("categories не объект");
     for(const k of STOCK_TYPE_KEYS){
@@ -571,6 +575,8 @@ function validateImport(obj){
       if(Array.isArray(obj.categories[k])) obj.categories[k] = obj.categories[k].map(cleanCatName).filter(Boolean);
     }
   }
+}
+function validateLocationsField(obj){
   if(obj.locations!==undefined){
     if(typeof obj.locations!=="object" || Array.isArray(obj.locations)) throw new Error("locations не объект");
     for(const k of STOCK_TYPE_KEYS){
@@ -578,6 +584,8 @@ function validateImport(obj){
       if(Array.isArray(obj.locations[k])) obj.locations[k] = uniqClean(obj.locations[k]);
     }
   }
+}
+function validateChecklistsField(obj){
   if(obj.checklists!==undefined){
     if(typeof obj.checklists!=="object" || Array.isArray(obj.checklists)) throw new Error("checklists не объект");
     if(obj.checklists.kitchen!==undefined && !Array.isArray(obj.checklists.kitchen)) throw new Error("checklists.kitchen не массив");
@@ -587,7 +595,9 @@ function validateImport(obj){
         .map(c=>({ id: safeId(c.id), text: String(c.text||"").slice(0,200), done: !!c.done }));
     }
   }
-  // нормализуем id у всех записей
+}
+// нормализуем id у всех записей
+function normalizeImportIds(obj){
   if(obj.stock) sanitizeIds(obj.stock);
   if(obj.tasks){
     sanitizeIds(obj.tasks);
@@ -606,7 +616,9 @@ function validateImport(obj){
       if(obj.journals[k]) sanitizeIds(obj.journals[k]);
     }
   }
-  // нормализуем qty: гасим float-эпсилоны на входе, чтобы не тащить мусор из старых экспортов
+}
+// нормализуем qty: гасим float-эпсилоны на входе, чтобы не тащить мусор из старых экспортов
+function normalizeImportStockQty(obj){
   if(Array.isArray(obj.stock)){
     for(const s of obj.stock){
       // type идёт в inline-onclick без esc() → допускаем только известные ключи (иначе XSS из импорта)
@@ -627,6 +639,8 @@ function validateImport(obj){
       }
     }
   }
+}
+function normalizeImportJournalsQty(obj){
   if(obj.journals){
     for(const k of JOURNAL_KEYS){
       if(Array.isArray(obj.journals[k])){
@@ -634,6 +648,19 @@ function validateImport(obj){
       }
     }
   }
+}
+function validateImport(obj){
+  if(!obj || typeof obj!=="object" || Array.isArray(obj)) throw new Error("корневой объект некорректен");
+  validateArrayField(obj, "stock");
+  validateArrayField(obj, "tasks");
+  validateArrayField(obj, "log");
+  validateJournalsField(obj);
+  validateCategoriesField(obj);
+  validateLocationsField(obj);
+  validateChecklistsField(obj);
+  normalizeImportIds(obj);
+  normalizeImportStockQty(obj);
+  normalizeImportJournalsQty(obj);
   return obj;
 }
 
@@ -1986,7 +2013,7 @@ function stockRow(it){
           const d = b.expiry?daysLeft(b.expiry):null;
           const cls = d===null?"badge-gray":(d<0?"badge-red":(d<=3?"badge-red":(d<=14?"badge-yellow":"badge-gray")));
           return `<div class="text-xs flex flex-wrap gap-1 items-center pl-2 border-l-2 border-gray-700">
-            <span class="badge badge-green">${fmtQty(b.qty)} ${esc(it.unit||"")}</span>
+            ${batchQtyBadge(b, it)}
             ${b.location?`<span class="badge badge-gray">📍 ${esc(b.location)}</span>`:""}
             ${b.expiry?`<span class="badge ${cls}">⏰ ${fmtDate(b.expiry)}</span>`:""}
             ${b.note?`<span class="opacity-60">${esc(b.note)}</span>`:""}
@@ -2144,7 +2171,7 @@ function openStockEdit(id, typeDefault){
       <div class="space-y-1">
         ${bList.slice().sort(byExpiry).map(b=>`
           <div class="flex items-center gap-2 text-xs">
-            <span class="badge badge-green">${fmtQty(b.qty)} ${esc(it.unit||"")}</span>
+            ${batchQtyBadge(b, it)}
             ${b.location?`<span class="badge badge-gray">📍 ${esc(b.location)}</span>`:`<span class="badge badge-gray opacity-50">без места</span>`}
             ${b.expiry?`<span class="badge badge-gray">⏰ ${fmtDate(b.expiry)}</span>`:`<span class="badge badge-gray opacity-50">без срока</span>`}
             <span class="flex-1"></span>
@@ -2711,7 +2738,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v85</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v86</div>
   `;
   pomoTick();
 }
@@ -4137,17 +4164,16 @@ async function cloudSyncNow(){
   if(!cloudOnline()){ toast("Нет сети"); return; }
   toast("Синхронизация…"); await cloudActivate(cid); toast("Готово");
 }
-function cloudCardHtml(){
-  const cid = activeCloudId();
-  if(!cloud.ready){
-    return `<div class="card">
+function cloudCardOffline(){
+  return `<div class="card">
       <div class="flex items-center justify-between gap-2">
         <div><div class="font-bold">☁ Облако</div><div class="text-xs opacity-70 mt-0.5">Не подключено · работает офлайн</div></div>
         <button class="btn btn-primary" onclick="cloudLoginPrompt()">Войти</button>
       </div>
       <div class="text-xs opacity-70 mt-2">Вход нужен начальнику (просмотр/правка склада своей базы) и для синхронизации между телефонами.</div>
     </div>`;
-  }
+}
+function cloudCardConnected(cid){
   const m = activeMember();
   const linked = cid ? (cloud.bases[cid]||"облачная база") : null;
   const role = (cloud.profile&&cloud.profile.is_admin) ? "полный доступ"
@@ -4165,6 +4191,13 @@ function cloudCardHtml(){
     ${cid?`<button class="btn btn-success w-full mt-2" onclick="cloudSyncNow()">🔄 Синхронизировать сейчас</button>`:
       `<div class="text-xs opacity-70 mt-2">Активная база не связана с облаком. Открой «Сменить / базы» и переключись на облачную базу.</div>`}
   </div>`;
+}
+function cloudCardHtml(){
+  const cid = activeCloudId();
+  if(!cloud.ready){
+    return cloudCardOffline();
+  }
+  return cloudCardConnected(cid);
 }
 
 /* ---------- Boot ---------- */
