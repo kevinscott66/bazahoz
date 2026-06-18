@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v84</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v85</div>
   </div>
 </div>
 
@@ -535,6 +535,10 @@ const safeId = (v) => (typeof v==="string" && SAFE_ID.test(v)) ? v : uid();
 const cleanCatName = (s) => (typeof s==="string") ? s.replace(/[<>'"\\\r\n]/g,"").slice(0,40).trim() : "";
 // единый санитайзер коротких имён (места хранения, имена баз и т.п.): убираем опасные символы, ≤40
 function cleanName40(s){ return String(s).replace(/[<>'"\\&\r\n]/g,"").trim().slice(0,40); }
+// уникальные очищенные имена (часто повторяющийся паттерн); union-вариант для двух списков
+const uniqClean = arr => [...new Set((arr||[]).map(cleanName40).filter(Boolean))];
+const unionClean = (a,b) => uniqClean([...(a||[]), ...(b||[])]);
+const applyTomb = (names, tomb) => (names||[]).filter(n=>!(tomb||[]).includes(n));   // вычесть надгробия из списка имён
 function hasBadChars(s){ return /[<>'"\\&\r\n]/.test(String(s)); }
 // проверка короткого имени (место/категория): ≤40 символов и без опасных символов.
 // показывает тост и возвращает false, если не прошло; true — если ОК (было продублировано 3×)
@@ -571,7 +575,7 @@ function validateImport(obj){
     if(typeof obj.locations!=="object" || Array.isArray(obj.locations)) throw new Error("locations не объект");
     for(const k of STOCK_TYPE_KEYS){
       if(obj.locations[k]!==undefined && !Array.isArray(obj.locations[k])) throw new Error(`locations.${k} не массив`);
-      if(Array.isArray(obj.locations[k])) obj.locations[k] = [...new Set(obj.locations[k].map(cleanName40).filter(Boolean))];
+      if(Array.isArray(obj.locations[k])) obj.locations[k] = uniqClean(obj.locations[k]);
     }
   }
   if(obj.checklists!==undefined){
@@ -705,13 +709,13 @@ for(const k of STOCK_TYPE_KEYS){
 }
 // чистим дубликаты, пустоты и опасные символы (XSS-страховка для inline-onclick)
 for(const k of STOCK_TYPE_KEYS){
-  state.locations[k] = [...new Set(state.locations[k].map(cleanName40).filter(Boolean))];
+  state.locations[k] = uniqClean(state.locations[k]);
 }
 ensureTomb();   // инициализируем надгробия удалённых мест/категорий
 // если место/категория были удалены (надгробие), не воскрешаем их при ре-сидировании дефолтов выше
 for(const k of STOCK_TYPE_KEYS){
-  if(state.delLoc[k].length) state.locations[k] = state.locations[k].filter(n=>!state.delLoc[k].includes(n));
-  if(state.delCat[k].length && Array.isArray(state.categories[k])) state.categories[k] = state.categories[k].filter(n=>!state.delCat[k].includes(n));
+  if(state.delLoc[k].length) state.locations[k] = applyTomb(state.locations[k], state.delLoc[k]);
+  if(state.delCat[k].length && Array.isArray(state.categories[k])) state.categories[k] = applyTomb(state.categories[k], state.delCat[k]);
 }
 // общие задачи накладываем ДО санитизации — чтобы их id/чек-листы тоже прошли проверку
 loadGlobalTasks();
@@ -1607,7 +1611,7 @@ function openOpEdit(kind){
 }
 
 function saveOp(kind){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   const m = JOURNAL_META[kind];
   const body = document.getElementById("sheetBody");
   const pid = body.querySelector("#opProdId").value;
@@ -1654,7 +1658,7 @@ function saveOp(kind){
 }
 
 function orderReceive(opId){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   const op = state.journals.order.find(o=>o.id===opId); if(!op) return;
   if(op.status==="received") return;
   op.status = "received";
@@ -1716,7 +1720,7 @@ async function maybeDropOrphanProduct(prod, exceptOpId){
 }
 
 async function deleteOp(kind, opId){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   const op = (state.journals[kind]||[]).find(o=>o.id===opId);
   if(!op) return;
   // зеркальная receipt-запись принятого заказа: удалять только через сам заказ,
@@ -1846,7 +1850,7 @@ function editOp(kind, opId){
 }
 
 async function saveOpEdit(kind, opId){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   const op = (state.journals[kind]||[]).find(o=>o.id===opId); if(!op) return;
   const m = JOURNAL_META[kind];
   const body = document.getElementById("sheetBody");
@@ -2011,7 +2015,7 @@ function stockRow(it){
 }
 
 async function quickAdjust(id, sign){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   const it = state.stock.find(s=>s.id===id); if(!it) return;
   // для расхода — спрашиваем тип движения: выдача персоналу или списание (порча/просрочка/бой)
   let kind, label, title, opNote;
@@ -2191,7 +2195,7 @@ function openStockEdit(id, typeDefault){
 }
 
 function saveStock(id, type){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   const body = document.getElementById("sheetBody");
   const name = body.querySelector("#sn").value.trim();
   if(!name){ toast("Название обязательно"); return; }
@@ -2255,7 +2259,7 @@ function openBatchAdd(id){
   `);
 }
 function saveBatch(id){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   const body = document.getElementById("sheetBody");
   const it = state.stock.find(s=>s.id===id); if(!it){ closeSheet(); return; }
   const qty = roundQty(parseNum(body.querySelector("#bq").value));
@@ -2312,7 +2316,7 @@ function openBatchEdit(itemId, batchId){
   `);
 }
 function saveBatchEdit(itemId, batchId){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   const body = document.getElementById("sheetBody");
   const it = state.stock.find(s=>s.id===itemId); if(!it){ closeSheet(); return; }
   const b = (it.batches||[]).find(x=>x.id===batchId); if(!b){ closeSheet(); return; }
@@ -2326,7 +2330,7 @@ function saveBatchEdit(itemId, batchId){
   toast("Партия обновлена");
 }
 async function deleteBatch(itemId, batchId){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   const it = state.stock.find(s=>s.id===itemId); if(!it) return;
   const b = (it.batches||[]).find(x=>x.id===batchId); if(!b) return;
   if(!await confirmSheet(`Удалить партию ${fmtQty(b.qty)} ${it.unit||""}${b.location?` (📍 ${b.location})`:""}${b.expiry?` (⏰ ${fmtDate(b.expiry)})`:""}?`,{danger:true,yes:"Удалить"})) return;
@@ -2351,7 +2355,7 @@ async function deleteBatch(itemId, batchId){
 }
 
 async function deleteStock(id){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   const it = state.stock.find(s=>s.id===id);
   if(!await confirmSheet(`Удалить «${it?.name||""}»?`,{danger:true,yes:"Удалить"})) return;
   state.stock = state.stock.filter(s=>s.id!==id);
@@ -2378,7 +2382,7 @@ function locationUsageCount(type, name){
   return n;
 }
 async function addLocation(type){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   const val = await promptSheet(`Новое место хранения (${typeMeta(type).label})`, "", {title:"Добавить место"});
   if(val===null) return;
   const name = String(val).trim();
@@ -2393,7 +2397,7 @@ async function addLocation(type){
   toast("Место добавлено");
 }
 async function renameLocation(type, oldName){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   const val = await promptSheet(`Переименовать «${oldName}»`, oldName, {title:"Переименовать"});
   if(val===null) return;
   const newName = String(val).trim();
@@ -2421,7 +2425,7 @@ async function renameLocation(type, oldName){
   toast(`Переименовано (${touched} ссылок)`);
 }
 async function deleteLocation(type, name){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   const cnt = locationUsageCount(type, name);
   if(cnt>0){
     const ok = await confirmSheet(
@@ -2526,7 +2530,7 @@ function openCategoriesEdit(){
   `);
 }
 function addCategory(type){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   const inp = document.getElementById(`catNew_${type}`);
   if(!inp) return;
   const v = inp.value.trim(); if(!v) return;
@@ -2537,7 +2541,7 @@ function addCategory(type){
   saveState(); openCategoriesEdit(); render();
 }
 async function renameCategory(type, oldName){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   const next = await promptSheet("Новое название:", oldName, {title:"Переименовать категорию"});
   if(next===null) return;
   const nextT = (next||"").trim(); if(!nextT || nextT===oldName) return;
@@ -2551,7 +2555,7 @@ async function renameCategory(type, oldName){
   saveState(); openCategoriesEdit(); render();
 }
 async function deleteCategory(type, name){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   const cnt = state.stock.filter(s=>s.type===type && s.category===name).length;
   const msg = cnt>0
     ? `В категории «${name}» ${cnt} позиций. Перенести в «Прочее» и удалить?`
@@ -2707,7 +2711,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v84</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v85</div>
   `;
   pomoTick();
 }
@@ -3303,7 +3307,7 @@ function openExpiredView(){
 }
 
 async function writeoffExpired(){
-  if(!canEditStock()){ toast("Нет прав на редактирование склада"); return; }
+  if(!ensureCanEdit()) return;
   // считаем «единицу для списания» точечно:
   //  — для batches-карточек: каждая просроченная партия списывается отдельно (свежие НЕ трогаем)
   //  — для legacy: вся карточка целиком (как раньше)
@@ -3475,6 +3479,7 @@ function activeMember(){
 // Гард на точках мутации: иначе правка view-only-участника применялась бы локально, не выгружалась
 // (cloudPushNow её молча отбрасывает) и затиралась следующим pull — потеря без обратной связи.
 function canEditStock(){ const m=activeMember(); return !m || !!m.can_edit_stock; }
+function ensureCanEdit(){ if(!canEditStock()){ toast("Нет прав на редактирование склада"); return false; } return true; }
 const cloudDirtyKey = (cid)=>`vahtahoz_dirty_${cid}`;
 // удалить все sync-маркеры базы (dirty + снимки подписей) — при удалении/замене базы, чтобы не копить мусор
 function clearBaseSyncKeys(cid){ if(!cid) return; try{ localStorage.removeItem(cloudDirtyKey(cid)); for(const k of ["stock","jr","settings"]) localStorage.removeItem(`vahtahoz_sig_${k}_${cid}`); }catch(_){} }
@@ -3787,15 +3792,15 @@ async function cloudPull(cid){
     if(base && base.settings){
       // санитайзим имена из облака (их мог задать любой участник с edit_stock) — как при локальной загрузке
       ensureTomb();
-      const clean = arr => [...new Set(arr.map(cleanName40).filter(Boolean))];
+      const clean = uniqClean;
       const cs = base.settings;
       for(const k of STOCK_TYPE_KEYS){
         // надгробия из облака — источник; вычитаем их из применяемых списков (удаление распространилось)
         const tL = Array.isArray(cs.deletedLocations?.[k]) ? clean(cs.deletedLocations[k]) : [];
         const tC = Array.isArray(cs.deletedCategories?.[k]) ? clean(cs.deletedCategories[k]) : [];
         state.delLoc[k]=tL; state.delCat[k]=tC;
-        if(Array.isArray(cs.locations?.[k]) && cs.locations[k].length) state.locations[k]=clean(cs.locations[k]).filter(n=>!tL.includes(n));
-        if(Array.isArray(cs.categories?.[k]) && cs.categories[k].length) state.categories[k]=clean(cs.categories[k]).filter(n=>!tC.includes(n));
+        if(Array.isArray(cs.locations?.[k]) && cs.locations[k].length) state.locations[k]=applyTomb(clean(cs.locations[k]), tL);
+        if(Array.isArray(cs.categories?.[k]) && cs.categories[k].length) state.categories[k]=applyTomb(clean(cs.categories[k]), tC);
       }
       // подпись настроек = только что загруженное → не будем зря пере-выгружать на следующем push
       try{ saveSyncSig(cid,"settings",{ v:_sigOf({ locations:state.locations, categories:state.categories, deletedLocations:state.delLoc, deletedCategories:state.delCat }) }); }catch(_){}
@@ -3854,7 +3859,7 @@ function saveSyncSig(cid, kind, map){ try{ localStorage.setItem(`vahtahoz_sig_${
 // сохраняются — как и на pull, где пустые массивы не применяются). Это осознанный компромисс.
 function mergeSettings(cloudSet, localSet){
   const out={ locations:{}, categories:{}, deletedLocations:{}, deletedCategories:{} };
-  const u=(a,b)=>[...new Set([...(a||[]),...(b||[])].map(cleanName40).filter(Boolean))];
+  const u = unionClean;
   for(const k of STOCK_TYPE_KEYS){
     const lLoc=(localSet.locations&&localSet.locations[k])||[], lCat=(localSet.categories&&localSet.categories[k])||[];
     // надгробия объединяем, НО имя, присутствующее в локальном списке (т.е. заново добавленное),
@@ -3863,8 +3868,8 @@ function mergeSettings(cloudSet, localSet){
     const tC=u(cloudSet.deletedCategories&&cloudSet.deletedCategories[k], localSet.deletedCategories&&localSet.deletedCategories[k]).filter(n=>!lCat.includes(n));
     out.deletedLocations[k]=tL; out.deletedCategories[k]=tC;
     // из union'а имён вычитаем актуальные надгробия → удаление распространяется, имя не воскресает
-    out.locations[k]=u(cloudSet.locations&&cloudSet.locations[k], lLoc).filter(n=>!tL.includes(n));
-    out.categories[k]=u(cloudSet.categories&&cloudSet.categories[k], lCat).filter(n=>!tC.includes(n));
+    out.locations[k]=applyTomb(u(cloudSet.locations&&cloudSet.locations[k], lLoc), tL);
+    out.categories[k]=applyTomb(u(cloudSet.categories&&cloudSet.categories[k], lCat), tC);
   }
   return out;
 }
