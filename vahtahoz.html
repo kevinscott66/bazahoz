@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v77</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v78</div>
   </div>
 </div>
 
@@ -457,6 +457,8 @@ const byExpiry = (a,b)=>(a.expiry||"9999").localeCompare(b.expiry||"9999");
 const parseNum = (v)=> Number(String(v==null?"":v).replace(",","."));
 // тег движения для журнала операций (logOp)
 const opTag = k => k==="receipt"?"IN":(k==="issue"?"OUT":"WRITEOFF");
+// примечание для записи/партии, созданной из заказа (было продублировано 4×)
+const orderNote = (op, suffix="") => `Из заказа${op&&op.note?": "+op.note:""}`+(suffix?" "+suffix:"");
 const esc = (s) =>(s??"").toString().replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
 /* Округление количеств: устраняет накопление ошибок плавающей точки (0.1+0.2=0.30000000000000004).
@@ -1530,6 +1532,36 @@ function renderJournal(kind){
     <div class="space-y-2 mt-2">${rows}</div>`;
 }
 
+// Общий пикер «поиск позиции склада» для форм операций (openOpEdit/editOp).
+// prefix — префикс id элементов (op/eop); тексты подсказок и поведение nameI на выборе отличаются → параметры.
+function wireStockPicker({prefix, emptyHint, notFoundText, nameOnPick}){
+  const input=document.getElementById(prefix+"Search");
+  const list =document.getElementById(prefix+"List");
+  const sel  =document.getElementById(prefix+"Sel");
+  const hid  =document.getElementById(prefix+"ProdId");
+  const unit =document.getElementById(prefix+"Unit");
+  const nameI=document.getElementById(prefix+"Name");
+  if(!input||!list) return;
+  function renderList(q){
+    const Q=q.trim().toLowerCase();
+    if(!Q){ list.innerHTML=`<div class="text-xs opacity-60 p-2">${emptyHint}</div>`; return; }
+    const found=state.stock.filter(s=>(s.name||"").toLowerCase().includes(Q)).slice(0,20);
+    list.innerHTML=found.length
+      ? found.map(s=>`<button type="button" class="w-full text-left p-2 rounded hover:bg-white/5" data-pick="${esc(s.id)}">${typeMeta(s.type).icon} ${esc(s.name)} <span class="opacity-60 text-xs">· ${fmtQty(s.qty)} ${esc(s.unit||"")}</span></button>`).join("")
+      : `<div class="text-xs opacity-60 p-2">${notFoundText}</div>`;
+  }
+  renderList("");
+  input.addEventListener("input", ()=>renderList(input.value));
+  list.addEventListener("click", e=>{
+    const b=e.target.closest("[data-pick]"); if(!b) return;
+    const s=state.stock.find(x=>x.id===b.dataset.pick); if(!s) return;
+    hid.value=s.id;
+    sel.textContent=`Выбрано: ${s.name} (${fmtQty(s.qty)} ${s.unit||""})`;
+    if(UNITS.includes(s.unit)) unit.value=s.unit;
+    nameI.value = nameOnPick ? s.name : "";
+  });
+}
+
 function openOpEdit(kind){
   const m = JOURNAL_META[kind];
   openSheet(`
@@ -1554,30 +1586,7 @@ function openOpEdit(kind){
       </div>
     </div>
   `);
-  const input = document.getElementById("opSearch");
-  const list  = document.getElementById("opList");
-  const sel   = document.getElementById("opSel");
-  const hid   = document.getElementById("opProdId");
-  const unit  = document.getElementById("opUnit");
-  const nameI = document.getElementById("opName");
-  function renderList(q){
-    const Q = q.trim().toLowerCase();
-    if(!Q){ list.innerHTML = `<div class="text-xs opacity-60 p-2">Введи 2+ символа для поиска</div>`; return; }
-    const found = state.stock.filter(s=>(s.name||"").toLowerCase().includes(Q)).slice(0,20);
-    list.innerHTML = found.length
-      ? found.map(s=>`<button type="button" class="w-full text-left p-2 rounded hover:bg-white/5" data-pick="${esc(s.id)}">${typeMeta(s.type).icon} ${esc(s.name)} <span class="opacity-60 text-xs">· ${fmtQty(s.qty)} ${esc(s.unit||"")}</span></button>`).join("")
-      : `<div class="text-xs opacity-60 p-2">Не найдено. Можно ввести вручную.</div>`;
-  }
-  renderList("");
-  input.addEventListener("input", ()=>renderList(input.value));
-  list.addEventListener("click", e=>{
-    const b = e.target.closest("[data-pick]"); if(!b) return;
-    const s = state.stock.find(x=>x.id===b.dataset.pick); if(!s) return;
-    hid.value = s.id;
-    sel.textContent = `Выбрано: ${s.name} (${fmtQty(s.qty)} ${s.unit||""})`;
-    if(UNITS.includes(s.unit)) unit.value = s.unit;
-    nameI.value = "";
-  });
+  wireStockPicker({ prefix:"op", emptyHint:"Введи 2+ символа для поиска", notFoundText:"Не найдено. Можно ввести вручную.", nameOnPick:false });
 }
 
 function saveOp(kind){
@@ -1647,7 +1656,7 @@ function orderReceive(opId){
   op.receiptId = receiptId;
   if(hasBatches(product)){
     // приём в карточку с партиями — добавляем новую партию (без срока/места, можно отредактировать вручную)
-    const newB = { id: uid(), qty: roundQty(op.qty||0), expiry:"", location:"", note:`Из заказа${op.note?": "+op.note:""}`, createdAt:new Date().toISOString() };
+    const newB = { id: uid(), qty: roundQty(op.qty||0), expiry:"", location:"", note: orderNote(op), createdAt:new Date().toISOString() };
     product.batches = product.batches || [];
     product.batches.push(newB);
     op.batchId = newB.id; // привязка заказа к созданной партии — иначе откат в deleteOp создаст вторую партию вместо снятия
@@ -1657,7 +1666,7 @@ function orderReceive(opId){
       productId: product.id, productName: op.productName,
       qty: op.qty, unit: op.unit,
       batchId: newB.id, batchLocation: "", batchExpiry: "",
-      note: `Из заказа${op.note?": "+op.note:""} (новая партия)`,
+      note: orderNote(op, "(новая партия)"),
     });
   } else {
     product.qty = roundQty(Number(product.qty||0) + Number(op.qty||0));
@@ -1666,12 +1675,25 @@ function orderReceive(opId){
       id: receiptId, ts: new Date().toISOString(),
       productId: product?.id || "", productName: op.productName,
       qty: op.qty, unit: op.unit,
-      note: `Из заказа${op.note?": "+op.note:""}`,
+      note: orderNote(op),
     });
   }
   logOp("ORDER_RECEIVE", `${op.productName} +${fmtQty(op.qty)} ${op.unit||""}`);
   saveState(); render();
   toast("Принято на склад");
+}
+
+// позиция осиротела (qty=0 и нигде в журналах не упоминается, кроме записи exceptOpId) →
+// спрашиваем удалить (тихо не удаляем — может быть каталожной: ценны minStock/категория).
+// Был продублирован в deleteOp и saveOpEdit.
+async function maybeDropOrphanProduct(prod, exceptOpId){
+  if(!prod) return;
+  const hasOther = JOURNAL_KEYS.some(k=>
+    (state.journals[k]||[]).some(r=>r.productId===prod.id && r.id!==exceptOpId)
+  );
+  if(!hasOther && await confirmSheet(`«${prod.name}» на складе = 0 и больше не упоминается. Удалить позицию?`,{yes:"Удалить",no:"Оставить"})){
+    state.stock = state.stock.filter(s=>s.id!==prod.id);
+  }
 }
 
 async function deleteOp(kind, opId){
@@ -1745,14 +1767,7 @@ async function deleteOp(kind, opId){
         }
       }
       // если позиция была авто-создана (qty=0 и нет других журнальных записей) — предложить удалить
-      if(product.qty===0){
-        const hasOther = JOURNAL_KEYS.some(k=>
-          (state.journals[k]||[]).some(r=>r.productId===product.id && r.id!==opId)
-        );
-        if(!hasOther && await confirmSheet(`«${product.name}» на складе = 0 и больше не упоминается. Удалить позицию?`,{yes:"Удалить",no:"Оставить"})){
-          state.stock = state.stock.filter(s=>s.id!==product.id);
-        }
-      }
+      if(product.qty===0) await maybeDropOrphanProduct(product, opId);
     }
   } else {
     if(!await confirmSheet(`Удалить запись?\n${op.productName} — ${fmtQty(op.qty)} ${op.unit||""}`,{danger:true,yes:"Удалить"})) return;
@@ -1805,30 +1820,7 @@ function editOp(kind, opId){
       </div>
     </div>
   `);
-  const input = document.getElementById("eopSearch");
-  const list  = document.getElementById("eopList");
-  const sel   = document.getElementById("eopSel");
-  const hid   = document.getElementById("eopProdId");
-  const unit  = document.getElementById("eopUnit");
-  const nameI = document.getElementById("eopName");
-  function renderList(q){
-    const Q = q.trim().toLowerCase();
-    if(!Q){ list.innerHTML = `<div class="text-xs opacity-60 p-2">Введи 2+ символа</div>`; return; }
-    const found = state.stock.filter(s=>(s.name||"").toLowerCase().includes(Q)).slice(0,20);
-    list.innerHTML = found.length
-      ? found.map(s=>`<button type="button" class="w-full text-left p-2 rounded hover:bg-white/5" data-pick="${esc(s.id)}">${typeMeta(s.type).icon} ${esc(s.name)} <span class="opacity-60 text-xs">· ${fmtQty(s.qty)} ${esc(s.unit||"")}</span></button>`).join("")
-      : `<div class="text-xs opacity-60 p-2">Не найдено</div>`;
-  }
-  renderList("");
-  input.addEventListener("input", ()=>renderList(input.value));
-  list.addEventListener("click", e=>{
-    const b = e.target.closest("[data-pick]"); if(!b) return;
-    const s = state.stock.find(x=>x.id===b.dataset.pick); if(!s) return;
-    hid.value = s.id;
-    sel.textContent = `Выбрано: ${s.name} (${fmtQty(s.qty)} ${s.unit||""})`;
-    if(UNITS.includes(s.unit)) unit.value = s.unit;
-    nameI.value = s.name;
-  });
+  wireStockPicker({ prefix:"eop", emptyHint:"Введи 2+ символа", notFoundText:"Не найдено", nameOnPick:true });
 }
 
 async function saveOpEdit(kind, opId){
@@ -1921,19 +1913,14 @@ async function saveOpEdit(kind, opId){
       r.productName = op.productName;
       r.qty = op.qty;
       r.unit = op.unit;
-      r.note = `Из заказа${op.note?": "+op.note:""}`;
+      r.note = orderNote(op);
     }
   }
 
   // если старый продукт после отвязки/перепривязки осиротел (qty=0 и больше нигде не упоминается) —
   // спрашиваем, а не удаляем тихо: позиция может быть каталожной (minStock/категория ценны)
   if(oldProd && oldProd!==newProd && Number(oldProd.qty||0)===0 && !hasBatches(oldProd)){
-    const hasOther = JOURNAL_KEYS.some(k=>
-      (state.journals[k]||[]).some(r=>r.productId===oldProd.id && r.id!==op.id)
-    );
-    if(!hasOther && await confirmSheet(`«${oldProd.name}» на складе = 0 и больше не упоминается. Удалить позицию?`,{yes:"Удалить",no:"Оставить"})){
-      state.stock = state.stock.filter(s=>s.id!==oldProd.id);
-    }
+    await maybeDropOrphanProduct(oldProd, op.id);
   }
 
   logOp("OP_EDIT", `${kind} ${op.productName} ${fmtQty(op.qty)} ${op.unit||""}`);
@@ -2664,7 +2651,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v77</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v78</div>
   `;
   pomoTick();
 }
