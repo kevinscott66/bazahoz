@@ -708,9 +708,10 @@ for(const k of STOCK_TYPE_KEYS){
   state.locations[k] = [...new Set(state.locations[k].map(cleanName40).filter(Boolean))];
 }
 ensureTomb();   // инициализируем надгробия удалённых мест/категорий
-// если место было удалено (надгробие), не воскрешаем его при ре-сидировании дефолтов выше
+// если место/категория были удалены (надгробие), не воскрешаем их при ре-сидировании дефолтов выше
 for(const k of STOCK_TYPE_KEYS){
   if(state.delLoc[k].length) state.locations[k] = state.locations[k].filter(n=>!state.delLoc[k].includes(n));
+  if(state.delCat[k].length && Array.isArray(state.categories[k])) state.categories[k] = state.categories[k].filter(n=>!state.delCat[k].includes(n));
 }
 // общие задачи накладываем ДО санитизации — чтобы их id/чек-листы тоже прошли проверку
 loadGlobalTasks();
