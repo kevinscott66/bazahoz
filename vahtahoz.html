@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v80</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v81</div>
   </div>
 </div>
 
@@ -244,7 +244,7 @@ function saveState(){
       if(state.journals){
         for(const k of JOURNAL_KEYS){
           if(Array.isArray(state.journals[k]) && state.journals[k].length>500)
-            state.journals[k] = state.journals[k].slice(-500);
+            state.journals[k] = state.journals[k].slice(0,500);   // записи добавляются unshift'ом (новые — в начале) → оставляем СВЕЖИЕ 500, а не старые
         }
       }
       try {
@@ -1302,6 +1302,7 @@ function saveTask(id){
   const itemsRaw = body.querySelector("#titems")?.value || "";
   if(id){
     const t = state.tasks.find(x=>x.id===id);
+    if(!t){ toast("Задача изменилась в другой вкладке"); closeSheet(); render(); return; }   // удалена/синкнута между открытием формы и сохранением → не падаем на t.due
     // если поменялась дата/время — старый order относится к другой группе, сбросим
     const groupChanged = t.due!==due || (t.time||"")!==time;
     const items = parseTaskItems(itemsRaw, t.items);
@@ -1769,8 +1770,10 @@ async function deleteOp(kind, opId){
           if(idx>=0) arr.splice(idx,1);
         }
       }
-      // если позиция была авто-создана (qty=0 и нет других журнальных записей) — предложить удалить
-      if(product.qty===0) await maybeDropOrphanProduct(product, opId);
+      // если позиция была авто-создана (qty=0 и нет других журнальных записей) — предложить удалить.
+      // saveState() ДО интерактивного подтверждения фиксирует откат склада и ставит dirty →
+      // pull во время диалога заблокирован и не затрёт нашу правку «осиротевшим» объектом.
+      if(product.qty===0){ saveState(); await maybeDropOrphanProduct(product, opId); }
     }
   } else {
     if(!await confirmSheet(`Удалить запись?\n${op.productName} — ${fmtQty(op.qty)} ${op.unit||""}`,{danger:true,yes:"Удалить"})) return;
@@ -1924,6 +1927,7 @@ async function saveOpEdit(kind, opId){
   // если старый продукт после отвязки/перепривязки осиротел (qty=0 и больше нигде не упоминается) —
   // спрашиваем, а не удаляем тихо: позиция может быть каталожной (minStock/категория ценны)
   if(oldProd && oldProd!==newProd && Number(oldProd.qty||0)===0 && !hasBatches(oldProd)){
+    saveState();   // фиксируем правки склада ДО интерактивного orphan-подтверждения (dirty блокирует pull в окне диалога)
     await maybeDropOrphanProduct(oldProd, op.id);
   }
 
@@ -2308,6 +2312,9 @@ async function deleteBatch(itemId, batchId){
   const it = state.stock.find(s=>s.id===itemId); if(!it) return;
   const b = (it.batches||[]).find(x=>x.id===batchId); if(!b) return;
   if(!await confirmSheet(`Удалить партию ${fmtQty(b.qty)} ${it.unit||""}${b.location?` (📍 ${b.location})`:""}${b.expiry?` (⏰ ${fmtDate(b.expiry)})`:""}?`,{danger:true,yes:"Удалить"})) return;
+  // ссылки it/b сняты ДО await — pull во время подтверждения мог пересоздать объекты склада.
+  // Без перерезолва мутация легла бы на «осиротевший» объект, а журнал получил бы ложную пометку «[партия удалена]».
+  if(state.stock.find(s=>s.id===itemId)!==it || !(it.batches||[]).some(x=>x.id===batchId)){ toast("Данные обновились — повтори операцию"); render(); return; }
   // помечаем осиротевшие журнальные записи — чтобы editOp по ним выдавал предупреждение
   let orphans = 0;
   for(const k of JOURNAL_KEYS){
@@ -2670,7 +2677,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v80</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v81</div>
   `;
   pomoTick();
 }
@@ -2785,7 +2792,8 @@ function exportCsv(){
     s.minStock??"", s.expiry||"", locationsOf(s).join("; "), s.note||""
   ]));
   const csv = "\uFEFF" + rows.map(r=>r.map(v=>{
-    const str = String(v??"");
+    let str = String(v??"");
+    if(/^[=+\-@\t\r]/.test(str)) str = "'" + str;   // защита от CSV-инъекции формул: имя/примечание вида «=…»/«+…» Excel выполнил бы как формулу
     return /[;"\n\r]/.test(str) ? `"${str.replace(/"/g,'""')}"` : str;
   }).join(";")).join("\r\n");
   triggerDownload(csv, `vahtahoz-sklad-${todayStr()}.csv`, "text/csv;charset=utf-8");
@@ -2852,6 +2860,7 @@ async function mergeCatalogs(){
   if(!ok) return;
   let added=0;
   for(const b of bases){
+    if(b.active) b.st = state;   // снимок снят ДО await — за время диалога глобальный state мог быть переназначен (storage-событие); берём живой
     const have = new Set(b.st.stock.map(keyOf));
     for(const [k,c] of catalog){
       if(!have.has(k)){ b.st.stock.push(catalogItem(c.type, c.name, c.unit)); added++; }
@@ -3891,7 +3900,7 @@ async function cloudPushNow(){
       if(!(jrows.length===0 && Object.keys(prevJSig).length>0)){
         const jup = jrows.filter(r=> curJSig[r.id]!==prevJSig[r.id]);
         // ЖУРНАЛЫ НЕ УДАЛЯЕМ из облака вообще: облачный журнал — полный архив,
-        // а локальный усекается по квоте localStorage (slice(-500) при QuotaExceeded).
+        // а локальный усекается по квоте localStorage (slice(0,500) — свежие 500 — при QuotaExceeded).
         // Любое локальное «исчезновение» записи (усечение ИЛИ ручное удаление) НЕ должно
         // стирать запись из облачного архива. Записи журнала append-only, у каждой уникальный id —
         // повторного появления при pull это не вызовет конфликтов. Только добавляем/обновляем.
