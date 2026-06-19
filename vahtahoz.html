@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v90</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v91</div>
   </div>
 </div>
 
@@ -359,7 +359,7 @@ function switchProfile(toId){
   }
 }
 async function addProfile(){
-  if(isRestrictedUser()){ toast("Создание баз недоступно для вашей роли"); return; }
+  if(!ensureNotRestricted("Создание баз недоступно для вашей роли")) return;
   const name = await promptSheet("Название новой базы", "", {title:"Новая база"});
   if(name===null) return;
   const nm = cleanName40(name);
@@ -415,7 +415,7 @@ async function deleteProfile(id){
   toast("База удалена");
 }
 function openProfilesSheet(){
-  if(isRestrictedUser()){ toast("Переключение и управление базами недоступно для вашей роли"); return; }   // начальник заперт на своей базе
+  if(!ensureNotRestricted("Переключение и управление базами недоступно для вашей роли")) return;   // начальник заперт на своей базе
   const rows = profiles.list.map(p=>{
     const isActive = p.id===profiles.activeId;
     return `<div class="flex items-center gap-2 text-sm py-2 border-b border-gray-800" data-profid="${esc(p.id)}">
@@ -2755,7 +2755,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v90</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v91</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -3544,6 +3544,7 @@ function cloudOnline(){ return navigator.onLine!==false; }
 /* «ограниченный» пользователь — вошёл в облако и НЕ имеет права на задачи (начальник):
    ему показываем только складскую часть (журнал операций без задач). */
 function isRestrictedUser(){ const m = activeMember(); return !!(m && !m.can_view_tasks); }
+function ensureNotRestricted(msg){ if(isRestrictedUser()){ toast(msg); return false; } return true; }   // гард действий, недоступных начальнику
 function visibleLog(){
   if(!isRestrictedUser()) return state.log;
   return (state.log||[]).filter(l => !String(l.action||"").toUpperCase().startsWith("TASK"));
