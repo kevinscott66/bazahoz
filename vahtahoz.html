@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v92</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v93</div>
   </div>
 </div>
 
@@ -340,10 +340,12 @@ function freshProfileState(opts){
   }
   return s;
 }
-function switchProfile(toId){
+function switchProfile(toId, fromAutoLink){
   if(!toId || toId===profiles.activeId) return;
   if(!profiles.list.some(x=>x.id===toId)) return;
-  if(roleBaseLocked()){ toast("Переключение баз недоступно для вашей роли"); return; }   // гард на самом действии (не только в UI) + защита от гонки инициализации роли
+  // авто-привязка к облаку при входе = ИНИЦИАЛИЗАЦИЯ (вход в свою базу), не «смена базы пользователем» → роль-гард не применяем.
+  // Пользовательское переключение — под гардом (явно, без завязки на тайминг activeCloudId).
+  if(!fromAutoLink && roleBaseLocked()){ toast("Переключение баз недоступно для вашей роли"); return; }
   try{
     // 1) снимок активной базы (самые свежие данные — из памяти) в её слот
     localStorage.setItem(slotKey(profiles.activeId), JSON.stringify(state));
@@ -2756,7 +2758,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v92</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v93</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -3782,7 +3784,7 @@ async function cloudAutoLink(){
     }
   }
   if(changed) saveProfiles(profiles);
-  if(switchTo && !activeCloudId()){ switchProfile(switchTo); return true; }
+  if(switchTo && !activeCloudId()){ switchProfile(switchTo, true); return true; }   // true = автопривязка, в обход роль-гарда
   return false;
 }
 /* активация облачной базы: первичная выгрузка / подтягивание / разрешение оффлайн-правок */
