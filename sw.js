@@ -1,11 +1,12 @@
 /* ВахтаХоз service worker — network-first для оболочки + offline fallback.
    network-first важен: после деплоя фикса пользователь получает свежий vahtahoz.html
    сразу при наличии сети, а кэш используется только как офлайн-резерв. */
-const CACHE = "vahtahoz-v89-conflict-expiry";
+const CACHE = "vahtahoz-v90-manager-offline";
 const PRECACHE = [
   "./vahtahoz.html",
   "./manifest.webmanifest",
   "./supabase.js",
+  "./xlsx.js",        // прекэшируем сразу — чтобы Excel-экспорт работал ПОЛНОСТЬЮ оффлайн (раньше нужна была сеть в первый раз)
 ];
 
 self.addEventListener("install", e => {
