@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v88</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v89</div>
   </div>
 </div>
 
@@ -2012,7 +2012,8 @@ function stockRow(it){
   const bCnt = batchesOf(it).length;
   const nearestExp = nearestExpiryOf(it);
   const expExtra = bCnt>1 ? ` +${bCnt-1}` : "";
-  const exp = nearestExp?`<span class="badge badge-gray">⏰ ${fmtDate(nearestExp)}${expExtra}</span>`:"";
+  // срок не показываем у позиции без остатка (qty=0): нет товара — нет срока
+  const exp = (nearestExp && inStock(it))?`<span class="badge badge-gray">⏰ ${fmtDate(nearestExp)}${expExtra}</span>`:"";
   // раскрывающаяся панель партий — показывается, если их ≥ 2
   const batchPanel = bCnt>=2 ? `
     <details class="mt-2" onclick="event.stopPropagation()">
@@ -2747,7 +2748,7 @@ function renderMore(){
       <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v88</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v89</div>
   `;
   pomoTick();
 }
@@ -3282,7 +3283,7 @@ function expiryNoticeOnOpen(){
   const gate=document.getElementById("loginGate"); if(gate && !gate.classList.contains("hidden")) return;
   if(state.lastExpiryNoticeDate===todayStr()) return;
   const expired = state.stock.filter(s=> s.type==="product" && s.expiry && daysLeft(s.expiry)<0 && Number(s.qty||0)>0);
-  const soon    = state.stock.filter(s=>{ if(s.type!=="product"||!s.expiry) return false; const d=daysLeft(s.expiry); return d!==null && d>=0 && d<=3; });
+  const soon    = state.stock.filter(s=>{ if(s.type!=="product"||!s.expiry||!inStock(s)) return false; const d=daysLeft(s.expiry); return d!==null && d>=0 && d<=3; });
   // число единиц для списания — по партиям (как в writeoffExpired), чтобы подпись кнопки совпадала с фактом
   const expiredTargets = state.stock.reduce((n,s)=>{
     if(s.type!=="product") return n;
@@ -3775,6 +3776,36 @@ async function cloudActivate(cid, attempt){
     // решение «выгружать» — по складу/журналам (задачи не синкаются и тут не учитываются)
     const localHasData = (state.stock&&state.stock.length) ||
       JOURNAL_KEYS.some(k=>(state.journals?.[k]||[]).length);
+    // КОНФЛИКТ «Войти позже → Войти»: в локальной базе есть данные И в облаке есть данные,
+    // и база ещё ни разу не синхронизировалась (нет снимка). Раньше тихо делали PULL —
+    // локальная офлайн-работа терялась. Теперь спрашиваем, без молчаливой потери.
+    const neverSynced = !Object.keys(loadSyncSig(cid,"stock")).length && !Object.keys(loadSyncSig(cid,"jr")).length;
+    cloud._conflictAsked = cloud._conflictAsked || {};
+    if(!dirty && !cloudEmpty && localHasData && neverSynced && perm && perm.can_edit_stock && !cloud._conflictAsked[cid]){
+      cloud._conflictAsked[cid] = true;
+      const choice = await chooseSheet(
+        `База «${cloud.bases[cid]||"облачная"}»: есть и локальные данные, и данные в облаке. Что оставить?`,
+        [ { label:"Облачные (локальные сохраню копией)", value:"cloud", color:"btn-primary" },
+          { label:"Мои локальные (выгрузить в облако)", value:"local", color:"btn-danger" } ]);
+      if(choice==="local"){
+        saveSyncSig(cid,"stock",{}); saveSyncSig(cid,"jr",{});   // локальное — источник: полная выгрузка поверх облака
+        await cloudPushNow();
+        return;
+      }
+      // "Облачные" ИЛИ отмена → НЕ теряем локальное: сохраняем его отдельной локальной базой, затем тянем облако
+      try{
+        const raw = localStorage.getItem(STORE_KEY);
+        if(raw){
+          const bkId = uid();
+          localStorage.setItem(slotKey(bkId), raw);
+          profiles.list.push({ id:bkId, name: cleanName40((cloud.bases[cid]||"База")+" (локальная копия)") });
+          saveProfiles(profiles);
+          toast("Локальные данные сохранены копией");
+        }
+      }catch(_){}
+      await cloudPull(cid);
+      return;
+    }
     if((dirty || (cloudEmpty && localHasData)) && perm && perm.can_edit_stock){
       // локальное — источник (первый раз или были оффлайн-правки).
       // dirty снимает САМ cloudPushNow и ТОЛЬКО при успехе — здесь снимать нельзя,
