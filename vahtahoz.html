@@ -151,7 +151,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v89</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v90</div>
   </div>
 </div>
 
@@ -359,6 +359,7 @@ function switchProfile(toId){
   }
 }
 async function addProfile(){
+  if(isRestrictedUser()){ toast("Создание баз недоступно для вашей роли"); return; }
   const name = await promptSheet("Название новой базы", "", {title:"Новая база"});
   if(name===null) return;
   const nm = cleanName40(name);
@@ -414,6 +415,7 @@ async function deleteProfile(id){
   toast("База удалена");
 }
 function openProfilesSheet(){
+  if(isRestrictedUser()){ toast("Переключение и управление базами недоступно для вашей роли"); return; }   // начальник заперт на своей базе
   const rows = profiles.list.map(p=>{
     const isActive = p.id===profiles.activeId;
     return `<div class="flex items-center gap-2 text-sm py-2 border-b border-gray-800" data-profid="${esc(p.id)}">
@@ -1037,8 +1039,8 @@ function renderHeader(){
   document.getElementById("dateStr").textContent = now.toLocaleDateString("ru-RU",{weekday:"long",day:"numeric",month:"long"});
   const bc = document.getElementById("baseChip");
   if(bc){
-    // показываем чип только когда баз больше одной — иначе не загромождаем шапку
-    if(profiles.list.length>1){ bc.textContent = `🏠 ${activeProfileName()}`; bc.style.display=""; }
+    // показываем чип только когда баз больше одной и роль позволяет переключение (начальник — заблокирован)
+    if(profiles.list.length>1 && !isRestrictedUser()){ bc.textContent = `🏠 ${activeProfileName()}`; bc.style.display=""; }
     else { bc.style.display="none"; }
   }
   // статус-бар/чип облака скрываем, если активная база не связана с облаком или нет входа
@@ -2624,7 +2626,7 @@ function renderKitchen(){
         :`<div class="opacity-70 text-sm">Всё в порядке ✅</div>`}
     </div>
 
-    <div class="card">
+    ${isRestrictedUser()?"":`<div class="card">
       <div class="flex items-center justify-between mb-2">
         <div class="font-bold">Чек-лист кухни</div>
         <button class="btn btn-ghost" onclick="resetChecklist()">Сбросить</button>
@@ -2641,7 +2643,7 @@ function renderKitchen(){
         <input class="input" id="ckNew" placeholder="Новый пункт..." />
         <button class="btn btn-primary" onclick="addCheck()">＋</button>
       </div>
-    </div>
+    </div>`}
   `;
 }
 function ensureChecklist(){
@@ -2675,21 +2677,22 @@ function resetChecklist(){
 /* ---------- More ---------- */
 function renderMore(){
   const v = document.querySelector('[data-view="more"]');
+  const restricted = isRestrictedUser();   // начальник: скрываем управление базами/помодоро/каталог/полный бэкап
   v.innerHTML = `
     <div class="card">
       <div class="flex items-center justify-between gap-2">
         <div>
           <div class="font-bold">🏠 База: ${esc(activeProfileName())}</div>
-          <div class="text-xs opacity-70 mt-0.5">Профилей: ${profiles.list.length}</div>
+          <div class="text-xs opacity-70 mt-0.5">${restricted?"Ваша база":`Профилей: ${profiles.list.length}`}</div>
         </div>
-        <button class="btn btn-primary" onclick="openProfilesSheet()">Сменить / базы</button>
+        ${restricted?"":`<button class="btn btn-primary" onclick="openProfilesSheet()">Сменить / базы</button>`}
       </div>
-      <div class="text-xs opacity-70 mt-2">У каждой базы свой склад, журналы и места хранения. Данные других баз сохраняются.</div>
+      ${restricted?"":`<div class="text-xs opacity-70 mt-2">У каждой базы свой склад, журналы и места хранения. Данные других баз сохраняются.</div>`}
     </div>
 
     ${(typeof cloudCardHtml==="function")?cloudCardHtml():""}
 
-    <div class="card">
+    ${restricted?"":`<div class="card">
       <div class="font-bold mb-2">🍅 Pomodoro</div>
       <div id="pomo" class="text-center">
         <div class="text-5xl font-bold" id="pomoTime">25:00</div>
@@ -2700,7 +2703,7 @@ function renderMore(){
           <button class="btn btn-danger flex-1" onclick="pomoReset()">Сброс</button>
         </div>
       </div>
-    </div>
+    </div>`}
 
     <div class="card">
       <div class="font-bold mb-2">💾 Бэкап</div>
@@ -2711,11 +2714,11 @@ function renderMore(){
           <input type="file" accept="application/json" class="hidden" onchange="importData(event)">
         </label>
       </div>
-      <button class="btn btn-success w-full mt-2" onclick="exportAllProfiles()">🗄 Резервная копия ВСЕХ баз</button>
-      <div class="text-xs opacity-70 mt-2">«Экспорт базы» — только текущая. «Все базы» — один файл со всеми профилями (главный бэкап). Импорт принимает оба формата. Сохраняй регулярно — пригодится, если телефон сбросится!</div>
+      ${restricted?"":`<button class="btn btn-success w-full mt-2" onclick="exportAllProfiles()">🗄 Резервная копия ВСЕХ баз</button>`}
+      <div class="text-xs opacity-70 mt-2">${restricted?"«Экспорт базы» сохраняет вашу базу в файл. Сохраняй регулярно!":"«Экспорт базы» — только текущая. «Все базы» — один файл со всеми профилями (главный бэкап). Импорт принимает оба формата. Сохраняй регулярно — пригодится, если телефон сбросится!"}</div>
     </div>
 
-    ${profiles.list.length>1 ? `<div class="card">
+    ${(profiles.list.length>1 && !restricted) ? `<div class="card">
       <div class="font-bold mb-2">🔗 Общий каталог</div>
       <button class="btn btn-ghost w-full" onclick="mergeCatalogs()">Объединить наименования всех баз</button>
       <div class="text-xs opacity-70 mt-2">Сводит список наименований одинаковым во всех базах: добавляет недостающие позиции с нулём. Остатки, места и сроки у каждой базы остаются свои.</div>
@@ -2727,7 +2730,7 @@ function renderMore(){
         <button class="btn btn-success" onclick="exportXlsx()">.xlsx (все листы)</button>
         <button class="btn btn-ghost" onclick="exportCsv()">.csv (только склад)</button>
       </div>
-      <div class="text-xs opacity-70 mt-2">xlsx = склад + 4 журнала на отдельных листах. Первый раз требуется сеть (дальше работает оффлайн).</div>
+      <div class="text-xs opacity-70 mt-2">xlsx = склад + 4 журнала на отдельных листах. Работает оффлайн.</div>
     </div>
 
     <div class="card">
@@ -2745,12 +2748,16 @@ function renderMore(){
     <div class="card">
       <div class="font-bold mb-2">⚙️ Настройки</div>
       <button class="btn btn-ghost w-full mb-2" onclick="toggleTheme()">Тема: ${state.theme==="light"?"Светлая":"Тёмная"}</button>
-      <button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
+      ${activeCloudId()
+        ? `<button class="btn btn-ghost w-full" onclick="wipeAll()">🔄 Обновить базу из облака</button>
+           <div class="text-xs opacity-70 mt-2">Заменяет локальную копию свежими данными из облака. Данные в облаке не удаляются.</div>`
+        : `<button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
+           <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v89</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v90</div>
   `;
-  pomoTick();
+  if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
 
 /* ---------- Excel / CSV экспорт ---------- */
@@ -3205,6 +3212,19 @@ async function clearLog(){
   state.log=[]; saveState(); render();
 }
 async function wipeAll(){
+  const cid = activeCloudId();
+  if(cid){
+    // ОБЛАЧНАЯ база: стирать её локально и выгружать пустоту НЕЛЬЗЯ — это снесло бы общие данные
+    // в облаке у всех участников (в т.ч. у начальника). «Сброс» здесь = заменить ЛОКАЛЬНУЮ копию
+    // свежими данными из облака. Облако не трогаем.
+    if(!await confirmSheet(`База «${activeProfileName()}» — облачная. Обновить локальную копию из облака? Несохранённые локальные правки заменятся облачными. Данные в облаке НЕ удаляются.`,{danger:true,yes:"Обновить из облака"})) return;
+    try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(_){}   // отбрасываем несинхронизированное локальное (но НЕ снимок — иначе ложный конфликт при сбое)
+    setSyncStatus("syncing","Обновление из облака…");
+    try{ await cloudPull(cid); toast("Обновлено из облака"); }catch(e){ toast("Не удалось обновить — проверь сеть"); }
+    nav("dashboard");
+    return;
+  }
+  // ЛОКАЛЬНАЯ база (без облака) — полный сброс именно этой базы (другие базы не затрагиваются)
   if(!await confirmSheet(`Стереть данные базы «${activeProfileName()}»? Другие базы не затрагиваются.`,{danger:true,yes:"Продолжить"})) return;
   if(!await confirmSheet("Точно? Экспортируй бэкап сначала!",{danger:true,yes:"Стереть базу"})) return;
   const reseed = await confirmSheet("Загрузить встроенный список продуктов (февраль 2026) заново?",{yes:"Да, загрузить",no:"Нет, пусто"});
