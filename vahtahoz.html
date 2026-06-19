@@ -30,8 +30,8 @@
   .btn-warn{ background:#d97706; color:#fff; }
   .input{ width:100%; min-height:52px; padding:12px 14px; border-radius:14px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.1); color:inherit; font-size:17px; outline:none; }
   .input:focus{ border-color:#2563eb; }
-  .card{ background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08); border-radius:18px; padding:16px; }
-  .light .card{ background:#fff; border-color:#e5e7eb; }
+  .card{ background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08); border-radius:18px; padding:16px; box-shadow:0 1px 2px rgba(0,0,0,.18); }
+  .light .card{ background:#fff; border-color:#e5e7eb; box-shadow:0 1px 3px rgba(0,0,0,.06); }
   .light .btn-ghost{ background:#f3f4f6; }
   .light .input{ background:#fff; border-color:#d1d5db; color:#111827; }
   .chip{ padding:8px 14px; border-radius:999px; font-size:14px; font-weight:600; background:rgba(255,255,255,.06); }
@@ -42,7 +42,7 @@
   .nav-btn.active{ color:#60a5fa; }
   .light .nav-btn{ color:#6b7280; }
   .light .nav-btn.active{ color:#2563eb; }
-  .badge{ font-size:11px; font-weight:700; padding:3px 8px; border-radius:999px; }
+  .badge{ font-size:11px; font-weight:700; padding:3px 8px; border-radius:999px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; }
   .badge-red{ background:#dc2626; color:#fff; }
   .badge-yellow{ background:#b45309; color:#fff; }
   .badge-green{ background:#16a34a; color:#fff; }
@@ -80,6 +80,12 @@
   .break-words{ overflow-wrap:break-word; word-break:break-word; }
   /* видимый фокус только при навигации с клавиатуры — тач/мышь не затрагивает */
   .btn:focus-visible, .chip:focus-visible, .nav-btn:focus-visible, .input:focus-visible{ outline:2px solid #2563eb; outline-offset:2px; }
+  /* косметика: кнопки в 3-колоночной сетке (типы склада) — компактнее, чтобы подписи не обрезались на узком iPhone */
+  .grid-cols-3 > .btn{ padding:0 6px; font-size:15px; gap:4px; min-width:0; }
+  @media (max-width:360px){ .grid-cols-3 > .btn{ font-size:13px; padding:0 4px; } }
+  /* активная вкладка нижней навигации — подчёркивание для ясности */
+  .nav-btn.active{ position:relative; }
+  .nav-btn.active::after{ content:""; position:absolute; top:0; left:50%; transform:translateX(-50%); width:22px; height:3px; border-radius:0 0 3px 3px; background:currentColor; }
 </style>
 <!-- Supabase клиент (self-hosted, тот же origin → кешируется SW, работает офлайн после 1й загрузки) -->
 <script src="./supabase.js"></script>
@@ -151,7 +157,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v93</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v94</div>
   </div>
 </div>
 
@@ -2758,7 +2764,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v93</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v94</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
