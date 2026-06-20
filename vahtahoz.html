@@ -157,7 +157,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v95</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v96</div>
   </div>
 </div>
 
@@ -2701,6 +2701,15 @@ function renderMore(){
 
     ${(typeof cloudCardHtml==="function")?cloudCardHtml():""}
 
+    ${canEditStock()?`<div class="card">
+      <div class="font-bold mb-2">📍 Места и категории</div>
+      <div class="grid grid-cols-2 gap-2">
+        <button class="btn btn-ghost" onclick="openLocationsEdit()">📍 Места хранения</button>
+        <button class="btn btn-ghost" onclick="openCategoriesEdit()">⚙️ Категории</button>
+      </div>
+      <div class="text-xs opacity-70 mt-2">Добавляй, переименовывай и удаляй места хранения и категории товаров. То же доступно в разделе «Склад».</div>
+    </div>`:""}
+
     ${restricted?"":`<div class="card">
       <div class="font-bold mb-2">🍅 Pomodoro</div>
       <div id="pomo" class="text-center">
@@ -2764,7 +2773,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v95</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v96</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
