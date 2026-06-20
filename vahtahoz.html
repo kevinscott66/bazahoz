@@ -157,7 +157,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v96</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v97</div>
   </div>
 </div>
 
@@ -341,8 +341,9 @@ function freshProfileState(opts){
   const s = structuredClone(defaultState);
   s.seededAt = new Date().toISOString();
   if(opts && opts.copyFrom){
+    // копируем КАТЕГОРИИ (универсальны для всех баз), но НЕ места хранения —
+    // места физические/базо-специфичные (свой склад/кунг), пусть остаются дефолтными.
     s.categories = structuredClone(opts.copyFrom.categories || defaultState.categories);
-    s.locations  = structuredClone(opts.copyFrom.locations  || defaultState.locations);
   }
   return s;
 }
@@ -2773,7 +2774,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v96</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v97</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -3913,7 +3914,9 @@ async function cloudPull(cid){
         const tC = Array.isArray(cs.deletedCategories?.[k]) ? clean(cs.deletedCategories[k]) : [];
         state.delLoc[k]=tL; state.delCat[k]=tC;
         if(Array.isArray(cs.locations?.[k]) && cs.locations[k].length) state.locations[k]=applyTomb(clean(cs.locations[k]), tL);
+        else if(tL.length) state.locations[k]=applyTomb(state.locations[k]||[], tL);   // надгробия применяем даже при пустом облачном списке (иначе удаление не вступит в силу в этой сессии)
         if(Array.isArray(cs.categories?.[k]) && cs.categories[k].length) state.categories[k]=applyTomb(clean(cs.categories[k]), tC);
+        else if(tC.length) state.categories[k]=applyTomb(state.categories[k]||[], tC);
       }
       // подпись настроек = только что загруженное → не будем зря пере-выгружать на следующем push
       try{ saveSyncSig(cid,"settings",{ v:_sigOf({ locations:state.locations, categories:state.categories, deletedLocations:state.delLoc, deletedCategories:state.delCat }) }); }catch(_){}
