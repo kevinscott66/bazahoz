@@ -164,7 +164,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v101</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v102</div>
   </div>
 </div>
 
@@ -2781,7 +2781,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v101</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v102</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -2914,7 +2914,9 @@ function triggerDownload(text, filename, mime){
 }
 function exportData(){
   // экспорт ТОЛЬКО текущей базы (для обычного бэкапа/переноса одной базы)
-  triggerDownload(JSON.stringify(state,null,2), `vahtahoz-${activeProfileName()}-${todayStr()}.json`);
+  // у начальника (нет прав на задачи) «Задачи» не выгружаем
+  const out = isRestrictedUser() ? { ...state, tasks: [] } : state;
+  triggerDownload(JSON.stringify(out,null,2), `vahtahoz-${activeProfileName()}-${todayStr()}.json`);
   toast("Экспортировано (текущая база)");
 }
 function exportAllProfiles(){
@@ -3023,6 +3025,7 @@ async function importAllProfiles(payload){
     let st;
     try{ st = validateImport(structuredClone(p.state)); }
     catch(e){ console.warn("Пропущена база", p.name, e); continue; }
+    if(isRestrictedUser()) st.tasks = [];   // начальник: «Задачи» из файла не импортируем
     norm.push({ name: cleanName40(p.name||"База") || "База", state: st });
   }
   if(!norm.length){ toast("Не удалось прочитать базы из файла"); return; }
@@ -3085,6 +3088,7 @@ function importData(ev){
         return;
       }
       const obj = validateImport(parsed);
+      if(isRestrictedUser()) obj.tasks = [];   // начальник: «Задачи» из файла не импортируем
       const mode = await chooseSheet(
         `Найдено ${(obj.stock||[]).length} поз. Что делать?`,
         [
