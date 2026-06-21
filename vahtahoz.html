@@ -29,12 +29,13 @@
   .btn-success{ background:#16a34a; color:#fff; }
   .btn-warn{ background:#d97706; color:#fff; }
   .input{ width:100%; min-height:52px; padding:12px 14px; border-radius:14px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.1); color:inherit; font-size:17px; outline:none; }
-  .input:focus{ border-color:#2563eb; }
+  .input:focus{ border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.15); }
   .card{ background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08); border-radius:18px; padding:16px; box-shadow:0 1px 2px rgba(0,0,0,.18); }
   .light .card{ background:#fff; border-color:#e5e7eb; box-shadow:0 1px 3px rgba(0,0,0,.06); }
   .light .btn-ghost{ background:#f3f4f6; }
   .light .input{ background:#fff; border-color:#d1d5db; color:#111827; }
-  .chip{ padding:8px 14px; border-radius:999px; font-size:14px; font-weight:600; background:rgba(255,255,255,.06); }
+  .chip{ padding:8px 14px; border-radius:999px; font-size:14px; font-weight:600; background:rgba(255,255,255,.06); white-space:nowrap; transition:transform .06s ease, background .15s; }
+  .chip:active{ transform:scale(.96); }
   .chip.active{ background:#2563eb; color:#fff; }
   .light .chip{ background:#f3f4f6; color:#111827; }
   .light .chip.active{ background:#2563eb; color:#fff; }
@@ -157,7 +158,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v98</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v99</div>
   </div>
 </div>
 
@@ -2774,7 +2775,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v98</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v99</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -3552,6 +3553,15 @@ function cloudDoRefresh(){
   })();
   return cloud._refreshing;
 }
+// ПРОАКТИВНО обновляет токен ДО истечения (за 2 мин) — чтобы протухший access-токен вообще не ушёл в запрос
+// и 401 не возникал. Вызывается в начале каждого синк-цикла. No-op, если токен ещё свеж.
+async function ensureFreshToken(){
+  try{
+    const s = cloud.session;
+    if(!cloudOnline() || !s || !s.refresh_token) return;
+    if(!s.expires_at || s.expires_at <= Date.now() + 120000) await cloudDoRefresh().catch(()=>{});
+  }catch(_){}
+}
 /* --- маппинг строк БД <-> локальные объекты --- */
 function rowToStock(r){
   return { id:r.id, type:r.type, name:r.name, category:r.category||"", unit:r.unit||"шт",
@@ -3835,6 +3845,7 @@ async function cloudActivate(cid, attempt){
   try{
     const dirty = localStorage.getItem(cloudDirtyKey(cid));
     // count через прямой fetch (не sb.from — он висел в standalone). cloudRest кинет исключение при ошибке.
+    await ensureFreshToken();   // токен свеж ДО запроса — 401 не возникает
     const tok = cloud.session && cloud.session.access_token;
     const cIds = await cloudRest(`stock_items?select=id&base_id=eq.${encodeURIComponent(cid)}`, tok);
     const cloudEmpty = !(Array.isArray(cIds) && cIds.length);
@@ -3898,6 +3909,7 @@ async function cloudPull(cid){
     // ПРЯМОЙ fetch с токеном (cloudRest) — не зависит от регистрации сессии в supabase-клиенте,
     // который в iOS standalone-PWA мог ВИСНУТЬ без таймаута («Загрузка из облака» навсегда).
     // cloudRest кидает исключение при ошибке/таймауте → попадём в catch и НЕ затрём локальное пустым.
+    await ensureFreshToken();   // токен свеж ДО запроса — 401 не возникает
     const tok = cloud.session && cloud.session.access_token;
     const items = await cloudRest(`stock_items?select=*&base_id=eq.${encodeURIComponent(cid)}`, tok, {timeout:60000});  // тяжёлый — большой запас под слабую сеть
     const jr    = await cloudRest(`journal_entries?select=*&base_id=eq.${encodeURIComponent(cid)}`, tok, {timeout:45000});
@@ -4034,6 +4046,7 @@ async function cloudPushNow(){
   const perm = activeMember(); if(!perm){ cloud.pushPending=false; return; }
   await ensureSB(); cloud.busy=true;
   try{
+    await ensureFreshToken();   // токен свеж ДО запроса — 401 не возникает
     const tok = cloud.session && cloud.session.access_token;
     if(perm.can_edit_stock){
       // === СКЛАД (ДЕЛЬТА: только изменённые/удалённые позиции, прямым fetch) ===
@@ -4138,6 +4151,7 @@ async function cloudPushTasksNow(){
   const uid=activeUid(); if(!uid || !cloud.ready || !cloudOnline()) return;
   cloud.tasksBusy=true;                       // своя выгрузка идёт — realtime-эхо не должно дёргать pull
   try{
+    await ensureFreshToken();   // токен свеж ДО запроса — 401 не возникает
     const tok=cloud.session.access_token;
     const rows=(state.tasks||[]).filter(t=>t&&t.id!=null).map(t=>({ id:String(t.id), owner_id:uid, data:t }));
     const curSig={}; rows.forEach(r=>{ curSig[r.id]=_sigOf({data:r.data}); });
@@ -4160,6 +4174,7 @@ async function cloudPullTasks(){
   const uid=activeUid(); if(!uid || !cloudOnline()) return;
   if(localStorage.getItem(TASKS_DIRTY)){ cloudMaybePushTasks(); return; }   // есть несинхр. правки — не затираем
   try{
+    await ensureFreshToken();   // токен свеж ДО запроса — 401 не возникает
     const tok=cloud.session.access_token;
     const rows=await cloudRest(`tasks?select=*&owner_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:30000});
     if(localStorage.getItem(TASKS_DIRTY)) return;                            // успел отредактировать во время загрузки → не затираем
@@ -4190,6 +4205,7 @@ async function cloudSyncTasks(){
     if(currentView==="tasks") render();
   }
   try{
+    await ensureFreshToken();   // токен свеж ДО запроса — 401 не возникает
     const tok=cloud.session.access_token;
     const ids=await cloudRest(`tasks?select=id&owner_id=eq.${encodeURIComponent(uid)}`, tok);
     const cloudEmpty=!(Array.isArray(ids)&&ids.length);
