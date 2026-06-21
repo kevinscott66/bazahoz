@@ -157,7 +157,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v97</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v98</div>
   </div>
 </div>
 
@@ -2774,7 +2774,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v97</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v98</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -3496,7 +3496,7 @@ async function ensureSB(){
 /* Прямой REST-запрос к PostgREST с пользовательским токеном в заголовке.
    Не зависит от setSession/состояния auth-клиента: в iOS standalone-PWA sb.from
    мог уходить без JWT (сессия ещё не зарегистрирована) или подвисать. */
-async function cloudRest(path, token, opts){
+async function cloudRest(path, token, opts, _retried){
   opts = opts || {};
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), opts.timeout || 30000);   // НЕ виснем вечно; запас под слабый интернет
@@ -3506,6 +3506,12 @@ async function cloudRest(path, token, opts){
       headers: Object.assign({ apikey:CLOUD_CFG.anon, Authorization:`Bearer ${token}` }, opts.headers||{}),
       body: opts.body
     });
+    // 401 = access-токен протух ПОСРЕДИ сессии (живёт ~1ч). Обновляем токен и повторяем ОДИН раз —
+    // иначе синк падал «REST 401» до перезагрузки. Тело первого ответа не читаем, чтобы повтор был чистым.
+    if(r.status===401 && !_retried && cloud.session && cloud.session.refresh_token){
+      const newTok = await cloudDoRefresh().catch(()=>null);
+      if(newTok) return await cloudRest(path, newTok, opts, true);
+    }
     if(!r.ok) throw new Error("REST "+r.status+" "+(await r.text().catch(()=>"")).slice(0,120));
     if(opts.returnResponse) return r;
     const txt = await r.text();
@@ -3531,6 +3537,20 @@ async function cloudRefresh(refresh_token){
   const d = await r.json().catch(()=>({}));
   if(!r.ok || !d.access_token) throw new Error(d.error_description||d.msg||"refresh failed");
   return d;
+}
+// обновляет access-токен по refresh-токену; ОДИН общий промис на параллельные 401 (без шторма refresh)
+function cloudDoRefresh(){
+  if(cloud._refreshing) return cloud._refreshing;
+  cloud._refreshing = (async()=>{
+    try{
+      const rt = cloud.session && cloud.session.refresh_token;
+      if(!rt) throw new Error("no refresh token");
+      const d = await cloudRefresh(rt);
+      saveCloudSess(d); cloud.session = loadCloudSess();
+      return cloud.session && cloud.session.access_token;
+    } finally { cloud._refreshing = null; }
+  })();
+  return cloud._refreshing;
 }
 /* --- маппинг строк БД <-> локальные объекты --- */
 function rowToStock(r){
