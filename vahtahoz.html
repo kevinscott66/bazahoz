@@ -164,7 +164,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v102</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v103</div>
   </div>
 </div>
 
@@ -2781,7 +2781,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v102</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v103</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -3688,9 +3688,12 @@ function showLoginGate(){
     const e=(em.value||"").trim(), p=pw.value||"";
     if(!e||!p){ err.textContent="Введите логин и пароль"; return; }
     go.disabled=true; go.textContent="Вход…"; err.textContent="";
-    const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания сети")),40000));
+    // бэкенд на бесплатном тарифе может «просыпаться» 20-30с — подсказка, чтобы не выглядело зависшим
+    const hint = setTimeout(()=>{ err.textContent="Сервер просыпается, подождите…"; }, 5000);
+    const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания сети")),55000));
     try{ await Promise.race([cloudLogin(e,p), timeout]); hideLoginGate(); }
     catch(ex){ go.disabled=false; go.textContent="Войти"; err.textContent="Не удалось войти: "+(ex.message||ex); }
+    finally{ clearTimeout(hint); }
   };
   // прямое присваивание (а не addEventListener) — обработчик гарантированно стоит при каждом показе, без дублей
   go.onclick = doLogin;
@@ -3705,9 +3708,10 @@ async function cloudLogin(email, password){
   const sb = await ensureSB();
   // Токен получаем ПРЯМЫМ запросом (быстро, как обычный fetch) — это обходит зависания
   // auth-клиента Supabase на navigator.locks в Safari/standalone-PWA, из-за которых
-  // штатный signInWithPassword мог висеть. Таймаут запроса — 15с.
+  // штатный signInWithPassword мог висеть. Таймаут запроса — 35с (бэкенд на free-тарифе
+  // может «холодно стартовать» ~20-30с после простоя; короткий таймаут рвал первый вход).
   const ctrl = new AbortController();
-  const t = setTimeout(()=>ctrl.abort(), 20000);
+  const t = setTimeout(()=>ctrl.abort(), 35000);
   // логин можно вводить без домена: «worker» → «worker@bazahoz.app»
   let em2 = (email||"").trim();
   if(em2 && !em2.includes("@")) em2 += "@bazahoz.app";
@@ -4278,8 +4282,8 @@ function cloudLoginPrompt(){
     const em=body.querySelector("#clEmail").value, pw=body.querySelector("#clPwd").value;
     if(!em||!pw){ toast("Введи логин и пароль"); return; }
     const btn=body.querySelector("#clGo"); btn.disabled=true; btn.textContent="Вход…";
-    // таймаут: если сеть зависла, кнопка не должна висеть вечно
-    const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания сети")), 35000));
+    // таймаут: если сеть зависла, кнопка не должна висеть вечно (запас под холодный старт free-бэкенда)
+    const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания сети")), 55000));
     try{ await Promise.race([cloudLogin(em,pw), timeout]); closeSheet(); }
     catch(e){ btn.disabled=false; btn.textContent="Войти"; toast("Не удалось войти: "+(e.message||e)); }
   });
