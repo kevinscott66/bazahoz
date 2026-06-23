@@ -17,6 +17,10 @@
 </style>
 <style>
   html,body{ -webkit-tap-highlight-color:transparent; overscroll-behavior-y:none; }
+  /* привязываем схему нативных контролов (input[type=date]/checkbox/number, скроллбары) к теме приложения,
+     а не к системной — иначе при «тёмный телефон + светлая тема» дата/иконка календаря светлые на белом */
+  :root{ color-scheme: dark; }
+  .light{ color-scheme: light; }
   body{ font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif; padding-bottom:env(safe-area-inset-bottom); }
   .safe-top{ padding-top:env(safe-area-inset-top); }
   .safe-bot{ padding-bottom:calc(88px + env(safe-area-inset-bottom)); }
@@ -167,13 +171,13 @@
     <div style="font-size:56px;line-height:1;margin-bottom:8px">📦</div>
     <div style="font-size:26px;font-weight:800;letter-spacing:.3px">ВахтаХоз</div>
     <div style="font-size:13px;opacity:.65;margin:6px 0 22px">Войдите, чтобы синхронизировать склад</div>
-    <input id="lgEmail" class="input" type="text" inputmode="email" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username" placeholder="Логин (например worker)" style="margin-bottom:10px;text-align:center" />
+    <input id="lgEmail" class="input" type="text" inputmode="email" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username" placeholder="Логин (например: ivanov)" style="margin-bottom:10px;text-align:center" />
     <input id="lgPwd" class="input" type="password" autocomplete="current-password" placeholder="Пароль" style="margin-bottom:14px;text-align:center" />
     <button id="lgGo" class="btn btn-primary" style="width:100%;font-size:16px">Войти</button>
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v109</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v110</div>
   </div>
 </div>
 
@@ -273,10 +277,10 @@ function saveState(){
       }
       try {
         localStorage.setItem(STORE_KEY, JSON.stringify(state));
-        try{ toast("Хранилище переполнено: журнал урезан"); }catch(_){}
+        try{ toast("Память телефона заполнена — старые записи журнала удалены"); }catch(_){}
       } catch(e2){
         console.error("saveState retry failed:", e2);
-        try{ toast("Не удалось сохранить — переполнение"); }catch(_){}
+        try{ toast("Память телефона заполнена — удалите лишние базы или сохраните резервную копию"); }catch(_){}
       }
     } else { console.error("saveState error:", e); }
   }
@@ -425,7 +429,7 @@ async function renameProfile(id){
 }
 async function deleteProfile(id){
   if(profiles.list.length<=1){ toast("Нельзя удалить единственную базу"); return; }
-  if(id===profiles.activeId){ toast("Сначала переключись на другую базу"); return; }
+  if(id===profiles.activeId){ toast("Сначала переключитесь на другую базу"); return; }
   const p = profiles.list.find(x=>x.id===id); if(!p) return;
   const ok = await confirmSheet(`Удалить базу «${p.name}» со всеми её складами и журналами? Это НЕЛЬЗЯ отменить.`,{danger:true,yes:"Удалить базу"});
   if(!ok) return;
@@ -654,28 +658,33 @@ function normalizeImportIds(obj){
     }
   }
 }
-// нормализуем qty: гасим float-эпсилоны на входе, чтобы не тащить мусор из старых экспортов
-function normalizeImportStockQty(obj){
-  if(Array.isArray(obj.stock)){
-    for(const s of obj.stock){
-      // type идёт в inline-onclick без esc() → допускаем только известные ключи (иначе XSS из импорта)
-      if(s && !STOCK_TYPE_KEYS.includes(s.type)) s.type = "product";
-      if(s && s.qty!=="" && s.qty!=null) s.qty = roundQty(s.qty);
-      // нормализуем batches при импорте
-      if(s && Array.isArray(s.batches)){
-        s.batches = s.batches.filter(b => b && typeof b==="object").map(b => ({
-          id: safeId(b.id),
-          qty: roundQty(b.qty||0),
-          expiry: (typeof b.expiry==="string" && /^\d{4}-\d{2}-\d{2}$/.test(b.expiry)) ? b.expiry : "",
-          location: typeof b.location==="string" ? cleanName40(b.location) : "",   // чистим имя места из импорта (defense-in-depth поверх esc на рендере)
-          note: typeof b.note==="string" ? b.note.slice(0,200) : "",
-          createdAt: typeof b.createdAt==="string" ? b.createdAt : new Date().toISOString(),
-        })).filter(b => b.qty>0); // партии с нулём/мусором не держим — иначе фантомные место/срок при totalQty=0
-        if(s.batches.length===0) delete s.batches;
-        else syncItemFromBatches(s);
-      }
-    }
+// нормализуем ОДНУ позицию склада. Применяется И при импорте, И при загрузке из облака:
+// в облако данные мог записать любой участник с edit_stock, поэтому доверять им нельзя так же, как файлу.
+// - type идёт в inline-onclick без esc() → только известные ключи (иначе XSS из облака/импорта);
+// - qty/партии гасим от float-эпсилонов и мусора; невалидный srок карточки сбрасываем (иначе ломает fmtDate/daysLeft);
+// - после чистки партий пересчитываем qty/срок карточки из партий (иначе остаток и сумма партий расходятся).
+function normalizeStockItem(s){
+  if(!s || typeof s!=="object") return s;
+  if(!STOCK_TYPE_KEYS.includes(s.type)) s.type = "product";
+  if(s.qty!=="" && s.qty!=null) s.qty = roundQty(s.qty);
+  if(typeof s.expiry==="string" && s.expiry && !/^\d{4}-\d{2}-\d{2}$/.test(s.expiry)) s.expiry = "";   // невалидную дату карточки не держим
+  if(Array.isArray(s.batches)){
+    s.batches = s.batches.filter(b => b && typeof b==="object").map(b => ({
+      id: safeId(b.id),
+      qty: roundQty(b.qty||0),
+      expiry: (typeof b.expiry==="string" && /^\d{4}-\d{2}-\d{2}$/.test(b.expiry)) ? b.expiry : "",
+      location: typeof b.location==="string" ? cleanName40(b.location) : "",   // чистим имя места (defense-in-depth поверх esc на рендере)
+      note: typeof b.note==="string" ? b.note.slice(0,200) : "",
+      createdAt: typeof b.createdAt==="string" ? b.createdAt : new Date().toISOString(),
+    })).filter(b => b.qty>0); // партии с нулём/мусором не держим — иначе фантомные место/срок при totalQty=0
+    if(s.batches.length===0) delete s.batches;
+    else syncItemFromBatches(s);   // остаток/срок карточки = из партий
   }
+  return s;
+}
+// гасим float-эпсилоны на входе, чтобы не тащить мусор из старых экспортов
+function normalizeImportStockQty(obj){
+  if(Array.isArray(obj.stock)) for(const s of obj.stock) normalizeStockItem(s);
 }
 function normalizeImportJournalsQty(obj){
   if(obj.journals){
@@ -1323,7 +1332,7 @@ function toggleTask(id){
 
 function openTaskEdit(id){
   const t = id?state.tasks.find(x=>x.id===id):{ id:"", title:"", category:"Общее", priority:"Средний", due:todayStr(), time:"", repeat:"Нет", done:false };
-  if(id && !t){ toast("Задача изменилась в другой вкладке"); render(); return; }   // удалена/синкнута до открытия формы → не падаем на t.title
+  if(id && !t){ toast("Задача изменилась на другом устройстве"); render(); return; }   // удалена/синкнута до открытия формы → не падаем на t.title
   openSheet(`
     <div class="font-bold text-xl mb-3">${id?"Редактировать":"Новая"} задача</div>
     <div class="space-y-3">
@@ -1386,7 +1395,7 @@ function saveTask(id){
   const itemsRaw = body.querySelector("#titems")?.value || "";
   if(id){
     const t = state.tasks.find(x=>x.id===id);
-    if(!t){ toast("Задача изменилась в другой вкладке"); closeSheet(); render(); return; }   // удалена/синкнута между открытием формы и сохранением → не падаем на t.due
+    if(!t){ toast("Задача изменилась на другом устройстве"); closeSheet(); render(); return; }   // удалена/синкнута между открытием формы и сохранением → не падаем на t.due
     // если поменялась дата/время — старый order относится к другой группе, сбросим
     const groupChanged = t.due!==due || (t.time||"")!==time;
     const items = parseTaskItems(itemsRaw, t.items);
@@ -1542,7 +1551,10 @@ function renderStockList(){
   const inCount  = total - outCount;
   const shown = list.slice(0, stockLimit);
   if(!total){
-    box.innerHTML = `<div class="card text-center opacity-70">Ничего не найдено</div>`;
+    const noFilters = !stockSearch.trim() && !stockCat && stockExpiryFilter==="all";
+    box.innerHTML = `<div class="card text-center opacity-70">${noFilters
+      ? "Склад пуст. Нажмите «＋» вверху, чтобы добавить первую позицию."
+      : "Ничего не найдено"}</div>`;
     return;
   }
   const more = total > shown.length
@@ -1671,7 +1683,7 @@ function openOpEdit(kind){
       </div>
     </div>
   `);
-  wireStockPicker({ prefix:"op", emptyHint:"Введи 2+ символа для поиска", notFoundText:"Не найдено. Можно ввести вручную.", nameOnPick:false });
+  wireStockPicker({ prefix:"op", emptyHint:"Введите 2+ символа для поиска", notFoundText:"Не найдено. Можно ввести вручную.", nameOnPick:false });
 }
 
 function saveOp(kind){
@@ -1683,10 +1695,10 @@ function saveOp(kind){
   const qty = roundQty(parseNum(body.querySelector("#opQty").value));   // округляем в источнике: op.qty, склад и лог единообразны (иначе float-хвост ломает авто-удаление орфана)
   const unit = body.querySelector("#opUnit").value;
   const note = body.querySelector("#opNote").value.trim();
-  if(!qty || qty<=0){ toast("Укажи количество"); return; }
+  if(!qty || qty<=0){ toast("Укажите количество"); return; }
   const product = pid ? state.stock.find(s=>s.id===pid) : null;
   const name = product ? product.name : manualName;
-  if(!name){ toast("Выбери позицию или введи название"); return; }
+  if(!name){ toast("Выберите товар или введите название"); return; }
   // Защита от рассинхрона с партиями: для batches-карточек нельзя править qty напрямую
   if(product && hasBatches(product) && m.sign!==0){
     toast("У этой позиции есть партии — используй ＋/− на карточке (выбор партии)");
@@ -1812,9 +1824,9 @@ async function deleteOp(kind, opId){
     if(!choice) return;
     // другая вкладка могла подменить state во время await — перепроверяем по живым ссылкам,
     // иначе откат мутировал бы осиротевший объект, а saveState() записал бы новый state без него
-    if(!(state.journals[kind]||[]).some(o=>o.id===opId)){ toast("Запись изменилась в другой вкладке"); return; }
+    if(!(state.journals[kind]||[]).some(o=>o.id===opId)){ toast("Запись изменилась на другом устройстве"); return; }
     const liveProduct = op.productId ? state.stock.find(s=>s.id===op.productId) : null;
-    if(liveProduct && liveProduct!==product){ toast("Данные обновились в другой вкладке — повторите"); return; }
+    if(liveProduct && liveProduct!==product){ toast("Данные обновились на другом устройстве — повторите"); return; }
     revert = choice==="revert";
     if(revert){
       // batches-режим: пытаемся вернуть/списать в исходную партию по batchId
@@ -1910,7 +1922,7 @@ function editOp(kind, opId){
       </div>
     </div>
   `);
-  wireStockPicker({ prefix:"eop", emptyHint:"Введи 2+ символа", notFoundText:"Не найдено", nameOnPick:true });
+  wireStockPicker({ prefix:"eop", emptyHint:"Введите 2+ символа", notFoundText:"Не найдено", nameOnPick:true });
 }
 
 async function saveOpEdit(kind, opId){
@@ -1925,7 +1937,7 @@ async function saveOpEdit(kind, opId){
   const newUnit = body.querySelector("#eopUnit").value;
   const newNote = body.querySelector("#eopNote").value.trim();
   if(!Number.isFinite(newQty) || newQty<=0){ toast("Количество должно быть > 0"); return; }
-  if(!newName && !newProdId){ toast("Укажи название или выбери позицию"); return; }
+  if(!newName && !newProdId){ toast("Укажите название или выберите товар"); return; }
 
   // эффективный знак (order влияет на склад только если received)
   const effSign = kind==="order" ? (op.status==="received" ? +1 : 0) : m.sign;
@@ -2117,7 +2129,7 @@ async function quickAdjust(id, sign){
       if(!choice) return;
       if(choice==="__new__"){
         // спросим срок/место (короткая форма через 2 prompts)
-        const expVal = await promptSheet(`${it.name}\nСрок годности новой партии (YYYY-MM-DD, пусто — без срока)`, "", {title:"Новая партия"});
+        const expVal = await promptSheet(`${it.name}\nСрок годности новой партии (ГГГГ-ММ-ДД, пусто — без срока)`, "", {title:"Новая партия"});
         if(expVal===null) return;
         // кривой формат сломал бы daysLeft() (NaN → партия не подсветится и не спишется по сроку)
         if(expVal.trim() && !/^\d{4}-\d{2}-\d{2}$/.test(expVal.trim())){ toast("Срок: формат ГГГГ-ММ-ДД"); return; }
@@ -2198,7 +2210,7 @@ const UNITS = ["шт","кг","г","л","мл","упаковка","пачка","�
 function openStockEdit(id, typeDefault){
   const it = id ? state.stock.find(s=>s.id===id)
                : { id:"", type:typeDefault||"product", name:"", qty:"", unit:"шт", minStock:"", expiry:"", location:"", category:"", note:"" };
-  if(id && !it){ toast("Позиция изменилась в другой вкладке"); render(); return; }   // удалена/синкнута, пока вкладка была открыта → не падаем на it.type
+  if(id && !it){ toast("Позиция изменилась на другом устройстве"); render(); return; }   // удалена/синкнута, пока вкладка была открыта → не падаем на it.type
   const tk = it.type;
   const isProd = tk==="product";
   const expiryLabel = isProd ? "Срок годности" : (tk==="tool" ? "Срок/гарантия (опц.)" : "Срок годности (опц.)");
@@ -2275,7 +2287,7 @@ function saveStock(id, type){
   let propType=type, propOld=null;
   if(id){
     const it = state.stock.find(s=>s.id===id);
-    if(!it){ toast("Позиция изменилась в другой вкладке"); closeSheet(); render(); return; }   // удалена/синкнута, пока форма была открыта → не падаем на Object.assign(undefined)
+    if(!it){ toast("Позиция изменилась на другом устройстве"); closeSheet(); render(); return; }   // удалена/синкнута, пока форма была открыта → не падаем на Object.assign(undefined)
     const oldName = it.name;
     propType = it.type;
     if(hasBatches(it)){
@@ -2790,7 +2802,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v109</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v110</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -2809,8 +2821,21 @@ function ensureXlsx(){
   });
   return window._xlsxLoading;
 }
+// защита от инъекции формул в Excel: строковая ячейка, начинающаяся с = + - @ (tab/CR), исполнилась бы
+// как формула при открытии файла (тот же риск, что в CSV). Числа хранятся типом "n" — их не трогаем.
+// Данные могли прийти из общей облачной базы от другого участника → экранируем перед отдачей файла.
+function xlsxGuard(ws){
+  for(const addr in ws){
+    if(addr[0]==="!") continue;
+    const c = ws[addr];
+    if(c && c.t==="s" && typeof c.v==="string" && /^[=+\-@\t\r]/.test(c.v)){
+      c.v = "'" + c.v; if(c.w!=null) c.w = "'" + c.w;
+    }
+  }
+  return ws;
+}
 async function exportXlsx(){
-  toast("Готовлю файл...");
+  toast("Готовлю файл…");
   let XLSX;
   try{ XLSX = await ensureXlsx(); }
   catch(e){ toast("XLSX недоступен — сохраняю CSV"); exportCsv(); return; }
@@ -2826,7 +2851,7 @@ async function exportXlsx(){
     "Место": locationsOf(s).join("; "),
     "Примечание": s.note||"",
   }));
-  const ws = XLSX.utils.json_to_sheet(stockRows);
+  const ws = xlsxGuard(XLSX.utils.json_to_sheet(stockRows));
   ws["!cols"] = [{wch:10},{wch:22},{wch:40},{wch:10},{wch:10},{wch:10},{wch:14},{wch:16},{wch:30}];
   XLSX.utils.book_append_sheet(wb, ws, "Остатки");
 
@@ -2846,7 +2871,7 @@ async function exportXlsx(){
     }
   }
   if(batchRows.length){
-    const wsB = XLSX.utils.json_to_sheet(batchRows);
+    const wsB = xlsxGuard(XLSX.utils.json_to_sheet(batchRows));
     wsB["!cols"] = [{wch:40},{wch:22},{wch:10},{wch:10},{wch:14},{wch:18},{wch:30}];
     XLSX.utils.book_append_sheet(wb, wsB, "Партии");
   }
@@ -2867,7 +2892,7 @@ async function exportXlsx(){
       }
       return r;
     });
-    const sh = XLSX.utils.json_to_sheet(rows.length?rows:[{"Дата":"","Наименование":"","Количество":"","Ед. изм.":"","Примечание":""}]);
+    const sh = xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Дата":"","Наименование":"","Количество":"","Ед. изм.":"","Примечание":""}]));
     sh["!cols"] = [{wch:18},{wch:40},{wch:10},{wch:10},{wch:30},{wch:12},{wch:18}];
     XLSX.utils.book_append_sheet(wb, sh, title);
   };
@@ -2888,7 +2913,7 @@ async function exportXlsx(){
       "Порядок": (t.order==null)?"":Number(t.order),
       "Готово": t.done?"✓":"",
     }));
-    const tsh = XLSX.utils.json_to_sheet(taskRows.length?taskRows:[{"Задача":"","Категория":"","Приоритет":"","Повтор":"","Срок":"","Время":"","Порядок":"","Готово":""}]);
+    const tsh = xlsxGuard(XLSX.utils.json_to_sheet(taskRows.length?taskRows:[{"Задача":"","Категория":"","Приоритет":"","Повтор":"","Срок":"","Время":"","Порядок":"","Готово":""}]));
     tsh["!cols"] = [{wch:40},{wch:16},{wch:12},{wch:10},{wch:12},{wch:8},{wch:8},{wch:10}];
     XLSX.utils.book_append_sheet(wb, tsh, "Задачи");
   }
@@ -3233,7 +3258,7 @@ function importData(ev){
           }
         }
       }
-      state = merged;
+      state = merged; normalizeState();   // приводим форму к инвариантам (массивы/места/категории/партии) после слияния
       // фиксируем, что встроенный seed уже не нужен (после replace stock мог стать пустым умышленно)
       state.seededAt = state.seededAt || new Date().toISOString();
       // сбрасываем фильтры, т.к. категории могли полностью смениться
@@ -3242,7 +3267,7 @@ function importData(ev){
       if(mode==="replace") toast(`Заменено: ${state.stock.length} поз.`);
     }catch(e){
       console.error("Import error:", e);
-      toast(`Ошибка импорта: ${e?.message || e}`);
+      toast("Не удалось прочитать файл — проверьте формат");
     }
   };
   r.readAsText(f);
@@ -3261,7 +3286,7 @@ async function wipeAll(){
     if(!await confirmSheet(`База «${activeProfileName()}» — облачная. Обновить локальную копию из облака? Несохранённые локальные правки заменятся облачными. Данные в облаке НЕ удаляются.`,{danger:true,yes:"Обновить из облака"})) return;
     try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(_){}   // отбрасываем несинхронизированное локальное (но НЕ снимок — иначе ложный конфликт при сбое)
     setSyncStatus("syncing","Обновление из облака…");
-    try{ await cloudPull(cid); toast("Обновлено из облака"); }catch(e){ toast("Не удалось обновить — проверь сеть"); }
+    try{ await cloudPull(cid); toast("Обновлено из облака"); }catch(e){ toast("Не удалось обновить — проверьте интернет и нажмите ↻"); }
     nav("dashboard");
     return;
   }
@@ -3633,10 +3658,10 @@ function setSyncStatus(kind, text){
   clearTimeout(_syncHideT);
   if(kind==="hidden" || !cloud.ready || !activeCloudId()){ bar.classList.add("hidden"); bar.classList.remove("busy"); chip.classList.add("hidden"); return; }
   const M = {
-    syncing:{ bg:"#2563eb", icon:"↻", chip:"↻", txt:text||"Синхронизация…" },
-    offline:{ bg:"#b45309", icon:"🔴", chip:"⏳", txt:text||"Нет сети — изменения уйдут при подключении" },
-    synced: { bg:"#15803d", icon:"✓", chip:"✓", txt:text||"Синхронизировано" },
-    error:  { bg:"#b91c1c", icon:"⚠", chip:"⚠", txt:text||"Ошибка синхронизации — повторю" },
+    syncing:{ bg:"#2563eb", icon:"↻", chip:"↻", txt:text||"Сохраняю в облако…" },
+    offline:{ bg:"#b45309", icon:"🔴", chip:"⏳", txt:text||"Нет интернета — сохраню, когда он появится" },
+    synced: { bg:"#15803d", icon:"✓", chip:"✓", txt:text||"Сохранено в облаке" },
+    error:  { bg:"#b91c1c", icon:"⚠", chip:"⚠", txt:text||"Не удалось сохранить — пробую снова" },
   };
   const m = M[kind] || M.syncing;
   bar.style.background = m.bg; bar.textContent = `${m.icon} ${m.txt}`;
@@ -3800,7 +3825,7 @@ async function cloudOnLogin(session, attempt){
     const reloaded = await cloudAutoLink();
     if(reloaded) return;                       // switchProfile перезагрузит страницу
     renderHeader(); render();
-    toast(`Облако: ${cloud.profile.username||session.user.email}`);
+    toast(`Вы вошли: ${cloud.profile.username||session.user.email}`);
     // Тяжёлую синхронизацию (выгрузка/подтягивание сотен позиций) запускаем В ФОНЕ,
     // НЕ блокируя вход — иначе кнопка «Вход…» висит до конца первой выгрузки.
     const cid = activeCloudId();
@@ -3939,7 +3964,7 @@ async function cloudActivate(cid, attempt){
       await cloudPull(cid);
     }
   }catch(e){
-    console.warn("cloudActivate", e); setSyncStatus("error", "Синк: "+(e.message||e).toString().slice(0,60));
+    console.warn("cloudActivate", e); setSyncStatus("error", "Не удалось сохранить — проверьте интернет");
     // транзиентная ошибка (сессия не успела зарегистрироваться и т.п.) → повтор с backoff, чтобы синк состоялся
     if(cloudOnline() && attempt < 6) setTimeout(()=>{ cloudActivate(cid, attempt+1).catch(()=>{}); }, Math.min(3000+attempt*2000, 15000));
   }
@@ -3972,8 +3997,7 @@ async function cloudPull(cid){
     // id из БД проходят safeId (защита inline-onclick на случай порчи данных в облаке)
     state.stock = (items||[]).map(rowToStock).map(s=>{
       s.id = safeId(s.id);
-      if(Array.isArray(s.batches)) s.batches.forEach(b=>{ if(b) b.id = safeId(b.id); });
-      return s;
+      return normalizeStockItem(s);   // та же чистка, что при импорте: type-whitelist (XSS), партии, пересчёт qty из партий
     });
     const J=emptyJournals();
     (jr||[]).forEach(r=>{ if(J[r.kind]) J[r.kind].push({ ...(r.data||{}), id:safeId(r.id) }); });
@@ -4010,7 +4034,7 @@ async function cloudPull(cid){
     setSyncStatus("synced","Загружено из облака");
   }catch(e){
     console.warn("cloudPull", e);
-    setSyncStatus("error", "Не загрузилось: "+(e.message||e).toString().slice(0,60));
+    setSyncStatus("error", "Не удалось загрузить — проверьте интернет и нажмите ↻");
     // слабая сеть/таймаут → повторим (мягкий backoff), пока онлайн
     if(cloudOnline()) setTimeout(()=>{ if(!cloud.busy && activeCloudId()===cid) cloudPull(cid).catch(()=>{}); }, 8000);  // не тянуть базу, если за время ожидания сменили профиль
   }
@@ -4319,7 +4343,7 @@ function cloudLoginPrompt(){
   const body=document.getElementById("sheetBody");
   body.querySelector("#clGo").addEventListener("click", async ()=>{
     const em=body.querySelector("#clEmail").value, pw=body.querySelector("#clPwd").value;
-    if(!em||!pw){ toast("Введи логин и пароль"); return; }
+    if(!em||!pw){ toast("Введите логин и пароль"); return; }
     const btn=body.querySelector("#clGo"); btn.disabled=true; btn.textContent="Вход…";
     // таймаут: если сеть зависла, кнопка не должна висеть вечно (запас под холодный старт free-бэкенда)
     const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания сети")), 55000));
@@ -4335,13 +4359,14 @@ function cloudGateTasks(){
   if(hideTasks && currentView==="tasks") nav("dashboard");
 }
 async function cloudSyncNow(){
-  if(!cloud.ready){ toast("Сначала войди в облако"); return; }
-  if(!cloudOnline()){ toast("Нет сети"); return; }
-  // базы не загрузились (слабая сеть) → перезапускаем их загрузку; cloudOnLogin сам активирует базу при успехе
+  if(!cloud.ready){ toast("Сначала войдите в облако"); return; }
+  if(!cloudOnline()){ toast("Нет интернета — попробуйте позже"); return; }
+  if(cloud.busy){ return; }   // сохранение уже идёт — двойной тап не плодит второй проход
+  // базы не загрузились (слабый интернет) → перезапускаем их загрузку; cloudOnLogin сам активирует базу при успехе
   if(!cloud.basesLoaded && cloud.session){ toast("Загружаю базы…"); await cloudOnLogin(cloud.session, 0).catch(()=>{}); return; }
   const cid = activeCloudId();
   if(!cid){ toast("Эта база не связана с облаком"); return; }
-  toast("Синхронизация…"); await cloudActivate(cid); toast("Готово");
+  toast("Сохраняю в облако…"); await cloudActivate(cid); toast("Сохранено в облаке");
 }
 function cloudCardOffline(){
   return `<div class="card">
@@ -4368,7 +4393,7 @@ function cloudCardConnected(cid){
       <button class="btn btn-ghost" onclick="cloudLogout()">Выйти</button>
     </div>
     ${cid?`<button class="btn btn-success w-full mt-2" onclick="cloudSyncNow()">🔄 Синхронизировать сейчас</button>`:
-      `<div class="text-xs opacity-70 mt-2">Активная база не связана с облаком. Открой «Сменить / базы» и переключись на облачную базу.</div>`}
+      `<div class="text-xs opacity-70 mt-2">Активная база не связана с облаком. Откройте «Сменить / базы» и переключитесь на облачную базу.</div>`}
   </div>`;
 }
 function cloudCardHtml(){
@@ -4441,24 +4466,40 @@ if("serviceWorker" in navigator && location.protocol!=="file:"){
 
 /* Многовкладочность: если другая вкладка сохранила состояние — подтягиваем его,
    иначе последующий saveState() из этой вкладки молча откатил бы чужие изменения. */
+// идемпотентная нормализация формы state — после ПОВТОРНОГО присвоения state (storage-событие с другого
+// устройства, импорт). Стартовый блок нормализации выполняется один раз и при переприсвоении не повторяется,
+// из-за чего битая/старая схема могла уронить render. Дублирует ключевые shape-гарды + чистку позиций (всё идемпотентно).
+function normalizeState(){
+  if(!Array.isArray(state.stock)) state.stock = [];
+  if(!Array.isArray(state.tasks)) state.tasks = [];
+  if(!Array.isArray(state.log))   state.log   = [];
+  if(!state.journals || typeof state.journals!=="object" || Array.isArray(state.journals)) state.journals = emptyJournals();
+  for(const k of JOURNAL_KEYS) if(!Array.isArray(state.journals[k])) state.journals[k] = [];
+  if(!state.categories || typeof state.categories!=="object" || Array.isArray(state.categories)) state.categories = { product:[], household:[], tool:[] };
+  for(const k of STOCK_TYPE_KEYS) if(!Array.isArray(state.categories[k])) state.categories[k] = (DEFAULT_CATEGORIES[k]||[]).slice();
+  if(!state.locations || typeof state.locations!=="object" || Array.isArray(state.locations)){ state.locations={}; for(const k of STOCK_TYPE_KEYS) state.locations[k]=DEFAULT_LOCATIONS[k].slice(); }
+  for(const k of STOCK_TYPE_KEYS){ if(!Array.isArray(state.locations[k]) || !state.locations[k].length) state.locations[k]=(DEFAULT_LOCATIONS[k]||[]).slice(); state.locations[k]=uniqClean(state.locations[k]); }
+  ensureTomb();
+  for(const s of state.stock) normalizeStockItem(s);
+}
 window.addEventListener("storage", (e)=>{
-  // переключение базы в другой вкладке — пересинхронизируем метаданные профилей
+  // переключение базы на другом устройстве — пересинхронизируем метаданные профилей
   if(e.key===PROFILES_KEY && e.newValue){
     const p = loadProfiles();
     if(p){ profiles = p; renderHeader(); }
     return;
   }
   if(e.key===TASKS_KEY && e.newValue){
-    // общие задачи изменились в другой вкладке/базе
+    // общие задачи изменились на другом устройстве/базе
     try{ loadGlobalTasks(); if(currentView==="tasks") render(); }catch(err){}
     return;
   }
   if(e.key===STORE_KEY && e.newValue){
     try{
-      state = loadState();
+      state = loadState(); normalizeState();   // битая/старая схема с другого устройства не должна ронять render
       loadGlobalTasks();                 // задачи общие — накладываем поверх per-base
       applyTheme(); render();
-      toast("Данные обновлены в другой вкладке");
+      toast("Данные обновлены на другом устройстве");
     }catch(err){ console.warn("storage sync failed", err); }
   }
 });
