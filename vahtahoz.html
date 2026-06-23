@@ -34,6 +34,7 @@
   .light .card{ background:#fff; border-color:#e5e7eb; box-shadow:0 1px 3px rgba(0,0,0,.06); }
   .light .btn-ghost{ background:#f3f4f6; }
   .light .input{ background:#fff; border-color:#d1d5db; color:#111827; }
+  .light .input::placeholder{ color:#6b7280; opacity:1; }   /* дефолтный плейсхолдер ~3.5:1 на белом — поднимаем до AA */
   .chip{ padding:8px 14px; border-radius:999px; font-size:14px; font-weight:600; background:rgba(255,255,255,.06); white-space:nowrap; transition:transform .06s ease, background .15s; }
   .chip:active{ transform:scale(.96); }
   .chip.active{ background:#2563eb; color:#fff; }
@@ -45,7 +46,7 @@
   .light .nav-btn.active{ color:#2563eb; }
   .badge{ font-size:11px; font-weight:700; padding:3px 8px; border-radius:999px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; }
   .badge-red{ background:#dc2626; color:#fff; }
-  .badge-yellow{ background:#b45309; color:#fff; }
+  .badge-yellow{ background:#92400e; color:#fff; }   /* было #b45309 (~4.0:1) → #92400e (~5.9:1) для AA на мелком тексте */
   .badge-green{ background:#16a34a; color:#fff; }
   .badge-gray{ background:#374151; color:#e5e7eb; }
   .light .badge-gray{ background:#e5e7eb; color:#374151; }
@@ -122,7 +123,7 @@
     </div>
   </header>
   <!-- тонкий статус-бар синхронизации (под шапкой) -->
-  <div id="syncBar" class="hidden" style="position:sticky;top:0;z-index:30;font-size:12px;text-align:center;padding:5px 10px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.3"></div>
+  <div id="syncBar" class="hidden" style="position:sticky;top:0;z-index:30;font-size:12px;text-align:center;padding:5px 10px;color:#fff;overflow:hidden;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical"></div>
 
   <!-- Views -->
   <main id="views" class="px-4 pt-2">
@@ -172,7 +173,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v107</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v108</div>
   </div>
 </div>
 
@@ -2789,7 +2790,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v107</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v108</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -3506,7 +3507,10 @@ async function ensureSB(){
   if(!lib || !lib.createClient) throw new Error("Библиотека облака не загрузилась (нет сети при первом запуске?)");
   cloud.sb = lib.createClient(CLOUD_CFG.url, CLOUD_CFG.anon, {
     auth:{
-      persistSession:true, autoRefreshToken:true, storageKey:"vahtahoz_auth",
+      // autoRefreshToken=false НАМЕРЕННО: refresh-токен продлеваем ТОЛЬКО вручную через cloudDoRefresh
+      // (прямым fetch, надёжно в iOS standalone). Если бы supabase-клиент тоже авто-ротировал —
+      // два механизма крутили бы ОДНУ цепочку токенов → reuse-detection GoTrue отзывает семью → разлогин + «REST 401».
+      persistSession:true, autoRefreshToken:false, storageKey:"vahtahoz_auth",
       // обход зависания navigator.locks в Safari (вход висел до таймаута): сквозная блокировка
       lock: async (_name, _timeout, fn) => await fn()
     }
@@ -3572,6 +3576,9 @@ function cloudDoRefresh(){
       if(!rt) throw new Error("no refresh token");
       const d = await cloudRefresh(rt);
       saveCloudSess(d); cloud.session = loadCloudSess();
+      // отдаём свежий токен и supabase-клиенту (realtime/auth) — он сам НЕ рефрешит (autoRefreshToken=false),
+      // иначе его сессия протухнет. Не блокируем: setSession в standalone может подвисать → race с 4с-таймаутом.
+      try{ if(cloud.sb) Promise.race([ cloud.sb.auth.setSession({ access_token:d.access_token, refresh_token:d.refresh_token }), new Promise(r=>setTimeout(r,4000)) ]).catch(()=>{}); }catch(_){}
       return cloud.session && cloud.session.access_token;
     } finally { cloud._refreshing = null; }
   })();
@@ -3804,7 +3811,7 @@ async function cloudOnLogin(session, attempt){
     uidv = uidv || (session.user && session.user.id) || "";   // фолбэк, если упали до присвоения uidv
     // Токен валиден → пользователь АУТЕНТИФИЦИРОВАН, даже если профиль/базы не загрузились
     // (медленная сеть / зависший запрос в standalone-PWA). НЕ показываем «Войти» — помечаем вход
-    // состоявшимся с фолбэком и догружаем данные ретраем (4с/8с/12с).
+    // состоявшимся с фолбэком и догружаем данные ретраем (3с/5с/7с… до 20с).
     const uemail = (session.user && session.user.email) || "";   // guard: не бросаем повторно в catch, если session.user пуст
     if(!cloud.profile) cloud.profile = { id:uidv, username:uemail.split("@")[0] };
     cloud.ready = true; cloud.basesLoaded = false;   // базы НЕ загрузились
@@ -3903,6 +3910,7 @@ async function cloudActivate(cid, attempt){
           { label:"Мои локальные (выгрузить в облако)", value:"local", color:"btn-danger" } ]);
       if(choice==="local"){
         saveSyncSig(cid,"stock",{}); saveSyncSig(cid,"jr",{});   // локальное — источник: полная выгрузка поверх облака
+        try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){}   // dirty ДО push: при сбое выгрузки pull не затрёт выбранное юзером локальное (как в ветке ниже)
         await cloudPushNow();
         return;
       }
