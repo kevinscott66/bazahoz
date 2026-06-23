@@ -3805,7 +3805,8 @@ async function cloudOnLogin(session, attempt){
     // Токен валиден → пользователь АУТЕНТИФИЦИРОВАН, даже если профиль/базы не загрузились
     // (медленная сеть / зависший запрос в standalone-PWA). НЕ показываем «Войти» — помечаем вход
     // состоявшимся с фолбэком и догружаем данные ретраем (4с/8с/12с).
-    if(!cloud.profile) cloud.profile = { id:uidv, username:(session.user.email||"").split("@")[0] };
+    const uemail = (session.user && session.user.email) || "";   // guard: не бросаем повторно в catch, если session.user пуст
+    if(!cloud.profile) cloud.profile = { id:uidv, username:uemail.split("@")[0] };
     cloud.ready = true; cloud.basesLoaded = false;   // базы НЕ загрузились
     hideLoginGate();
     try{ localStorage.removeItem("vahtahoz_login_skipped"); }catch(_){}
