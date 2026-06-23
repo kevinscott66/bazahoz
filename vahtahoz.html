@@ -93,6 +93,10 @@
   .light .list-box{ border-color:#e5e7eb; }
   .btn:disabled, .btn[disabled]{ opacity:.45; cursor:default; }
   .btn.px-2{ min-width:40px; }
+  /* индикатор активной синхронизации — бегущая полоска снизу sync-бара */
+  #syncBar.busy{ overflow:hidden; }
+  #syncBar.busy::after{ content:""; position:absolute; bottom:0; left:-35%; height:2px; width:35%; background:rgba(255,255,255,.85); border-radius:2px; animation:syncslide 1.1s ease-in-out infinite; }
+  @keyframes syncslide{ to{ left:100%; } }
 </style>
 <!-- Supabase клиент (self-hosted, тот же origin → кешируется SW, работает офлайн после 1й загрузки) -->
 <script src="./supabase.js"></script>
@@ -164,7 +168,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:18px;margin-top:10px"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v104</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v105</div>
   </div>
 </div>
 
@@ -2781,7 +2785,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v104</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v105</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -3615,7 +3619,7 @@ function setSyncStatus(kind, text){
   const bar = document.getElementById("syncBar"); const chip = document.getElementById("syncChip");
   if(!bar || !chip) return;
   clearTimeout(_syncHideT);
-  if(kind==="hidden" || !cloud.ready || !activeCloudId()){ bar.classList.add("hidden"); chip.classList.add("hidden"); return; }
+  if(kind==="hidden" || !cloud.ready || !activeCloudId()){ bar.classList.add("hidden"); bar.classList.remove("busy"); chip.classList.add("hidden"); return; }
   const M = {
     syncing:{ bg:"#2563eb", icon:"↻", chip:"↻", txt:text||"Синхронизация…" },
     offline:{ bg:"#b45309", icon:"🔴", chip:"⏳", txt:text||"Нет сети — изменения уйдут при подключении" },
@@ -3626,6 +3630,7 @@ function setSyncStatus(kind, text){
   bar.style.background = m.bg; bar.textContent = `${m.icon} ${m.txt}`;
   chip.textContent = m.chip; chip.classList.remove("hidden");
   bar.classList.remove("hidden");
+  bar.classList.toggle("busy", kind==="syncing");   // анимированный прогресс-бар только при активной синхронизации
   if(kind==="synced"){
     _syncHideT = setTimeout(()=>{ bar.classList.add("hidden"); chip.classList.add("hidden"); }, 1800);
   }
@@ -3760,7 +3765,7 @@ async function cloudOnLogin(session, attempt){
         cloudRest(`base_members?select=*`, tok),
         cloudRest(`bases?select=id,name`, tok),
       ]),
-      new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания облака")),12000))
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания облака")),25000))   // запас под слабый канал/дальний маршрут
     ]);
     cloud.profile = (Array.isArray(prof) && prof[0]) || { id:uidv, username:session.user.email };
     cloud.members = Array.isArray(mem) ? mem : [];
@@ -3789,11 +3794,14 @@ async function cloudOnLogin(session, attempt){
     try{ localStorage.removeItem("vahtahoz_login_skipped"); }catch(_){}
     renderHeader(); render();
     if(attempt===0) toast("Вход выполнен, загружаю базы…");
-    // НАСТОЙЧИВО грузим базы — НЕ оставляем пользователя с «ничего». Пока онлайн — ретраим с backoff.
-    if(cloudOnline()){
-      setSyncStatus("syncing","Загрузка баз из облака…");
+    // НАСТОЙЧИВО грузим базы — НЕ оставляем пользователя с «ничего». Пока онлайн — ретраим с backoff,
+    // но НЕ бесконечно: после 8 попыток показываем понятный статус с ручным повтором (тап по ↻).
+    if(cloudOnline() && attempt < 8){
+      setSyncStatus("syncing","Загрузка баз из облака… (попытка "+(attempt+1)+" из 8)");
       const delay = Math.min(3000 + attempt*2000, 20000);   // 3,5,7,… до 20с
       setTimeout(()=>{ cloudOnLogin(session, attempt+1).catch(()=>{}); }, delay);
+    } else if(cloudOnline()){
+      setSyncStatus("error","Базы не загрузились (слабая сеть). Нажмите ↻ для повтора");
     } else {
       setSyncStatus("offline","Нет сети — базы подтянутся при подключении");
     }
@@ -4296,10 +4304,12 @@ function cloudGateTasks(){
   if(hideTasks && currentView==="tasks") nav("dashboard");
 }
 async function cloudSyncNow(){
-  const cid = activeCloudId();
   if(!cloud.ready){ toast("Сначала войди в облако"); return; }
-  if(!cid){ toast("Эта база не связана с облаком"); return; }
   if(!cloudOnline()){ toast("Нет сети"); return; }
+  // базы не загрузились (слабая сеть) → перезапускаем их загрузку; cloudOnLogin сам активирует базу при успехе
+  if(!cloud.basesLoaded && cloud.session){ toast("Загружаю базы…"); await cloudOnLogin(cloud.session, 0).catch(()=>{}); return; }
+  const cid = activeCloudId();
+  if(!cid){ toast("Эта база не связана с облаком"); return; }
   toast("Синхронизация…"); await cloudActivate(cid); toast("Готово");
 }
 function cloudCardOffline(){
