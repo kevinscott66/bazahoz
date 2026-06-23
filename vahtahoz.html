@@ -177,7 +177,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v110</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v111</div>
   </div>
 </div>
 
@@ -2802,7 +2802,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v110</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v111</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -4480,6 +4480,12 @@ function normalizeState(){
   if(!state.locations || typeof state.locations!=="object" || Array.isArray(state.locations)){ state.locations={}; for(const k of STOCK_TYPE_KEYS) state.locations[k]=DEFAULT_LOCATIONS[k].slice(); }
   for(const k of STOCK_TYPE_KEYS){ if(!Array.isArray(state.locations[k]) || !state.locations[k].length) state.locations[k]=(DEFAULT_LOCATIONS[k]||[]).slice(); state.locations[k]=uniqClean(state.locations[k]); }
   ensureTomb();
+  // вычитаем надгробия после ре-сида дефолтов — иначе ранее удалённые дефолтные места/категории
+  // воскресли бы при storage-событии/импорте (как и в стартовом блоке нормализации)
+  for(const k of STOCK_TYPE_KEYS){
+    if(state.delLoc[k].length) state.locations[k] = applyTomb(state.locations[k], state.delLoc[k]);
+    if(state.delCat[k].length && Array.isArray(state.categories[k])) state.categories[k] = applyTomb(state.categories[k], state.delCat[k]);
+  }
   for(const s of state.stock) normalizeStockItem(s);
 }
 window.addEventListener("storage", (e)=>{
