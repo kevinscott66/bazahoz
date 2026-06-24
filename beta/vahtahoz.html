@@ -178,7 +178,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v120 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v121 · БЕТА</div>
   </div>
 </div>
 
@@ -1109,7 +1109,7 @@ function renderDashboard(){
     ${showOnboarding?`<div class="card" style="border:1px solid rgba(37,99,235,.45)">
       <div class="font-bold mb-1">👋 С чего начать</div>
       <div class="text-sm opacity-80" style="line-height:1.6">
-        1. Откройте <b>«📦 Склад»</b> внизу и нажмите <b>＋</b> — добавьте первую позицию (название, количество, срок).<br>
+        1. Откройте <b>«📦 Склад»</b> внизу и нажмите <b>＋</b> — добавьте первую позицию (название, количество, срок годности).<br>
         2. Приход и расход отмечайте кнопками <b>＋ / −</b> на карточке.<br>
         ${showTasks?`3. На вкладке <b>«✅ Задачи»</b> ведите дела по смене.<br>`:""}
         Работает и без интернета — данные сохраняются на телефоне.
@@ -2817,7 +2817,7 @@ function resetChecklist(){
 /* ---------- More ---------- */
 function renderMore(){
   const v = document.querySelector('[data-view="more"]');
-  const restricted = isRestrictedUser();   // начальник: скрываем управление базами/помодоро/каталог/полный бэкап
+  const restricted = isRestrictedUser();   // начальник: скрываем управление базами/каталог/полный бэкап
   v.innerHTML = `
     <div class="card">
       <div class="flex items-center justify-between gap-2">
@@ -2899,7 +2899,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v120 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v121 · тестовый канал</div>
   `;
 }
 
