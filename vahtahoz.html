@@ -177,7 +177,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v111</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v112</div>
   </div>
 </div>
 
@@ -2777,7 +2777,8 @@ function renderMore(){
         <button class="btn btn-success" onclick="exportXlsx()">.xlsx (все листы)</button>
         <button class="btn btn-ghost" onclick="exportCsv()">.csv (только склад)</button>
       </div>
-      <div class="text-xs opacity-70 mt-2">xlsx = склад + 4 журнала на отдельных листах. Работает оффлайн.</div>
+      <button class="btn btn-ghost w-full mt-2" onclick="exportXlsxFiltered()">📊 Выгрузка по фильтрам…</button>
+      <div class="text-xs opacity-70 mt-2">xlsx = склад + 4 журнала на отдельных листах. «По фильтрам» — срез склада: по месту, категории, сроку (просрочка/скоро/без просрочки), наличию. Работает оффлайн.</div>
     </div>
 
     <div class="card">
@@ -2802,7 +2803,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v111</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v112</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -2936,6 +2937,103 @@ function exportCsv(){
   }).join(";")).join("\r\n");
   triggerDownload(csv, `vahtahoz-sklad-${todayStr()}.csv`, "text/csv;charset=utf-8");
   toast("CSV сохранён");
+}
+
+/* ---------- Выгрузка в Excel ПО ФИЛЬТРАМ ---------- */
+// статус срока позиции по ближайшей дате: "expired" (есть просрочка) > "soon" (≤14 дн) > "" (норма/без срока)
+function _expiryStatus(it){
+  const exps = (hasBatches(it) ? batchesOf(it).map(b=>b.expiry) : [it.expiry]).filter(Boolean);
+  let st="";
+  for(const e of exps){ const d=daysLeft(e); if(d===null) continue; if(d<0) return "expired"; if(d<=14) st="soon"; }
+  return st;
+}
+function _hasAnyExpiry(it){ return (hasBatches(it) ? batchesOf(it).map(b=>b.expiry) : [it.expiry]).filter(Boolean).length>0; }
+// пропускает позицию через выбранный фильтр
+function _passExportFilter(s, f){
+  if(f.type!=="all" && s.type!==f.type) return false;
+  if(f.loc!=="all"  && !locationsOf(s).includes(f.loc)) return false;
+  if(f.cat!=="all"  && (s.category||"")!==f.cat) return false;
+  const tq = totalQtyOf(s);
+  if(f.stock==="in"   && !(tq>0)) return false;
+  if(f.stock==="zero" && tq>0)    return false;
+  if(f.stock==="low"){ const m=(s.minStock===""||s.minStock==null)?null:Number(s.minStock); if(m===null || !(tq<=m)) return false; }
+  if(f.exp!=="all"){
+    const st=_expiryStatus(s);
+    if(f.exp==="expired" && st!=="expired") return false;     // только просрочка
+    if(f.exp==="soon"    && st!=="soon")    return false;     // только «скоро» (просрочку не включаем — она в своём фильтре)
+    if(f.exp==="valid"   && st==="expired") return false;     // без просрочки
+    if(f.exp==="noexp"   && _hasAnyExpiry(s)) return false;   // без срока
+  }
+  return true;
+}
+// короткий человекочитаемый хвост для имени файла из выбранных фильтров
+function _filterTag(f){
+  const p=[];
+  if(f.loc!=="all")  p.push(f.loc);
+  if(f.type!=="all") p.push(typeMeta(f.type).short);
+  if(f.cat!=="all")  p.push(f.cat);
+  if(f.exp==="expired") p.push("просрочка");
+  else if(f.exp==="soon")  p.push("скоро");
+  else if(f.exp==="valid") p.push("без просрочки");
+  else if(f.exp==="noexp") p.push("без срока");
+  if(f.stock==="in")   p.push("в наличии");
+  else if(f.stock==="zero") p.push("нулевые");
+  else if(f.stock==="low")  p.push("ниже минимума");
+  return (p.join(" · ")||"склад").slice(0,80).replace(/[\/\\:*?"<>|]/g,"-");
+}
+// диалог выбора фильтров
+function exportXlsxFiltered(){
+  const locs = [...new Set(state.stock.flatMap(locationsOf))].filter(Boolean).sort((a,b)=>a.localeCompare(b,"ru"));
+  const cats = [...new Set(state.stock.map(s=>s.category).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"ru"));
+  const opt = (v,l)=>`<option value="${esc(v)}">${esc(l)}</option>`;
+  const sel = (id,label,opts)=>`<label class="block text-sm mb-1 opacity-80">${label}</label><select id="${id}" class="input mb-3">${opts}</select>`;
+  openSheet(`
+    <div class="font-bold text-lg mb-3">📊 Выгрузка в Excel по фильтрам</div>
+    ${sel("_fType","Тип склада", opt("all","Все")+STOCK_TYPES.map(t=>opt(t.key,t.label)).join(""))}
+    ${sel("_fLoc","Место хранения", opt("all","Все места")+locs.map(l=>opt(l,l)).join(""))}
+    ${sel("_fCat","Категория", opt("all","Все категории")+cats.map(c=>opt(c,c)).join(""))}
+    ${sel("_fExp","Срок годности", opt("all","Все сроки")+opt("expired","Только просрочка")+opt("soon","Скоро (≤14 дней)")+opt("valid","Без просрочки")+opt("noexp","Без срока"))}
+    ${sel("_fStock","Наличие", opt("all","Любой остаток")+opt("in","Только в наличии")+opt("zero","Только нулевые")+opt("low","Ниже минимума"))}
+    <div class="flex gap-2 mt-2">
+      <button class="btn btn-ghost flex-1" data-close>Отмена</button>
+      <button class="btn btn-success flex-1" id="_fGo">Выгрузить</button>
+    </div>
+    <div class="text-xs opacity-60 mt-2">Лист со складом текущей базы по выбранным фильтрам. Работает оффлайн (после первой загрузки Excel).</div>
+  `);
+  document.getElementById("_fGo").onclick = ()=>{ runFilteredXlsx(); };
+}
+// сборка и выгрузка отфильтрованного среза
+async function runFilteredXlsx(){
+  const val = id=>{ const e=document.getElementById(id); return e?e.value:"all"; };
+  const f = { type:val("_fType"), loc:val("_fLoc"), cat:val("_fCat"), exp:val("_fExp"), stock:val("_fStock") };
+  const list = sortedStock(state.stock).filter(s=>_passExportFilter(s,f));
+  if(!list.length){ toast("Под фильтр ничего не попало"); return; }
+  let XLSX;
+  try{ XLSX = await ensureXlsx(); }
+  catch(e){ toast(e.message||"Excel недоступен (нужна сеть в первый раз)"); return; }
+  const rows = list.map(s=>{
+    const st=_expiryStatus(s);
+    return {
+      "Тип": typeMeta(s.type).addLabel,
+      "Категория": s.category||"",
+      "Наименование": s.name,
+      "Количество": totalQtyOf(s),
+      "Ед. изм.": s.unit||"",
+      "Мин. запас": (s.minStock===""||s.minStock==null)?"":Number(s.minStock),
+      "Срок годности": nearestExpiryOf(s)||"",
+      "Состояние": st==="expired"?"просрочено":(st==="soon"?"скоро (≤14 дн)":""),
+      "Место": locationsOf(s).join("; "),
+      "Примечание": s.note||"",
+    };
+  });
+  const ws = xlsxGuard(XLSX.utils.json_to_sheet(rows));
+  ws["!cols"] = [{wch:10},{wch:22},{wch:40},{wch:10},{wch:8},{wch:10},{wch:14},{wch:16},{wch:18},{wch:30}];
+  if(ws["!ref"]) ws["!autofilter"] = { ref: ws["!ref"] };   // автофильтр в Excel по шапке
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Склад (фильтр)");
+  XLSX.writeFile(wb, `vahtahoz-${_filterTag(f)}-${todayStr()}.xlsx`);
+  closeSheet();
+  toast(`Excel сохранён · ${list.length} поз.`);
 }
 
 function triggerDownload(text, filename, mime){
@@ -3516,7 +3614,7 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   openLocationsEdit,addLocation,renameLocation,deleteLocation,
   openProfilesSheet,switchProfile,addProfile,renameProfile,deleteProfile,exportAllProfiles,
   toggleCheck,addCheck,resetChecklist,
-  exportData,importData,exportXlsx,exportCsv,clearLog,wipeAll,toggleTheme,
+  exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,clearLog,wipeAll,toggleTheme,
   pomoStart,pomoPause,pomoReset,closeSheet,writeoffExpired,openExpiredView,
   cloudLoginPrompt,cloudLogout,cloudSyncNow});
 
