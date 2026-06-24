@@ -177,7 +177,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v117 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v118 · БЕТА</div>
   </div>
 </div>
 
@@ -459,7 +459,7 @@ function openProfilesSheet(){
     </div>`;
   }).join("");
   openSheet(`
-    <div class="font-bold text-xl mb-1">🏠 Базы (профили)</div>
+    <div class="font-bold text-xl mb-1">🏠 Базы</div>
     <div class="text-xs opacity-70 mb-3">У каждой базы свой склад, журналы и места хранения. Переключение сохраняет текущую базу и открывает выбранную.</div>
     <div class="space-y-1 max-h-96 overflow-y-auto" id="profList">${rows}</div>
     <div class="flex gap-2 pt-3">
@@ -1260,7 +1260,7 @@ function moveTask(id, dir){
   const dueA = a.due?daysLeft(a.due):999, dueB = b.due?daysLeft(b.due):999;
   const timeA = a.time||"99:99", timeB = b.time||"99:99";
   if(dueA!==dueB || timeA!==timeB){
-    toast("Порядок задаётся датой/временем — измени их у задачи");
+    toast("Порядок задаётся датой/временем — измените их у задачи");
     return;
   }
   // нормализуем order внутри одной группы, чтобы свап давал детерминированный результат
@@ -1702,13 +1702,13 @@ function saveOp(kind){
   if(!name){ toast("Выберите товар или введите название"); return; }
   // Защита от рассинхрона с партиями: для batches-карточек нельзя править qty напрямую
   if(product && hasBatches(product) && m.sign!==0){
-    toast("У этой позиции есть партии — используй ＋/− на карточке (выбор партии)");
+    toast("У этой позиции есть партии — используйте ＋/− на карточке (выбор партии)");
     return;
   }
   if(product && m.sign<0 && Number(product.qty||0) < qty){ toast("Не хватает на складе"); return; }
   // Защита от «расхода в воздух»: если выбрали ручной ввод имени и это расход — не даём проводить движение
   if(!product && m.sign<0){
-    toast("Для расхода выбери позицию со склада (поиск выше)");
+    toast("Для расхода выберите позицию со склада (поиск выше)");
     return;
   }
 
@@ -1849,7 +1849,7 @@ async function deleteOp(kind, opId){
       } else {
         // карточка стала legacy. Если запись отвязана от удалённой партии — откат «в воздух» раздул бы qty
         if(/\[партия удалена\]/.test(op.note||"")){
-          toast("Запись отвязана от удалённой партии — откат недоступен. Удали запись без отката.");
+          toast("Запись отвязана от удалённой партии — откат недоступен. Удалите запись без отката.");
           return;
         }
         const next = Number(product.qty||0) - effectiveSign*Number(op.qty||0);
@@ -1972,7 +1972,7 @@ async function saveOpEdit(kind, opId){
   // расход обязан быть привязан к складской позиции — иначе журнал скажет «выдано»,
   // а склад не уменьшится (рассинхрон)
   if(effSign<0 && !newProd){
-    toast("Для расхода выбери позицию со склада");
+    toast("Для расхода выберите позицию со склада");
     return;
   }
 
@@ -2140,7 +2140,7 @@ async function quickAdjust(id, sign){
         if(val===null) return;
         const n = roundQty(parseNum(val));
         if(!Number.isFinite(n) || n<=0){ toast("Не число"); return; }
-        if(state.stock.find(s=>s.id===id)!==it){ toast("Данные обновились — повтори операцию"); render(); return; }   // pull/смена базы во время диалога пересоздал объект → не теряем правку на «осиротевшем»
+        if(state.stock.find(s=>s.id===id)!==it){ toast("Данные обновились — повторите операцию"); render(); return; }   // pull/смена базы во время диалога пересоздал объект → не теряем правку на «осиротевшем»
         const newB = { id:uid(), qty:n, expiry:expVal.trim(), location:cleanName40(locVal), note:"", createdAt:new Date().toISOString() };
         it.batches.push(newB);
         syncItemFromBatches(it);
@@ -2167,7 +2167,7 @@ async function quickAdjust(id, sign){
     if(val===null) return;
     const n = roundQty(parseNum(val));
     if(!Number.isFinite(n) || n<=0){ toast("Не число"); return; }
-    if(state.stock.find(s=>s.id===id)!==it){ toast("Данные обновились — повтори операцию"); render(); return; }   // объект пересоздан pull-ом во время диалога → targetBatch тоже устарел, не мутируем
+    if(state.stock.find(s=>s.id===id)!==it){ toast("Данные обновились — повторите операцию"); render(); return; }   // объект пересоздан pull-ом во время диалога → targetBatch тоже устарел, не мутируем
     const nextBatch = roundQty(Number(targetBatch.qty||0) + sign*n);
     if(nextBatch<0){ toast("Не хватает в этой партии"); return; }
     targetBatch.qty = nextBatch;
@@ -2195,7 +2195,7 @@ async function quickAdjust(id, sign){
   if(val===null) return;
   const n = roundQty(parseNum(val));
   if(!Number.isFinite(n) || n<=0){ toast("Не число"); return; }
-  if(state.stock.find(s=>s.id===id)!==it){ toast("Данные обновились — повтори операцию"); render(); return; }   // объект пересоздан pull-ом во время диалога → не теряем правку
+  if(state.stock.find(s=>s.id===id)!==it){ toast("Данные обновились — повторите операцию"); render(); return; }   // объект пересоздан pull-ом во время диалога → не теряем правку
   const next = roundQty(Number(it.qty||0) + sign*n);
   if(next<0){ toast("Не хватает на складе"); return; }
   it.qty = next; it.updatedAt = new Date().toISOString();
@@ -2418,7 +2418,7 @@ async function deleteBatch(itemId, batchId){
   if(!await confirmSheet(`Удалить партию ${fmtQty(b.qty)} ${it.unit||""}${b.location?` (📍 ${b.location})`:""}${b.expiry?` (⏰ ${fmtDate(b.expiry)})`:""}?`,{danger:true,yes:"Удалить"})) return;
   // ссылки it/b сняты ДО await — pull во время подтверждения мог пересоздать объекты склада.
   // Без перерезолва мутация легла бы на «осиротевший» объект, а журнал получил бы ложную пометку «[партия удалена]».
-  if(state.stock.find(s=>s.id===itemId)!==it || !(it.batches||[]).some(x=>x.id===batchId)){ toast("Данные обновились — повтори операцию"); render(); return; }
+  if(state.stock.find(s=>s.id===itemId)!==it || !(it.batches||[]).some(x=>x.id===batchId)){ toast("Данные обновились — повторите операцию"); render(); return; }
   // помечаем осиротевшие журнальные записи — чтобы editOp по ним выдавал предупреждение
   let orphans = 0;
   for(const k of JOURNAL_KEYS){
@@ -2812,7 +2812,7 @@ function renderMore(){
       <div class="flex items-center justify-between gap-2">
         <div>
           <div class="font-bold">🏠 База: ${esc(activeProfileName())}</div>
-          <div class="text-xs opacity-70 mt-0.5">${restricted?"Ваша база":`Профилей: ${profiles.list.length}`}</div>
+          <div class="text-xs opacity-70 mt-0.5">${restricted?"Ваша база":`Баз: ${profiles.list.length}`}</div>
         </div>
         ${restricted?"":`<button class="btn btn-primary" onclick="openProfilesSheet()">Сменить / базы</button>`}
       </div>
@@ -2900,7 +2900,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v117 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v118 · тестовый канал</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -2933,7 +2933,7 @@ function xlsxGuard(ws){
   return ws;
 }
 async function exportXlsx(){
-  toast("Готовлю файл…");
+  toast("Подготовка файла…");
   let XLSX;
   try{ XLSX = await ensureXlsx(); }
   catch(e){ toast("XLSX недоступен — сохраняю CSV"); exportCsv(); return; }
@@ -3209,7 +3209,7 @@ async function mergeCatalogs(){
   render();
   const cid = activeCloudId();
   if(cid && cloud.ready) setTimeout(()=>{ cloudActivate(cid).catch(e=>console.warn(e)); }, 50);   // активную — сразу в облако
-  toast(`Готово: добавлено ${added} наименований. Остальные базы выгрузятся при открытии.`);
+  toast(`Готово: добавлено ${added} наименований. Остальные базы обновятся при открытии.`);
 }
 /* каталожная позиция-«заготовка» (только наименование, без остатка/мест/сроков) */
 function catalogItem(type, name, unit){
@@ -3788,7 +3788,7 @@ async function cloudRefresh(refresh_token){
       body: JSON.stringify({ refresh_token })
     });
     const d = await r.json().catch(()=>({}));
-    if(!r.ok || !d.access_token) throw new Error(d.error_description||d.msg||"refresh failed");
+    if(!r.ok || !d.access_token) throw new Error("Не удалось продлить сессию");
     return d;
   } finally { clearTimeout(t); }
 }
@@ -3798,12 +3798,12 @@ function cloudDoRefresh(){
   cloud._refreshing = (async()=>{
     try{
       const rt = cloud.session && cloud.session.refresh_token;
-      if(!rt) throw new Error("no refresh token");
+      if(!rt) throw new Error("Сессия истекла — войдите снова");
       const d = await cloudRefresh(rt);
       saveCloudSess(d); cloud.session = loadCloudSess();
       // отдаём свежий токен и supabase-клиенту (realtime/auth) — он сам НЕ рефрешит (autoRefreshToken=false),
       // иначе его сессия протухнет. Не блокируем: setSession в standalone может подвисать → race с 4с-таймаутом.
-      try{ if(cloud.sb) Promise.race([ cloud.sb.auth.setSession({ access_token:d.access_token, refresh_token:d.refresh_token }), new Promise(r=>setTimeout(r,4000)) ]).catch(()=>{}); }catch(_){}
+      try{ if(cloud.sb) Promise.race([ cloud.sb.auth.setSession({ access_token:d.access_token, refresh_token:d.refresh_token }).catch(()=>{}), new Promise(r=>setTimeout(r,4000)) ]).catch(()=>{}); }catch(_){}
       return cloud.session && cloud.session.access_token;
     } finally { cloud._refreshing = null; }
   })();
@@ -3836,7 +3836,7 @@ function activeMember(){
 // Тогда RLS на сервере режет доступ к складу/журналам → делаем базу read-only локально и не долбим сервер бесполезным push (иначе «REST 403»).
 function isOffShift(cid){ cid=cid||activeCloudId(); if(!cid) return false; if(cloud.profile && cloud.profile.is_admin) return false; const m=memberOf(cid); return !!(m && m.active===false); }
 function canEditStock(){ const m=activeMember(); if(!m) return true; return !!m.can_edit_stock && m.active!==false; }
-function ensureCanEdit(){ if(!canEditStock()){ toast(isOffShift()?"Вы сняты со смены — редактирование недоступно":"Нет прав на редактирование склада"); return false; } return true; }
+function ensureCanEdit(){ if(!canEditStock()){ toast(isOffShift()?"Вы сняты со смены — редактирование недоступно":"У вас нет прав на редактирование — обратитесь к начальнику участка"); return false; } return true; }
 
 /* ===================== УПРАВЛЕНИЕ УЧАСТНИКАМИ И РОЛЯМИ =====================
    Роль = пресет прав (источник истины для RLS — флаги). Менеджер (can_manage)
@@ -4082,7 +4082,7 @@ function openResetPwd(uid){
     const pwd=document.getElementById("rpp").value||"";
     if(pwd.length<6){ toast("Пароль не короче 6 символов"); return; }
     const btn=document.getElementById("rpGo"); btn.disabled=true; btn.textContent="Смена…";
-    try{ await cloudCallFn("reset_password", { base_id:activeCloudId(), user_id:uid, password:pwd }); toast("Пароль изменён"); closeSheet(); }
+    try{ await cloudCallFn("reset_password", { base_id:activeCloudId(), user_id:uid, password:pwd }); toast("Пароль изменён"); await openMembersSheet(); }
     catch(e){ toast("Не удалось. "+(e.message||"Проверьте интернет и повторите")); if(document.getElementById("rpGo")){ btn.disabled=false; btn.textContent="Сменить"; } }
   };
 }
@@ -4110,8 +4110,8 @@ function setSyncStatus(kind, text){
   clearTimeout(_syncHideT);
   if(kind==="hidden" || !cloud.ready || !activeCloudId()){ bar.classList.add("hidden"); bar.classList.remove("busy"); chip.classList.add("hidden"); return; }
   const M = {
-    syncing:{ bg:"#2563eb", icon:"↻", chip:"↻", txt:text||"Сохраняю в облако…" },
-    offline:{ bg:"#b45309", icon:"🔴", chip:"⏳", txt:text||"Нет интернета — сохраню, когда он появится" },
+    syncing:{ bg:"#2563eb", icon:"↻", chip:"↻", txt:text||"Сохранение в облако…" },
+    offline:{ bg:"#b45309", icon:"🔴", chip:"⏳", txt:text||"Нет интернета — данные уйдут в облако, когда он появится" },
     synced: { bg:"#15803d", icon:"✓", chip:"✓", txt:text||"Сохранено в облаке" },
     error:  { bg:"#b91c1c", icon:"⚠", chip:"⚠", txt:text||"Не удалось сохранить — пробую снова" },
   };
@@ -4141,7 +4141,7 @@ async function cloudInit(){
       }catch(e){ console.warn("online-reload", e); }
       return;
     }
-    if(cloud.ready && activeCloudId()){ setSyncStatus("syncing","Сеть появилась — синхронизирую…"); cloudActivate(activeCloudId()); }
+    if(cloud.ready && activeCloudId()){ await cloudRefreshMyMembership(); setSyncStatus("syncing","Сеть появилась — синхронизация…"); cloudActivate(activeCloudId()); }
     // задачи: до-выгружаем отложенные правки и пере-синкаем (не зависят от базы)
     if(cloud.ready){ if(localStorage.getItem(TASKS_DIRTY)) cloudPushTasksNow().catch(()=>{}); else cloudSyncTasks().catch(()=>{}); }
   });
@@ -4161,7 +4161,7 @@ async function cloudInit(){
       hideLoginGate();
       // фоновый setSession — для realtime/autoRefresh; не блокирует восстановление (промис не ждём)
       ensureSB().then(sb=>Promise.race([
-        sb.auth.setSession({ access_token:s.access_token, refresh_token:s.refresh_token }),
+        sb.auth.setSession({ access_token:s.access_token, refresh_token:s.refresh_token }).catch(()=>{}),   // свой catch: реджект ПОСЛЕ таймаута race не станет unhandled
         new Promise(res=>setTimeout(res,4000))
       ])).catch(()=>{});
       await cloudOnLogin({ access_token:s.access_token, refresh_token:s.refresh_token, user:s.user });
@@ -4218,7 +4218,7 @@ async function cloudLogin(email, password){
       body: JSON.stringify({ email:em2, password })
     });
     d = await r.json().catch(()=>({}));
-    if(!r.ok || !d.access_token) throw new Error(d.error_description || d.msg || "Неверный логин или пароль");
+    if(!r.ok || !d.access_token) throw new Error("Неверный логин или пароль");
   }catch(e){
     if(e.name==="AbortError") throw new Error("превышено время ожидания сети");
     throw e;
@@ -4231,9 +4231,9 @@ async function cloudLogin(email, password){
   saveCloudSess(d);   // СИНХРОННО: переживёт reload от cloudAutoLink (один вход, не повторный)
   // setSession (для прав и realtime) — в фоне, не держим кнопку (промис нигде не ждём)
   Promise.race([
-    sb.auth.setSession({ access_token:d.access_token, refresh_token:d.refresh_token }),
+    sb.auth.setSession({ access_token:d.access_token, refresh_token:d.refresh_token }).catch(e=>console.warn("setSession", e)),   // свой catch: поздний реджект не станет unhandled
     new Promise(res=>setTimeout(res,4000))
-  ]).catch(e=>console.warn("setSession", e));
+  ]).catch(()=>{});
   // загрузку профиля/баз ждём, но не дольше 8с — после этого вход всё равно завершается,
   // а cloudOnLogin при необходимости дозагрузит данные в фоне
   await Promise.race([
@@ -4310,7 +4310,7 @@ async function cloudOnLogin(session, attempt){
       setSyncStatus("error","Базы не загрузились (слабая сеть). Нажмите ↻ для повтора");
     } else {
       cloud._basesLoading = false;   // оффлайн — цикл закончен, перезапустится по событию online
-      setSyncStatus("offline","Нет сети — базы подтянутся при подключении");
+      setSyncStatus("offline","Нет сети — базы загрузятся при подключении");
     }
   }
 }
@@ -4319,6 +4319,7 @@ async function cloudLogout(){
   try{ if(cloud.tasksChannel) await cloud.sb.removeChannel(cloud.tasksChannel); }catch(e){}   // снимаем и канал задач
   try{ if(cloud.sb) await cloud.sb.auth.signOut(); }catch(e){}   // дожидаемся выхода (был баг приоритета await/&&)
   clearTimeout(cloud.tasksTimer); clearTimeout(cloud.tasksRetry); clearTimeout(cloud.tasksPullTimer);
+  clearTimeout(cloud.pushTimer); clearTimeout(cloud.retryTimer); clearTimeout(cloud.pullTimer); clearTimeout(cloud.pullRetryT);   // отложенные склад-операции не должны срабатывать после выхода
   // задачи привязаны к аккаунту (owner) — при выходе НЕ оставляем их локально, иначе следующий юзер их увидит/выгрузит
   state.tasks=[]; try{ localStorage.removeItem(TASKS_KEY); localStorage.removeItem(TASKS_DIRTY); }catch(e){}
   cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
@@ -4490,7 +4491,7 @@ async function cloudPull(cid){
     console.warn("cloudPull", e);
     setSyncStatus("error", "Не удалось загрузить — проверьте интернет и нажмите ↻");
     // слабая сеть/таймаут → повторим (мягкий backoff), пока онлайн
-    if(cloudOnline()) setTimeout(()=>{ if(!cloud.busy && activeCloudId()===cid) cloudPull(cid).catch(()=>{}); }, 8000);  // не тянуть базу, если за время ожидания сменили профиль
+    if(cloudOnline()){ clearTimeout(cloud.pullRetryT); cloud.pullRetryT=setTimeout(()=>{ if(cloud.ready && cloud.session && !cloud.busy && activeCloudId()===cid) cloudPull(cid).catch(()=>{}); }, 8000); }  // handle хранится → отменяется при выходе; не тянем после logout/смены профиля
   }
   finally{
     cloud.applying=false;
@@ -4566,7 +4567,7 @@ async function cloudRestDelete(table, ids, tok){
 async function cloudPushNow(){
   const cid = activeCloudId();
   // на раннем выходе снимаем pushPending (dirty остаётся durable-маркером несинхронизации)
-  if(!cid || !cloud.ready || cloud.applying || !cloudOnline() || isOffShift(cid)){ cloud.pushPending=false; return; }   // off-shift: нет доступа по RLS, dirty храним до возврата на смену
+  if(!cid || !cloud.ready || cloud.applying || !cloudOnline() || isOffShift(cid) || !canEditStock()){ cloud.pushPending=false; return; }   // off-shift/только-просмотр: нет доступа по RLS, dirty храним (не сбрасываем молча) до прав/возврата на смену
   const perm = activeMember(); if(!perm){ cloud.pushPending=false; return; }
   await ensureSB(); cloud.busy=true;
   try{
@@ -4610,6 +4611,7 @@ async function cloudPushNow(){
             // следующий push снова считает настройки «изменёнными» и шлёт PATCH каждый раз (лишний трафик).
             state.locations=merged.locations; state.categories=merged.categories;
             state.delLoc=merged.deletedLocations; state.delCat=merged.deletedCategories;
+            const _wasApplying=cloud.applying; cloud.applying=true; try{ saveState(); }finally{ cloud.applying=_wasApplying; }   // пишем merged в localStorage (память↔диск), applying — чтобы saveState не дёрнул новый push
             saveSyncSig(cid,"settings",{ v:_sigOf(merged) });
           }catch(e){ console.warn("settings push", e); }
         }
@@ -4812,15 +4814,27 @@ function cloudGateTasks(){
   if(tb) tb.style.display = hideTasks ? "none" : "";
   if(hideTasks && currentView==="tasks") nav("dashboard");
 }
+// перечитать ТОЛЬКО свои членства (active/права) — чтобы возврат/снятие со смены подхватились без перезахода
+async function cloudRefreshMyMembership(){
+  try{
+    const tok=cloud.session && cloud.session.access_token; const uid=cloud.profile && cloud.profile.id;
+    if(!tok || !uid) return;
+    const mem=await cloudRest(`base_members?select=*&user_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:20000});
+    if(Array.isArray(mem)){ cloud.members=mem; renderHeader(); }
+  }catch(_){}
+}
 async function cloudSyncNow(){
   if(!cloud.ready){ toast("Сначала войдите в облако"); return; }
   if(!cloudOnline()){ toast("Нет интернета — попробуйте позже"); return; }
   if(cloud.busy){ return; }   // сохранение уже идёт — двойной тап не плодит второй проход
   // базы не загрузились (слабый интернет) → перезапускаем их загрузку; cloudOnLogin сам активирует базу при успехе
-  if(!cloud.basesLoaded && cloud.session){ toast("Загружаю базы…"); await cloudOnLogin(cloud.session, 0).catch(()=>{}); return; }
+  if(!cloud.basesLoaded && cloud.session){ toast("Загрузка баз…"); await cloudOnLogin(cloud.session, 0).catch(()=>{}); return; }
   const cid = activeCloudId();
   if(!cid){ toast("Эта база не связана с облаком"); return; }
-  toast("Сохраняю в облако…"); await cloudActivate(cid); toast("Сохранено в облаке");
+  await cloudRefreshMyMembership();   // подхватить возврат/снятие со смены
+  if(isOffShift(cid)){ setSyncStatus("error","Вы сняты со смены на этой базе — синхронизация недоступна"); render(); return; }
+  toast("Сохранение в облако…"); await cloudActivate(cid);
+  if(!isOffShift(cid)) toast("Сохранено в облаке");
 }
 function cloudCardOffline(){
   return `<div class="card">
