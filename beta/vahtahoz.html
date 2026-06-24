@@ -177,7 +177,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v115 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v116 · БЕТА</div>
   </div>
 </div>
 
@@ -2900,7 +2900,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v115 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v116 · тестовый канал</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -3716,6 +3716,7 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,clearLog,wipeAll,toggleTheme,
   openMove,doMove,
   openMembersSheet,openMemberRole,setMemberRole,memberRotate,memberRemove,openAddMember,openResetPwd,
+  openShift,openHandover,doHandover,
   pomoStart,pomoPause,pomoReset,closeSheet,writeoffExpired,openExpiredView,
   cloudLoginPrompt,cloudLogout,cloudSyncNow});
 
@@ -3909,7 +3910,7 @@ async function openMembersSheet(){
       </div>
       <div class="flex flex-wrap gap-2 mt-2">
         <button class="btn btn-ghost text-sm px-2" onclick="openMemberRole('${m.user_id}')">Роль</button>
-        <button class="btn btn-ghost text-sm px-2" onclick="memberRotate('${m.user_id}')">${inactive?"Вернуть на смену":"Снять со смены"}</button>
+        <button class="btn btn-ghost text-sm px-2" onclick="openShift('${m.user_id}')">Смена</button>
         <button class="btn btn-ghost text-sm px-2" onclick="openResetPwd('${m.user_id}')">Пароль</button>
         ${m.user_id===myId?"":`<button class="btn btn-ghost text-sm px-2" onclick="memberRemove('${m.user_id}')">Убрать</button>`}
       </div>
@@ -3973,6 +3974,55 @@ async function memberRotate(uid){
     : `Вернуть «${m.username}» на смену? Доступ к базе восстановится.`;
   if(!await confirmSheet(msg,{ yes: off?"Снять со смены":"Вернуть на смену", danger:off, title: off?"Снять со смены":"Вернуть на смену" })) return;
   await _patchMember(uid, { active: !off }, off?"Снят со смены":"Возвращён на смену");
+}
+// меню «Смена»: снять/вернуть, либо передать смену заступающему (с задачами)
+function openShift(uid){
+  const m=_findBM(uid); if(!m){ toast("Список устарел. Закройте и откройте заново"); return; }
+  const active = m.active!==false;
+  const others = (cloud.baseMembers||[]).filter(x=>x.user_id!==uid);
+  openSheet(`<div class="font-bold text-xl mb-3">Смена: ${esc(m.username)}</div>
+    <div class="space-y-2">
+      ${active
+        ? `${others.length?`<button class="btn btn-primary w-full" onclick="openHandover('${uid}')">Передать смену</button>`:""}
+           <button class="btn btn-ghost w-full" onclick="memberRotate('${uid}')">Снять со смены</button>`
+        : `<button class="btn btn-success w-full" onclick="memberRotate('${uid}')">Вернуть на смену</button>`}
+    </div>
+    <div class="text-xs opacity-60 mt-2">«Передать смену» отдаёт задачи заступающему и закрывает смену уходящему. «Снять со смены» просто закрывает доступ — задачи остаются у работника. Делайте передачу, когда уходящий уже не вносит изменения.</div>
+    <button class="btn btn-ghost w-full mt-3" data-close>Отмена</button>`);
+}
+function openHandover(fromUid){
+  const from=_findBM(fromUid); if(!from) return;
+  const others=(cloud.baseMembers||[]).filter(x=>x.user_id!==fromUid);
+  if(!others.length){ toast("Нет заступающего. Сначала добавьте работника кнопкой «＋ Добавить»"); return; }
+  openSheet(`<div class="font-bold text-xl mb-3">Передать смену</div>
+    <div class="text-sm opacity-70 mb-2">От «${esc(from.username)}» — кому передать смену и задачи?</div>
+    <div class="space-y-2">
+      ${others.map(o=>`<button class="btn btn-ghost w-full text-left" style="min-width:0" onclick="doHandover('${fromUid}','${o.user_id}')"><span class="truncate">${esc(o.username)}</span> <span class="opacity-60 text-xs">(${esc(roleLabel(o.role))})</span></button>`).join("")}
+    </div>
+    <button class="btn btn-ghost w-full mt-3" data-close>Отмена</button>`);
+}
+async function doHandover(fromUid, toUid){
+  const from=_findBM(fromUid), to=_findBM(toUid);
+  if(!from || !to){ toast("Список устарел. Закройте и откройте заново"); return; }
+  // защита: после пересменки в базе должен остаться активный управляющий (если ты не владелец)
+  if(!(cloud.profile && cloud.profile.is_admin)){
+    const mgrs=(cloud.baseMembers||[]).filter(m=>{ let manage=!!m.can_manage, active=(m.active!==false); if(m.user_id===fromUid) active=false; if(m.user_id===toUid) active=true; return manage&&active; }).length;
+    if(mgrs===0){ toast("База останется без управляющего. Сначала назначьте другого «Начальника участка»"); return; }
+  }
+  if(!await confirmSheet(`Передать смену от «${from.username}» к «${to.username}»?\nВсе задачи «${from.username}» перейдут к «${to.username}». «${from.username}» уйдёт со смены и потеряет доступ к базе, «${to.username}» заступит и получит доступ.`,{ yes:"Передать смену", title:"Передать смену" })) return;
+  if(cloud._handoverBusy) return; cloud._handoverBusy=true;
+  try{
+    const d=await cloudCallFn("handover", { base_id:activeCloudId(), from_user:fromUid, to_user:toUid });
+    // если меня самого касается пересменка — синхронизируем свои права/задачи
+    if(cloud.profile && (cloud.profile.id===fromUid || cloud.profile.id===toUid)){
+      const cid=activeCloudId(); const mine=cloud.members.find(m=>m.user_id===cloud.profile.id && m.base_id===cid);
+      if(mine) mine.active = (cloud.profile.id===toUid);
+      cloudSyncTasks().catch(()=>{});   // подтянуть переданные задачи
+    }
+    toast(`Смена передана. Задач перенесено: ${d.tasks_moved||0}`);
+    await openMembersSheet();
+  }catch(e){ toast("Не удалось. "+(e.message||"Проверьте интернет и повторите")); }
+  finally{ cloud._handoverBusy=false; }
 }
 async function memberRemove(uid){
   const m=_findBM(uid); if(!m) return;
