@@ -177,7 +177,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v114</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v115</div>
   </div>
 </div>
 
@@ -2822,9 +2822,9 @@ function renderMore(){
     ${(typeof cloudCardHtml==="function")?cloudCardHtml():""}
 
     ${canManageBase()?`<div class="card">
-      <div class="font-bold mb-2">👥 Участники и роли</div>
-      <button class="btn btn-ghost w-full" onclick="openMembersSheet()">Управление участниками базы</button>
-      <div class="text-xs opacity-70 mt-2">Добавляйте работников с логином и ролью, меняйте права, оформляйте пересменку. Видно управляющему этой базой.</div>
+      <div class="font-bold mb-2">👥 Работники и роли</div>
+      <button class="btn btn-ghost w-full" onclick="openMembersSheet()">Управление работниками базы</button>
+      <div class="text-xs opacity-70 mt-2">Добавляйте работников, выдавайте логин и роль, оформляйте пересменку. Раздел виден только тем, кто управляет базой.</div>
     </div>`:""}
 
     ${canEditStock()?`<div class="card">
@@ -2900,7 +2900,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v114</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v115</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -3856,13 +3856,18 @@ function canManageBase(){
 async function cloudCallFn(action, payload){
   const tok = cloud.session && cloud.session.access_token;
   if(!tok) throw new Error("Нет входа в облако");
-  const doFetch = (t)=> fetch(`${CLOUD_CFG.url}/functions/v1/manage-user`, {
-    method:"POST",
-    headers:{ apikey:CLOUD_CFG.anon, Authorization:`Bearer ${t}`, "Content-Type":"application/json" },
-    body: JSON.stringify(Object.assign({ action }, payload))
-  });
-  let r = await doFetch(tok);
-  if(r.status===401){ const nt=await cloudDoRefresh().catch(()=>null); if(nt) r=await doFetch(nt); }   // токен протух — обновить и повторить
+  const doFetch = (t)=>{
+    const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(), 35000);   // не виснем на холодном старте free-тарифа
+    return fetch(`${CLOUD_CFG.url}/functions/v1/manage-user`, {
+      method:"POST", signal:ctrl.signal,
+      headers:{ apikey:CLOUD_CFG.anon, Authorization:`Bearer ${t}`, "Content-Type":"application/json" },
+      body: JSON.stringify(Object.assign({ action }, payload))
+    }).finally(()=>clearTimeout(to));
+  };
+  let r;
+  try{ r = await doFetch(tok); }
+  catch(_){ throw new Error("Сервер недоступен. Проверьте интернет и повторите"); }
+  if(r.status===401){ const nt=await cloudDoRefresh().catch(()=>null); if(nt){ try{ r=await doFetch(nt); }catch(_){ throw new Error("Сервер недоступен. Проверьте интернет"); } } }   // токен протух — обновить и повторить
   const d = await r.json().catch(()=>({}));
   if(!r.ok || d.error) throw new Error(d.error || ("Ошибка сервера "+r.status));
   return d;
@@ -3882,12 +3887,15 @@ async function cloudLoadBaseMembers(){
   return cloud.baseMembers;
 }
 async function openMembersSheet(){
-  if(!canManageBase()){ toast("Нет прав на управление участниками"); return; }
+  if(!canManageBase()){ toast("У вас нет доступа к управлению работниками"); return; }
   if(!cloudOnline()){ toast("Нужен интернет"); return; }
-  openSheet(`<div class="font-bold text-xl mb-3">👥 Участники базы</div><div class="opacity-70">Загрузка…</div>`);
+  if(cloud._membersLoading) return;                 // не плодим параллельные загрузки на быстрых повторах
+  cloud._membersLoading = true;
+  openSheet(`<div class="font-bold text-xl mb-3">👥 Работники базы</div><div class="opacity-70">Загрузка…</div>`);
   let members;
   try{ members = await cloudLoadBaseMembers(); }
-  catch(e){ openSheet(`<div class="font-bold text-xl mb-3">👥 Участники</div><div style="color:#fca5a5">Не удалось загрузить: ${esc(e.message||"")}</div><button class="btn btn-ghost w-full mt-3" data-close>Закрыть</button>`); return; }
+  catch(e){ console.warn("members load", e); openSheet(`<div class="font-bold text-xl mb-3">👥 Работники базы</div><div style="color:#fca5a5">Не удалось загрузить список. Проверьте интернет и попробуйте ещё раз.</div><button class="btn btn-ghost w-full mt-3" data-close>Закрыть</button>`); return; }
+  finally{ cloud._membersLoading = false; }
   const myId = cloud.profile && cloud.profile.id;
   const rows = members.slice().sort((a,b)=>(a.username||"").localeCompare(b.username||"","ru")).map(m=>{
     const inactive = m.active===false;
@@ -3895,13 +3903,13 @@ async function openMembersSheet(){
       <div class="flex items-center gap-2">
         <div class="flex-1 min-w-0">
           <div class="font-bold truncate">${esc(m.username)}${m.user_id===myId?" (вы)":""}</div>
-          <div class="text-xs opacity-70">${esc(roleLabel(m.role))}${m.can_manage?" · управляющий":""}</div>
+          <div class="text-xs opacity-70">${esc(roleLabel(m.role))}${m.can_manage?" · управляет базой":""}</div>
         </div>
         <span class="badge ${inactive?"badge-gray":"badge-green"}">${inactive?"не на смене":"на смене"}</span>
       </div>
       <div class="flex flex-wrap gap-2 mt-2">
         <button class="btn btn-ghost text-sm px-2" onclick="openMemberRole('${m.user_id}')">Роль</button>
-        <button class="btn btn-ghost text-sm px-2" onclick="memberRotate('${m.user_id}')">${inactive?"Вернуть на смену":"Пересменка"}</button>
+        <button class="btn btn-ghost text-sm px-2" onclick="memberRotate('${m.user_id}')">${inactive?"Вернуть на смену":"Снять со смены"}</button>
         <button class="btn btn-ghost text-sm px-2" onclick="openResetPwd('${m.user_id}')">Пароль</button>
         ${m.user_id===myId?"":`<button class="btn btn-ghost text-sm px-2" onclick="memberRemove('${m.user_id}')">Убрать</button>`}
       </div>
@@ -3909,59 +3917,79 @@ async function openMembersSheet(){
   }).join("");
   openSheet(`
     <div class="flex items-center justify-between gap-2 mb-3">
-      <div class="font-bold text-xl">👥 Участники базы</div>
+      <div class="font-bold text-xl">👥 Работники базы</div>
       <button class="btn btn-success" onclick="openAddMember()">＋ Добавить</button>
     </div>
-    <div class="space-y-2">${rows||'<div class="opacity-70">Участников пока нет</div>'}</div>
+    <div class="space-y-2">${rows||'<div class="opacity-70">Работников пока нет</div>'}</div>
     <button class="btn btn-ghost w-full mt-3" data-close>Закрыть</button>
   `);
 }
 function _findBM(uid){ return (cloud.baseMembers||[]).find(x=>x.user_id===uid); }
+// защита от само-локаута: изменение НЕ должно оставить базу без активного управляющего
+// (глобальный владелец-админ исключение — он восстановит права в любом случае).
+function _wouldOrphan(uid, change){
+  if(cloud.profile && cloud.profile.is_admin) return false;
+  const after = (cloud.baseMembers||[]).filter(m=>{
+    let manage=!!m.can_manage, active=(m.active!==false);
+    if(m.user_id===uid){
+      if(change.remove) return false;
+      if(change.role!==undefined){ const r=MEMBER_ROLES.find(x=>x.key===change.role); if(r) manage=!!r.perm.can_manage; }
+      if(change.active!==undefined) active=change.active;
+    }
+    return manage && active;
+  }).length;
+  return after===0;
+}
 async function _patchMember(uid, body, okMsg){
   const cid=activeCloudId(); const tok=cloud.session && cloud.session.access_token;
   try{
     await cloudRest(`base_members?base_id=eq.${encodeURIComponent(cid)}&user_id=eq.${encodeURIComponent(uid)}`, tok, {
       method:"PATCH", headers:{ "Content-Type":"application/json", "Prefer":"return=minimal" }, body: JSON.stringify(body) });
+    // если правил СВОЮ строку — синхронизируем cloud.members, иначе canManageBase/права UI разъедутся с сервером
+    if(cloud.profile && uid===cloud.profile.id){ const mine=cloud.members.find(m=>m.user_id===uid && m.base_id===cid); if(mine) Object.assign(mine, body); }
     toast(okMsg); await openMembersSheet();
-  }catch(e){ toast("Не удалось: "+(e.message||"")); }
+  }catch(e){ toast("Не удалось: "+(e.message||"Проверьте интернет и повторите")); }
 }
 function openMemberRole(uid){
-  const m=_findBM(uid); if(!m){ toast("Обновите список"); return; }
+  const m=_findBM(uid); if(!m){ toast("Список устарел. Закройте и откройте заново"); return; }
   openSheet(`<div class="font-bold text-xl mb-3">Роль: ${esc(m.username)}</div>
     <div class="space-y-2">
       ${MEMBER_ROLES.map(r=>`<button class="btn ${m.role===r.key?"btn-primary":"btn-ghost"} w-full" onclick="setMemberRole('${uid}','${r.key}')">${esc(r.label)}</button>`).join("")}
     </div>
-    <div class="text-xs opacity-60 mt-2">Роль задаёт права (склад/задачи/управление). «Начальник участка» сможет сам управлять участниками этой базы.</div>
+    <div class="text-xs opacity-60 mt-2">Роль определяет, что человек может: вести склад, задачи, управлять базой. «Начальник участка» сможет сам добавлять и убирать работников.</div>
     <button class="btn btn-ghost w-full mt-3" data-close>Отмена</button>`);
 }
 async function setMemberRole(uid, roleKey){
   const r=MEMBER_ROLES.find(x=>x.key===roleKey); if(!r) return;
+  if(_wouldOrphan(uid,{role:roleKey})){ toast("База останется без управляющего. Сначала назначьте другого «Начальника участка»"); return; }
   await _patchMember(uid, Object.assign({ role:roleKey }, r.perm), "Роль обновлена");
 }
 async function memberRotate(uid){
   const m=_findBM(uid); if(!m) return;
-  const off = m.active!==false;   // сейчас активен → снимаем
+  const off = m.active!==false;   // сейчас активен → снимаем со смены
+  if(off && _wouldOrphan(uid,{active:false})){ toast("База останется без управляющего. Сначала назначьте другого «Начальника участка»"); return; }
   const msg = off
-    ? `Снять «${m.username}» со смены?\nОн потеряет доступ к базе (история и его записи сохраняются). Заступающего добавьте кнопкой «＋ Добавить» или верните этого же позже.`
+    ? `Снять «${m.username}» со смены?\nОн потеряет доступ к базе. Его записи и история сохранятся — позже сможете вернуть его на смену.`
     : `Вернуть «${m.username}» на смену? Доступ к базе восстановится.`;
-  if(!await confirmSheet(msg,{ yes: off?"Снять со смены":"Вернуть на смену", danger:off, title:"Пересменка" })) return;
+  if(!await confirmSheet(msg,{ yes: off?"Снять со смены":"Вернуть на смену", danger:off, title: off?"Снять со смены":"Вернуть на смену" })) return;
   await _patchMember(uid, { active: !off }, off?"Снят со смены":"Возвращён на смену");
 }
 async function memberRemove(uid){
   const m=_findBM(uid); if(!m) return;
-  if(!await confirmSheet(`Убрать «${m.username}» из этой базы?\nЕго логин и доступ к другим базам не затрагиваются.`,{danger:true,yes:"Убрать из базы"})) return;
+  if(_wouldOrphan(uid,{remove:true})){ toast("База останется без управляющего. Сначала назначьте другого «Начальника участка»"); return; }
+  if(!await confirmSheet(`Убрать «${m.username}» из этой базы?\nЕго логин останется, и в других базах он продолжит работать.`,{danger:true,yes:"Убрать из базы"})) return;
   const cid=activeCloudId(); const tok=cloud.session && cloud.session.access_token;
   try{
     await cloudRest(`base_members?base_id=eq.${encodeURIComponent(cid)}&user_id=eq.${encodeURIComponent(uid)}`, tok, { method:"DELETE", headers:{ "Prefer":"return=minimal" } });
     toast("Убран из базы"); await openMembersSheet();
-  }catch(e){ toast("Не удалось: "+(e.message||"")); }
+  }catch(e){ toast("Не удалось: "+(e.message||"Проверьте интернет и повторите")); }
 }
 function openAddMember(){
-  openSheet(`<div class="font-bold text-xl mb-3">＋ Новый участник</div>
+  openSheet(`<div class="font-bold text-xl mb-3">＋ Новый работник</div>
     <div class="space-y-3">
-      <div><div class="text-sm opacity-70 mb-1">Логин (латиница, цифры, _)</div>
+      <div><div class="text-sm opacity-70 mb-1">Логин (от 3 до 32: английские буквы, цифры, _)</div>
         <input class="input" id="amu" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="напр. ivanov" /></div>
-      <div><div class="text-sm opacity-70 mb-1">Пароль (не короче 6)</div>
+      <div><div class="text-sm opacity-70 mb-1">Пароль (не короче 6 символов)</div>
         <input class="input" id="amp" type="text" autocapitalize="none" autocorrect="off" placeholder="придумайте пароль" /></div>
       <div><div class="text-sm opacity-70 mb-1">Роль</div>
         <select class="input" id="amr">${MEMBER_ROLES.map(r=>`<option value="${r.key}">${esc(r.label)}</option>`).join("")}</select></div>
@@ -3970,7 +3998,7 @@ function openAddMember(){
       <button class="btn btn-ghost flex-1" data-close>Отмена</button>
       <button class="btn btn-success flex-1" id="amGo">Создать</button>
     </div>
-    <div class="text-xs opacity-60 mt-2">Создастся логин <span id="amHint">…@bazahoz.app</span>. Передайте его работнику — он войдёт этим логином и паролем.</div>`);
+    <div class="text-xs opacity-60 mt-2">Логин будет: <span id="amHint">…@bazahoz.app</span>. Передайте работнику этот логин и пароль, который задали выше — он войдёт по ним.</div>`);
   const u=document.getElementById("amu");
   u.addEventListener("input",()=>{ document.getElementById("amHint").textContent=((u.value.trim().toLowerCase())||"…")+"@bazahoz.app"; });
   document.getElementById("amGo").onclick=()=>doAddMember();
@@ -3980,18 +4008,18 @@ async function doAddMember(){
   const username=(document.getElementById("amu").value||"").trim().toLowerCase();
   const password=document.getElementById("amp").value||"";
   const role=document.getElementById("amr").value;
-  if(!/^[a-z0-9_]{3,32}$/.test(username)){ toast("Логин: 3-32 символа, латиница/цифры/_"); return; }
+  if(!/^[a-z0-9_]{3,32}$/.test(username)){ toast("Логин: от 3 до 32 символов — английские буквы, цифры, _"); return; }
   if(password.length<6){ toast("Пароль не короче 6 символов"); return; }
-  const btn=document.getElementById("amGo"); btn.disabled=true; btn.textContent="Создаю…";
+  const btn=document.getElementById("amGo"); btn.disabled=true; btn.textContent="Создание…";
   try{
     const d=await cloudCallFn("create_member", { base_id:cid, username, password, role });
-    toast("Создан участник: "+d.username); await openMembersSheet();
-  }catch(e){ toast("Не удалось: "+(e.message||"")); if(document.getElementById("amGo")){ btn.disabled=false; btn.textContent="Создать"; } }
+    toast("Работник создан: "+d.username); await openMembersSheet();
+  }catch(e){ toast("Не удалось. "+(e.message||"Проверьте интернет и повторите")); if(document.getElementById("amGo")){ btn.disabled=false; btn.textContent="Создать"; } }
 }
 function openResetPwd(uid){
   const m=_findBM(uid); if(!m) return;
   openSheet(`<div class="font-bold text-xl mb-3">Пароль: ${esc(m.username)}</div>
-    <input class="input" id="rpp" type="text" autocapitalize="none" autocorrect="off" placeholder="Новый пароль (не короче 6)" />
+    <input class="input" id="rpp" type="text" autocapitalize="none" autocorrect="off" placeholder="Новый пароль (не короче 6 символов)" />
     <div class="flex gap-2 mt-3">
       <button class="btn btn-ghost flex-1" data-close>Отмена</button>
       <button class="btn btn-primary flex-1" id="rpGo">Сменить</button>
@@ -4000,9 +4028,9 @@ function openResetPwd(uid){
   document.getElementById("rpGo").onclick=async()=>{
     const pwd=document.getElementById("rpp").value||"";
     if(pwd.length<6){ toast("Пароль не короче 6 символов"); return; }
-    const btn=document.getElementById("rpGo"); btn.disabled=true; btn.textContent="Меняю…";
+    const btn=document.getElementById("rpGo"); btn.disabled=true; btn.textContent="Смена…";
     try{ await cloudCallFn("reset_password", { base_id:activeCloudId(), user_id:uid, password:pwd }); toast("Пароль изменён"); closeSheet(); }
-    catch(e){ toast("Не удалось: "+(e.message||"")); if(document.getElementById("rpGo")){ btn.disabled=false; btn.textContent="Сменить"; } }
+    catch(e){ toast("Не удалось. "+(e.message||"Проверьте интернет и повторите")); if(document.getElementById("rpGo")){ btn.disabled=false; btn.textContent="Сменить"; } }
   };
 }
 const cloudDirtyKey = (cid)=>`vahtahoz_dirty_${cid}`;
