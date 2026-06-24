@@ -178,7 +178,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v121 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v122 · БЕТА</div>
   </div>
 </div>
 
@@ -2899,7 +2899,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v121 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v122 · тестовый канал</div>
   `;
 }
 
@@ -3702,8 +3702,10 @@ async function cloudRest(path, token, opts, _retried){
     // 401 = access-токен протух ПОСРЕДИ сессии (живёт ~1ч). Обновляем токен и повторяем ОДИН раз —
     // иначе синк падал «REST 401» до перезагрузки. Тело первого ответа не читаем, чтобы повтор был чистым.
     if(r.status===401 && !_retried && cloud.session && cloud.session.refresh_token){
-      const newTok = await cloudDoRefresh().catch(()=>null);
+      let perm=false;
+      const newTok = await cloudDoRefresh().catch(e=>{ if(e && e.permanent) perm=true; return null; });
       if(newTok) return await cloudRest(path, newTok, opts, true);
+      if(perm){ cloudSessionExpired("Доступ к аккаунту закрыт. Войдите снова"); }   // аккаунт удалён/убран из базы/сменили пароль → не зацикливаемся, просим вход
     }
     if(!r.ok){
       const detail=(await r.text().catch(()=>"")).slice(0,120);
@@ -3739,9 +3741,29 @@ async function cloudRefresh(refresh_token){
       body: JSON.stringify({ refresh_token })
     });
     const d = await r.json().catch(()=>({}));
-    if(!r.ok || !d.access_token) throw new Error("Не удалось продлить сессию");
+    if(!r.ok || !d.access_token){
+      const e=new Error("Не удалось продлить сессию");
+      // GoTrue ОТВЕТИЛ отказом по токену — не сетевой сбой: токен отозван / аккаунт удалён / пароль сменили → ПОСТОЯННЫЙ сбой.
+      // 429 (rate-limit) и прочее НЕ считаем постоянным — это временное.
+      if(r.status===400 || r.status===401 || r.status===403) e.permanent=true;
+      throw e;
+    }
     return d;
   } finally { clearTimeout(t); }
+}
+// постоянный сбой рефреша → чистый выход на экран входа (аккаунт удалён/токен отозван/сменили пароль)
+async function cloudSessionExpired(reason){
+  if(!cloud.session && !cloud.ready) return;   // уже разлогинены — не дублируем
+  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.ready=false; cloud.basesLoaded=false;
+  try{ if(cloud.channel && cloud.sb) cloud.sb.removeChannel(cloud.channel); }catch(_){}
+  cloud.channel=null; cloud.subscribedBase=null;
+  clearTimeout(cloud.pushTimer); clearTimeout(cloud.pullTimer); clearTimeout(cloud.retryTimer); clearTimeout(cloud.pullRetryT); clearTimeout(cloud._basesRetryT);
+  try{ if(cloud.sb) cloud.sb.auth.signOut().catch(()=>{}); }catch(_){}   // чистим supabase-js, чтобы он не дёргал мёртвый токен через setSession
+  clearCloudSess();
+  setSyncStatus("error", reason||"Сессия завершена — войдите снова");
+  try{ renderHeader(); render(); }catch(_){}
+  showLoginGate();
+  const err=document.getElementById("lgErr"); if(err) err.textContent = reason || "Сессия завершена — войдите снова";
 }
 // обновляет access-токен по refresh-токену; ОДИН общий промис на параллельные 401 (без шторма refresh)
 function cloudDoRefresh(){
@@ -4106,7 +4128,7 @@ async function cloudInit(){
       cloud.session = s;   // cloudDoRefresh берёт refresh-токен из cloud.session и идёт под single-flight (без двойной ротации цепочки)
       try{
         if(await cloudDoRefresh()) s = loadCloudSess();   // внутри свой 15с-таймаут; единый путь ротации
-      }catch(_){ if(cloudOnline()) s = null; }   // онлайн и refresh не прошёл → токен отозван, нужен вход; оффлайн → сессию храним, подтянем при сети
+      }catch(e){ if(cloudOnline()){ s = null; if(e && e.permanent) clearCloudSess(); } }   // онлайн+постоянный сбой (удалён/отозван) → стираем мёртвую сессию, покажем вход; оффлайн → храним, подтянем при сети
     }
     if(s && s.access_token && s.user && s.user.id){
       hideLoginGate();
