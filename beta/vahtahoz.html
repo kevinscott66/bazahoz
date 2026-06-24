@@ -177,7 +177,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v116 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v117 · БЕТА</div>
   </div>
 </div>
 
@@ -2900,7 +2900,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v116 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v117 · тестовый канал</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -3832,8 +3832,11 @@ function activeMember(){
 // право править склад: вне облака (локальный режим) — всегда да; в облаке — по флагу участника.
 // Гард на точках мутации: иначе правка view-only-участника применялась бы локально, не выгружалась
 // (cloudPushNow её молча отбрасывает) и затиралась следующим pull — потеря без обратной связи.
-function canEditStock(){ const m=activeMember(); return !m || !!m.can_edit_stock; }
-function ensureCanEdit(){ if(!canEditStock()){ toast("Нет прав на редактирование склада"); return false; } return true; }
+// работник СНЯТ СО СМЕНЫ на активной облачной базе (его base_members.active=false). Владелец(is_admin) — никогда.
+// Тогда RLS на сервере режет доступ к складу/журналам → делаем базу read-only локально и не долбим сервер бесполезным push (иначе «REST 403»).
+function isOffShift(cid){ cid=cid||activeCloudId(); if(!cid) return false; if(cloud.profile && cloud.profile.is_admin) return false; const m=memberOf(cid); return !!(m && m.active===false); }
+function canEditStock(){ const m=activeMember(); if(!m) return true; return !!m.can_edit_stock && m.active!==false; }
+function ensureCanEdit(){ if(!canEditStock()){ toast(isOffShift()?"Вы сняты со смены — редактирование недоступно":"Нет прав на редактирование склада"); return false; } return true; }
 
 /* ===================== УПРАВЛЕНИЕ УЧАСТНИКАМИ И РОЛЯМИ =====================
    Роль = пресет прав (источник истины для RLS — флаги). Менеджер (can_manage)
@@ -4359,6 +4362,7 @@ async function cloudActivate(cid, attempt){
   attempt = attempt||0;
   if(!cid || !cloud.ready) return;
   if(!cloudOnline()){ setSyncStatus("offline"); return; }
+  if(isOffShift(cid)){ setSyncStatus("error","Вы сняты со смены на этой базе — синхронизация недоступна"); return; }   // нет доступа по RLS → не пушим/пуллим (без «REST 403»)
   if(cloud.busy) return;          // уже идёт синхронизация/диалог конфликта — второй заход НЕ запускаем
   cloud.busy=true;                // ставим ДО await: иначе pull во время открытого диалога конфликта затёр бы локальное
   await ensureSB(); const perm = activeMember();
@@ -4421,6 +4425,7 @@ async function cloudActivate(cid, attempt){
 }
 async function cloudPull(cid){
   if(!cid || !cloudOnline()) return;
+  if(isOffShift(cid)) return;   // снят со смены: RLS вернёт пусто — НЕ затираем локальные данные пустотой
   // защита: не затирать НЕсинхронизированные локальные правки облачными данными
   if(cloud.pushPending || localStorage.getItem(cloudDirtyKey(cid))){ cloudMaybePush(); return; }
   const perm = activeMember();
@@ -4561,7 +4566,7 @@ async function cloudRestDelete(table, ids, tok){
 async function cloudPushNow(){
   const cid = activeCloudId();
   // на раннем выходе снимаем pushPending (dirty остаётся durable-маркером несинхронизации)
-  if(!cid || !cloud.ready || cloud.applying || !cloudOnline()){ cloud.pushPending=false; return; }
+  if(!cid || !cloud.ready || cloud.applying || !cloudOnline() || isOffShift(cid)){ cloud.pushPending=false; return; }   // off-shift: нет доступа по RLS, dirty храним до возврата на смену
   const perm = activeMember(); if(!perm){ cloud.pushPending=false; return; }
   await ensureSB(); cloud.busy=true;
   try{
