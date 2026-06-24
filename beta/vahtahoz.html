@@ -52,6 +52,7 @@
   .badge-red{ background:#dc2626; color:#fff; }
   .badge-yellow{ background:#92400e; color:#fff; }   /* было #b45309 (~4.0:1) → #92400e (~5.9:1) для AA на мелком тексте */
   .badge-green{ background:#16a34a; color:#fff; }
+  .light .badge-green{ background:#15803d; }
   .badge-gray{ background:#374151; color:#e5e7eb; }
   .light .badge-gray{ background:#e5e7eb; color:#374151; }
   .light .badge-gray.opacity-50{ opacity:1; color:#9ca3af; }
@@ -177,7 +178,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v118 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v119 · БЕТА</div>
   </div>
 </div>
 
@@ -303,7 +304,7 @@ const cloud = {
   sb:null, session:null, profile:null, members:[], bases:{},
   channel:null, subscribedBase:null,
   pushTimer:null, pullTimer:null, applying:false, ready:false, busy:false,
-  pushPending:false, retryTimer:null, basesLoaded:false,
+  pushPending:false, retryTimer:null, pullRetryT:null, basesLoaded:false,
   // синк задач (scope по владельцу): отдельные таймеры/канал/флаги
   tasksTimer:null, tasksRetry:null, tasksPullTimer:null, tasksChannel:null, tasksSubUid:null, tasksBusy:false,
 };
@@ -2451,7 +2452,7 @@ function openMove(itemId, batchId){
   let srcQty, srcExpiry, srcLocation;
   if(batchId){
     const b=(it.batches||[]).find(x=>x.id===batchId);
-    if(!b){ toast("Партия изменилась — повтори"); render(); return; }
+    if(!b){ toast("Партия изменилась — повторите"); render(); return; }
     srcQty=roundQty(b.qty||0); srcExpiry=b.expiry||""; srcLocation=b.location||"";
   } else {
     srcQty=totalQtyOf(it); srcExpiry=it.expiry||""; srcLocation=it.location||"";
@@ -2492,7 +2493,7 @@ function doMove(itemId, batchId){
   let srcExpiry, srcLocation, available;
   if(batchId){
     const b0=(it.batches||[]).find(x=>x.id===batchId);
-    if(!b0){ toast("Партия изменилась — повтори"); render(); return; }
+    if(!b0){ toast("Партия изменилась — повторите"); render(); return; }
     srcExpiry=b0.expiry||""; srcLocation=b0.location||""; available=roundQty(b0.qty||0);
   } else {
     srcExpiry=it.expiry||""; srcLocation=it.location||""; available=totalQtyOf(it);
@@ -2508,7 +2509,7 @@ function doMove(itemId, batchId){
   // частичный перенос или партия → переводим в партийную модель и мутируем (резолв источника заново — ссылки могли устареть от pull во время диалога)
   ensureBatchModel(it);
   const b = batchId ? it.batches.find(x=>x.id===batchId) : it.batches[0];
-  if(!b){ toast("Источник изменился — повтори"); render(); return; }
+  if(!b){ toast("Источник изменился — повторите"); render(); return; }
   // списываем с источника
   b.qty = roundQty(b.qty - amount);
   // мерджим в партию назначения с ТЕМ ЖЕ сроком (чтобы не плодить дубли), иначе создаём новую
@@ -2629,7 +2630,7 @@ function openLocationsEdit(){
     </div>
     <div class="space-y-1 max-h-96 overflow-y-auto" id="locList">
       ${list.length===0
-        ? `<div class="text-sm opacity-60">Пусто. Добавь первое место ниже.</div>`
+        ? `<div class="text-sm opacity-60">Пусто. Добавьте первое место ниже.</div>`
         : list.map(name=>{
           const used = locationUsageCount(type, name);
           return `<div class="flex items-center gap-2 text-sm py-1 border-b border-gray-800" data-locname="${esc(name)}">
@@ -2900,7 +2901,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v118 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v119 · тестовый канал</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -2936,7 +2937,7 @@ async function exportXlsx(){
   toast("Подготовка файла…");
   let XLSX;
   try{ XLSX = await ensureXlsx(); }
-  catch(e){ toast("XLSX недоступен — сохраняю CSV"); exportCsv(); return; }
+  catch(e){ toast("Не удалось сделать Excel — сохраняем в простом формате"); exportCsv(); return; }
   const wb = XLSX.utils.book_new();
   const stockRows = sortedStock(state.stock).map(s=>({
     "Тип": typeMeta(s.type).addLabel,
@@ -3489,7 +3490,7 @@ async function wipeAll(){
   }
   // ЛОКАЛЬНАЯ база (без облака) — полный сброс именно этой базы (другие базы не затрагиваются)
   if(!await confirmSheet(`Стереть данные базы «${activeProfileName()}»? Другие базы не затрагиваются.`,{danger:true,yes:"Продолжить"})) return;
-  if(!await confirmSheet("Точно? Экспортируй бэкап сначала!",{danger:true,yes:"Стереть базу"})) return;
+  if(!await confirmSheet("Точно? Сначала сохраните резервную копию.",{danger:true,yes:"Стереть базу"})) return;
   const reseed = await confirmSheet("Загрузить встроенный список продуктов (февраль 2026) заново?",{yes:"Да, загрузить",no:"Нет, пусто"});
   state = structuredClone(defaultState);
   if(!reseed) state.seededAt = new Date().toISOString();
@@ -3528,6 +3529,8 @@ function pomoPause(){
   saveState(); pomoTick();
 }
 function pomoReset(){ state.pomodoro = { phase:"idle", endAt:null, cycles:0 }; saveState(); pomoTick(); }
+// при возврате в приложение пересчитываем таймер сразу: в фоне setTimeout тормозится, время могло «застрять»
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden && state.pomodoro && state.pomodoro.phase!=="idle") pomoTick(); });
 function pomoTick(){
   clearTimeout(pomoTimer);
   const p = state.pomodoro;
@@ -3761,7 +3764,14 @@ async function cloudRest(path, token, opts, _retried){
       const newTok = await cloudDoRefresh().catch(()=>null);
       if(newTok) return await cloudRest(path, newTok, opts, true);
     }
-    if(!r.ok) throw new Error("REST "+r.status+" "+(await r.text().catch(()=>"")).slice(0,120));
+    if(!r.ok){
+      const detail=(await r.text().catch(()=>"")).slice(0,120);
+      // пользователю — по-русски; технические детали (статус/тело) — в e.detail/e.status для логов
+      const msg = r.status>=500 ? "Сервер недоступен, попробуйте позже"
+        : (r.status===401||r.status===403) ? "Нет доступа — войдите снова или обратитесь к начальнику участка"
+        : "Не удалось выполнить запрос ("+r.status+")";
+      const e=new Error(msg); e.status=r.status; e.detail=detail; throw e;
+    }
     if(opts.returnResponse) return r;
     const txt = await r.text();
     return txt ? JSON.parse(txt) : null;
@@ -4296,7 +4306,7 @@ async function cloudOnLogin(session, attempt){
     hideLoginGate();
     try{ localStorage.removeItem("vahtahoz_login_skipped"); }catch(_){}
     renderHeader(); render();
-    if(attempt===0) toast("Вход выполнен, загружаю базы…");
+    if(attempt===0) toast("Вход выполнен, загружаем базы…");
     // НАСТОЙЧИВО грузим базы — НЕ оставляем пользователя с «ничего». Пока онлайн — ретраим с backoff,
     // но НЕ бесконечно: после 8 попыток показываем понятный статус с ручным повтором (тап по ↻).
     if(cloudOnline() && attempt < 8){
@@ -4456,7 +4466,7 @@ async function cloudPull(cid){
     });
     const J=emptyJournals();
     (jr||[]).forEach(r=>{ if(J[r.kind]) J[r.kind].push({ ...(r.data||{}), id:safeId(r.id) }); });
-    for(const k in J) J[k].sort((a,b)=>(b.ts||"").localeCompare(a.ts||""));
+    for(const k in J) J[k] = J[k].sort((a,b)=>(b.ts||"").localeCompare(a.ts||"")).slice(0,500);   // держим локально свежие 500 (как при quota-усечении) — иначе на малой памяти цикл pull↔усечение; облачный архив полный
     state.journals = J;
     // ЗАДАЧИ НЕ ТЯНЕМ из облака — они общие-локальные (одно расписание на все базы),
     // не зависят от базы и не видны начальнику. state.tasks остаётся как есть (из loadGlobalTasks).
@@ -4569,7 +4579,7 @@ async function cloudPushNow(){
   // на раннем выходе снимаем pushPending (dirty остаётся durable-маркером несинхронизации)
   if(!cid || !cloud.ready || cloud.applying || !cloudOnline() || isOffShift(cid) || !canEditStock()){ cloud.pushPending=false; return; }   // off-shift/только-просмотр: нет доступа по RLS, dirty храним (не сбрасываем молча) до прав/возврата на смену
   const perm = activeMember(); if(!perm){ cloud.pushPending=false; return; }
-  await ensureSB(); cloud.busy=true;
+  await ensureSB(); const _outerBusy=cloud.busy; cloud.busy=true;   // re-entrant: если нас вызвал cloudActivate (уже busy), НЕ сбрасываем общий busy в своём finally
   try{
     const tok = cloud.session && cloud.session.access_token;
     if(perm.can_edit_stock){
@@ -4644,7 +4654,7 @@ async function cloudPushNow(){
       cloud.retryTimer = setTimeout(()=>{ if(localStorage.getItem(cloudDirtyKey(activeCloudId()))) cloudPushNow(); }, 6000);
     }
   }
-  finally{ cloud.busy=false; cloud.pushPending=false; }
+  finally{ cloud.busy=_outerBusy; cloud.pushPending=false; }   // восстанавливаем прежнее: вложенный вызов оставит busy=true до finally самого cloudActivate
 }
 // ===================== ЗАДАЧИ В ОБЛАКЕ (scope по владельцу, не по базе) =====================
 // Задачи — ОБЩИЕ для всех баз устройства (одно расписание у хоза). В облаке хранятся
@@ -4817,6 +4827,7 @@ function cloudGateTasks(){
 // перечитать ТОЛЬКО свои членства (active/права) — чтобы возврат/снятие со смены подхватились без перезахода
 async function cloudRefreshMyMembership(){
   try{
+    if(cloud.busy) return;   // не переписываем cloud.members посреди идущего синка (push/pull читают права)
     const tok=cloud.session && cloud.session.access_token; const uid=cloud.profile && cloud.profile.id;
     if(!tok || !uid) return;
     const mem=await cloudRest(`base_members?select=*&user_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:20000});
@@ -4876,6 +4887,9 @@ function cloudCardHtml(){
 applyTheme();
 (function seedFromEmbedded(){
   if(state.seededAt) return;                 // уже сидили (в т.ч. после wipeAll)
+  // облачная база (привязана к облаку): источник истины — облако. Локальный seed после очистки кэша
+  // мог бы запушиться поверх облака до первого pull → НЕ сидим, ждём загрузку из облака.
+  try{ if(typeof activeCloudId==="function" && activeCloudId()){ state.seededAt=new Date().toISOString(); saveState(); return; } }catch(_){}
   if(state.stock && state.stock.length) { state.seededAt = new Date().toISOString(); saveState(); return; }
   const el = document.getElementById("seedData");
   if(!el) return;
