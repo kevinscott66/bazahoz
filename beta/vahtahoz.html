@@ -177,8 +177,8 @@
     <button id="lgGo" class="btn btn-primary" style="width:100%;font-size:16px">Войти</button>
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
-    <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v119 · БЕТА</div>
+    <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v120 · БЕТА</div>
   </div>
 </div>
 
@@ -242,7 +242,6 @@ const defaultState = {
       { id:"k5", text:"Разморозить морозилку (при необходимости)", done:false }
     ]
   },
-  pomodoro: { phase:"idle", endAt:null, cycles:0 },
   journals: emptyJournals(),
   locations: {
     product: ["Склад А","Склад Б","Холодильник","Ларь","Склад В","Кухня"],
@@ -261,7 +260,6 @@ function loadState(){
     const merged = { ...base, ...s };
     merged.categories = { ...base.categories, ...(s.categories||{}) };
     merged.checklists = { ...base.checklists, ...(s.checklists||{}) };
-    merged.pomodoro = { ...base.pomodoro, ...(s.pomodoro||{}) };
     merged.journals = { ...base.journals, ...(s.journals||{}) };
     return merged;
   }catch(e){ return structuredClone(defaultState); }
@@ -1088,6 +1086,7 @@ function renderHeader(){
 }
 
 /* ---------- Dashboard ---------- */
+function dismissOnboarding(){ try{ localStorage.setItem("vahtahoz_onboarded","1"); }catch(_){} render(); }
 function renderDashboard(){
   const v = document.querySelector('[data-view="dashboard"]');
   const today = todayStr();
@@ -1105,7 +1104,18 @@ function renderDashboard(){
   const showTasks = !isRestrictedUser();
   const canEditTasks = !_m || _m.can_edit_tasks;
 
+  const showOnboarding = !state.stock.length && !(state.tasks||[]).length && !localStorage.getItem("vahtahoz_onboarded");
   v.innerHTML = `
+    ${showOnboarding?`<div class="card" style="border:1px solid rgba(37,99,235,.45)">
+      <div class="font-bold mb-1">👋 С чего начать</div>
+      <div class="text-sm opacity-80" style="line-height:1.6">
+        1. Откройте <b>«📦 Склад»</b> внизу и нажмите <b>＋</b> — добавьте первую позицию (название, количество, срок).<br>
+        2. Приход и расход отмечайте кнопками <b>＋ / −</b> на карточке.<br>
+        ${showTasks?`3. На вкладке <b>«✅ Задачи»</b> ведите дела по смене.<br>`:""}
+        Работает и без интернета — данные сохраняются на телефоне.
+      </div>
+      <button class="btn btn-ghost w-full mt-2 text-sm" onclick="dismissOnboarding()">Понятно</button>
+    </div>`:""}
     <div class="grid grid-cols-2 gap-3">
       ${showTasks?`<button class="card tap text-left" onclick="nav('tasks')">
         <div class="text-3xl">✅</div>
@@ -2837,18 +2847,6 @@ function renderMore(){
       <div class="text-xs opacity-70 mt-2">Добавляй, переименовывай и удаляй места хранения и категории товаров. То же доступно в разделе «Склад».</div>
     </div>`:""}
 
-    ${restricted?"":`<div class="card">
-      <div class="font-bold mb-2">🍅 Pomodoro</div>
-      <div id="pomo" class="text-center">
-        <div class="text-5xl font-bold" id="pomoTime">25:00</div>
-        <div class="text-sm opacity-70 mt-1" id="pomoPhase">Готов начать</div>
-        <div class="flex gap-2 mt-3">
-          <button class="btn btn-primary flex-1" onclick="pomoStart()">Старт</button>
-          <button class="btn btn-ghost flex-1" onclick="pomoPause()">Пауза</button>
-          <button class="btn btn-danger flex-1" onclick="pomoReset()">Сброс</button>
-        </div>
-      </div>
-    </div>`}
 
     <div class="card">
       <div class="font-bold mb-2">💾 Бэкап</div>
@@ -2901,9 +2899,8 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v119 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v120 · тестовый канал</div>
   `;
-  if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
 
 /* ---------- Excel / CSV экспорт ---------- */
@@ -3433,7 +3430,6 @@ function importData(ev){
         merged.journals = obj.journals || emptyJournals();
         merged.checklists = obj.checklists || merged.checklists;
         merged.theme = obj.theme || base.theme;
-        merged.pomodoro = obj.pomodoro || merged.pomodoro;
       } else {
         // merge: объединяем по id, без дублей
         const mergeById = (a=[], b=[]) => {
@@ -3499,68 +3495,13 @@ async function wipeAll(){
 }
 function toggleTheme(){ state.theme = state.theme==="light"?"dark":"light"; saveState(); applyTheme(); render(); }
 
-/* ---------- Pomodoro ---------- */
-let pomoTimer = null;
+/* ---------- Уведомления (срок годности и т.п.) ---------- */
 function notify(title, body){
   try{
     if("Notification" in window && Notification.permission==="granted"){
-      new Notification(title, { body, icon: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%23111827'/><text x='32' y='44' font-size='36' text-anchor='middle'>🍅</text></svg>" });
+      new Notification(title, { body, icon: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%23111827'/><text x='32' y='44' font-size='36' text-anchor='middle'>📦</text></svg>" });
     }
   }catch(e){}
-}
-function pomoStart(){
-  if(state.pomodoro.phase==="idle" || !state.pomodoro.endAt || state.pomodoro.endAt<=Date.now()){
-    state.pomodoro.phase = "work";
-    state.pomodoro.endAt = Date.now() + 25*60*1000;
-  } else if(state.pomodoro.phase==="paused"){
-    state.pomodoro.endAt = Date.now() + (state.pomodoro.remaining||0);
-    state.pomodoro.phase = state.pomodoro.prevPhase || "work";
-  }
-  if("Notification" in window && Notification.permission==="default"){
-    Notification.requestPermission().catch(()=>{});
-  }
-  saveState(); pomoTick();
-}
-function pomoPause(){
-  if(!["work","break"].includes(state.pomodoro.phase)) return;
-  state.pomodoro.remaining = Math.max(0, state.pomodoro.endAt - Date.now());
-  state.pomodoro.prevPhase = state.pomodoro.phase;
-  state.pomodoro.phase = "paused";
-  saveState(); pomoTick();
-}
-function pomoReset(){ state.pomodoro = { phase:"idle", endAt:null, cycles:0 }; saveState(); pomoTick(); }
-// при возврате в приложение пересчитываем таймер сразу: в фоне setTimeout тормозится, время могло «застрять»
-document.addEventListener("visibilitychange", ()=>{ if(!document.hidden && state.pomodoro && state.pomodoro.phase!=="idle") pomoTick(); });
-function pomoTick(){
-  clearTimeout(pomoTimer);
-  const p = state.pomodoro;
-  let ms = 0, label = "Готов начать";
-  if(p.phase==="work" || p.phase==="break"){
-    ms = Math.max(0, p.endAt - Date.now());
-    label = p.phase==="work"?"Работа":"Отдых";
-    if(ms===0){
-      if(p.phase==="work"){
-        p.phase="break"; p.endAt=Date.now()+5*60*1000; p.cycles++;
-        toast("Перерыв!"); notify("🍅 Pomodoro", "Работа окончена — перерыв 5 мин");
-        try{ navigator.vibrate?.(500); }catch(e){}
-      } else {
-        p.phase="idle"; p.endAt=null;
-        toast("Готово!"); notify("🍅 Pomodoro", "Перерыв окончен — новая сессия?");
-        try{ navigator.vibrate?.([300,200,300]); }catch(e){}
-      }
-      saveState();
-    }
-  } else if(p.phase==="paused"){
-    ms = p.remaining||0; label="Пауза";
-  }
-  const el = document.getElementById("pomoTime");
-  const ph = document.getElementById("pomoPhase");
-  if(el && ph){
-    const m = Math.floor(ms/60000), s = Math.floor((ms%60000)/1000);
-    el.textContent = (p.phase==="idle"?"25:00":`${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`);
-    ph.textContent = label + (p.cycles?` · циклов: ${p.cycles}`:"");
-  }
-  if(["work","break"].includes(p.phase)) pomoTimer = setTimeout(pomoTick, 250);
 }
 
 /* ---------- Expiry notice on open ---------- */
@@ -3720,7 +3661,7 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   openMove,doMove,
   openMembersSheet,openMemberRole,setMemberRole,memberRotate,memberRemove,openAddMember,openResetPwd,
   openShift,openHandover,doHandover,
-  pomoStart,pomoPause,pomoReset,closeSheet,writeoffExpired,openExpiredView,
+  closeSheet,writeoffExpired,openExpiredView,dismissOnboarding,
   cloudLoginPrompt,cloudLogout,cloudSyncNow});
 
 /* ============================================================
@@ -4925,7 +4866,6 @@ nav("dashboard");
     if(!localStorage.getItem("vahtahoz_sess")) showLoginGate();   // нет своей сессии → гейт (тот же ключ, что и в cloudInit)
   }catch(e){}
 })();
-pomoTick();  // чтобы таймер Pomodoro работал в фоне независимо от вкладки
 setTimeout(expiryNoticeOnOpen, 400);
 // восстановление облачной сессии (если был вход) — тихо, не блокирует загрузку
 setTimeout(()=>{ try{ cloudInit(); }catch(e){ console.warn(e); } }, 50);
