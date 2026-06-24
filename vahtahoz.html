@@ -177,7 +177,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.5;margin-top:4px;line-height:1.35">Без входа — данные только на этом телефоне,<br>без синхронизации с другими устройствами</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v112</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v113</div>
   </div>
 </div>
 
@@ -200,6 +200,7 @@ const STORE_KEY = "vahtahoz:v1";
 const JOURNAL_KEYS = ["receipt","issue","writeoff","order"];  // виды журналов движений
 // onclick выбора чипа: снять active со всех соседних чипов и подсветить нажатый (был продублирован 7×)
 const CHIP_PICK = "this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');";
+const CHIP_TOGGLE = "this.classList.toggle('active');";   // множественный выбор (фильтр по нескольким категориям)
 // бейдж количества партии (повторялся дословно в stockRow и openStockEdit)
 const batchQtyBadge = (b, it) => `<span class="badge badge-green">${fmtQty(b.qty)} ${esc(it.unit||"")}</span>`;
 // свежий пустой набор журналов (каждый вызов — новый объект, безопасно для присваивания в state)
@@ -2225,8 +2226,9 @@ function openStockEdit(id, typeDefault){
             ${b.location?`<span class="badge badge-gray">📍 ${esc(b.location)}</span>`:`<span class="badge badge-gray opacity-50">без места</span>`}
             ${b.expiry?`<span class="badge badge-gray">⏰ ${fmtDate(b.expiry)}</span>`:`<span class="badge badge-gray opacity-50">без срока</span>`}
             <span class="flex-1"></span>
-            <button class="btn btn-ghost text-xs" onclick="openBatchEdit('${id}','${b.id}')" aria-label="Редактировать партию">✏️</button>
-            <button class="btn btn-ghost text-xs" onclick="deleteBatch('${id}','${b.id}')" aria-label="Удалить партию">🗑</button>
+            <button class="btn btn-ghost text-xs px-2" onclick="openMove('${id}','${b.id}')" aria-label="Перенести партию на другое место">🔀</button>
+            <button class="btn btn-ghost text-xs px-2" onclick="openBatchEdit('${id}','${b.id}')" aria-label="Редактировать партию">✏️</button>
+            <button class="btn btn-ghost text-xs px-2" onclick="deleteBatch('${id}','${b.id}')" aria-label="Удалить партию">🗑</button>
           </div>
         `).join("")}
       </div>
@@ -2234,7 +2236,10 @@ function openStockEdit(id, typeDefault){
   openSheet(`
     <div class="flex items-center justify-between gap-2 mb-3">
       <div class="font-bold text-xl">${id?"Редактировать":"Новый"} ${esc(typeMeta(tk).addLabel.toLowerCase())}</div>
-      ${id?`<button class="btn btn-warn" onclick="openBatchAdd('${id}')">➕ Партия</button>`:""}
+      ${id?`<div class="flex gap-2 shrink-0">
+        ${(!hasBatches(it) && roundQty(it.qty||0)>0)?`<button class="btn btn-ghost" onclick="openMove('${id}','')" aria-label="Перенести на другое место">🔀</button>`:""}
+        <button class="btn btn-warn" onclick="openBatchAdd('${id}')">➕ Партия</button>
+      </div>`:""}
     </div>
     <div class="space-y-3">
       <input class="input" id="sn" placeholder="Название" value="${esc(it.name)}" autofocus />
@@ -2429,6 +2434,92 @@ async function deleteBatch(itemId, batchId){
   logOp("BATCH_DEL", `${it.name}: партия ${fmtQty(b.qty)} ${it.unit||""}${orphans?` (отвязано ${orphans} записей)`:""}`);
   saveState(); render();
   toast("Партия удалена");
+}
+
+/* ---------- Перенос на другое место хранения (часть/целиком, по партии со своим сроком) ---------- */
+// гарантируем партийную модель: legacy-остаток (qty/expiry/location) превращаем в одну партию.
+function ensureBatchModel(it){
+  if(hasBatches(it)) return;
+  const q = roundQty(it.qty||0);
+  it.batches = q>0 ? [{ id:uid(), qty:q, expiry:it.expiry||"", location:it.location||"", note:"", createdAt:it.createdAt||new Date().toISOString() }] : [];
+}
+// диалог переноса. batchId="" → переносим позицию целиком (legacy/одна партия); иначе конкретную партию со своим сроком.
+function openMove(itemId, batchId){
+  if(!ensureCanEdit()) return;
+  const it = state.stock.find(s=>s.id===itemId);
+  if(!it){ toast("Позиция изменилась на другом устройстве"); render(); return; }
+  let srcQty, srcExpiry, srcLocation;
+  if(batchId){
+    const b=(it.batches||[]).find(x=>x.id===batchId);
+    if(!b){ toast("Партия изменилась — повтори"); render(); return; }
+    srcQty=roundQty(b.qty||0); srcExpiry=b.expiry||""; srcLocation=b.location||"";
+  } else {
+    srcQty=totalQtyOf(it); srcExpiry=it.expiry||""; srcLocation=it.location||"";
+  }
+  if(!(srcQty>0)){ toast("Нечего переносить — остаток 0"); return; }
+  const LOCS = batchLocs(it).filter(l=>l && l!==srcLocation);   // куда переносим (исключаем текущее место)
+  const q = fmtQty(srcQty);
+  openSheet(`
+    <div class="space-y-3">
+      <div class="font-bold text-xl">Перенести на другое место</div>
+      <div class="text-sm opacity-70">«${esc(it.name)}»${srcExpiry?` · срок ${fmtDate(srcExpiry)}`:""}${srcLocation?` · из «${esc(srcLocation)}»`:" · место не указано"}. Доступно: ${q} ${esc(it.unit||"")}.</div>
+      <div>
+        <div class="text-sm opacity-70 mb-1">Сколько перенести (${esc(it.unit||"")})</div>
+        <input class="input" id="mvq" type="number" inputmode="decimal" value="${q}" />
+        <button class="btn btn-ghost w-full mt-1 text-sm" onclick="document.getElementById('mvq').value='${q}'">Перенести всё (${q})</button>
+      </div>
+      <div>
+        <div class="text-sm opacity-70 mb-1">Куда (место хранения)</div>
+        <div class="flex flex-wrap gap-2" id="mvLocs">${LOCS.length?LOCS.map(l=>`<button class="chip" data-loc="${esc(l)}" onclick="${CHIP_PICK}">${esc(l)}</button>`).join(""):'<span class="text-xs opacity-60">Других мест нет — добавьте место в «Места и категории»</span>'}</div>
+      </div>
+      <div class="flex gap-2 pt-2">
+        <button class="btn btn-ghost flex-1" data-close>Отмена</button>
+        <button class="btn btn-primary flex-1" onclick="doMove('${itemId}','${batchId||""}')">Перенести</button>
+      </div>
+    </div>
+  `);
+}
+function doMove(itemId, batchId){
+  if(!ensureCanEdit()) return;
+  const body = document.getElementById("sheetBody");
+  const it = state.stock.find(s=>s.id===itemId);
+  if(!it){ closeSheet(); return; }
+  const dest = body.querySelector(".chip.active[data-loc]")?.dataset.loc || "";
+  if(!dest){ toast("Выберите место назначения"); return; }
+  const amount = roundQty(parseNum(body.querySelector("#mvq").value));
+  if(!(amount>0)){ toast("Количество должно быть > 0"); return; }
+  // источник и доступное — резолвим БЕЗ конвертации, чтобы при отказе legacy-позиция не стала зря «партийной»
+  let srcExpiry, srcLocation, available;
+  if(batchId){
+    const b0=(it.batches||[]).find(x=>x.id===batchId);
+    if(!b0){ toast("Партия изменилась — повтори"); render(); return; }
+    srcExpiry=b0.expiry||""; srcLocation=b0.location||""; available=roundQty(b0.qty||0);
+  } else {
+    srcExpiry=it.expiry||""; srcLocation=it.location||""; available=totalQtyOf(it);
+  }
+  if(dest===srcLocation){ toast("Это то же место хранения"); return; }
+  if(amount>available){ toast(`Доступно только ${fmtQty(available)} ${it.unit||""}`); return; }
+  // простую (бес-партийную) позицию целиком — просто меняем место, не плодя «партийность»
+  if(!batchId && !hasBatches(it) && amount>=available){
+    it.location=dest; it.updatedAt=new Date().toISOString();
+    logOp("MOVE", `${it.name}: ${fmtQty(amount)} ${it.unit||""} «${srcLocation||"—"}» → «${dest}»${srcExpiry?` (срок ${fmtDate(srcExpiry)})`:""}`);
+    saveState(); closeSheet(); render(); toast(`Перенесено в «${dest}»`); return;
+  }
+  // частичный перенос или партия → переводим в партийную модель и мутируем (резолв источника заново — ссылки могли устареть от pull во время диалога)
+  ensureBatchModel(it);
+  const b = batchId ? it.batches.find(x=>x.id===batchId) : it.batches[0];
+  if(!b){ toast("Источник изменился — повтори"); render(); return; }
+  // списываем с источника
+  b.qty = roundQty(b.qty - amount);
+  // мерджим в партию назначения с ТЕМ ЖЕ сроком (чтобы не плодить дубли), иначе создаём новую
+  let dst = it.batches.find(x=>x!==b && (x.location||"")===dest && (x.expiry||"")===srcExpiry);
+  if(dst) dst.qty = roundQty(dst.qty + amount);
+  else it.batches.push({ id:uid(), qty:amount, expiry:srcExpiry, location:dest, note:"", createdAt:new Date().toISOString() });
+  if(roundQty(b.qty)<=0) it.batches = it.batches.filter(x=>x.id!==b.id);
+  finalizeBatchMutation(it);   // пересчёт агрегатов; если партий не осталось — вернёт legacy-вид
+  logOp("MOVE", `${it.name}: ${fmtQty(amount)} ${it.unit||""} «${srcLocation||"—"}» → «${dest}»${srcExpiry?` (срок ${fmtDate(srcExpiry)})`:""}`);
+  saveState(); closeSheet(); render();
+  toast(`Перенесено в «${dest}»`);
 }
 
 async function deleteStock(id){
@@ -2803,7 +2894,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v112</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v113</div>
   `;
   if(!restricted) pomoTick();   // у начальника блок Pomodoro скрыт — таймер не дёргаем
 }
@@ -2952,7 +3043,7 @@ function _hasAnyExpiry(it){ return (hasBatches(it) ? batchesOf(it).map(b=>b.expi
 function _passExportFilter(s, f){
   if(f.type!=="all" && s.type!==f.type) return false;
   if(f.loc!=="all"  && !locationsOf(s).includes(f.loc)) return false;
-  if(f.cat!=="all"  && (s.category||"")!==f.cat) return false;
+  if(f.cats && f.cats.length && !f.cats.includes(s.category||"")) return false;
   const tq = totalQtyOf(s);
   if(f.stock==="in"   && !(tq>0)) return false;
   if(f.stock==="zero" && tq>0)    return false;
@@ -2971,7 +3062,7 @@ function _filterTag(f){
   const p=[];
   if(f.loc!=="all")  p.push(f.loc);
   if(f.type!=="all") p.push(typeMeta(f.type).short);
-  if(f.cat!=="all")  p.push(f.cat);
+  if(f.cats && f.cats.length) p.push(f.cats.length<=2 ? f.cats.join(",") : `${f.cats.length} катег.`);
   if(f.exp==="expired") p.push("просрочка");
   else if(f.exp==="soon")  p.push("скоро");
   else if(f.exp==="valid") p.push("без просрочки");
@@ -2991,7 +3082,8 @@ function exportXlsxFiltered(){
     <div class="font-bold text-lg mb-3">📊 Выгрузка в Excel по фильтрам</div>
     ${sel("_fType","Тип склада", opt("all","Все")+STOCK_TYPES.map(t=>opt(t.key,t.label)).join(""))}
     ${sel("_fLoc","Место хранения", opt("all","Все места")+locs.map(l=>opt(l,l)).join(""))}
-    ${sel("_fCat","Категория", opt("all","Все категории")+cats.map(c=>opt(c,c)).join(""))}
+    <label class="block text-sm mb-1 opacity-80">Категории (можно несколько; пусто = все)</label>
+    <div class="flex flex-wrap gap-2 mb-3" id="_fCats">${cats.length?cats.map(c=>`<button class="chip" data-cat="${esc(c)}" onclick="${CHIP_TOGGLE}">${esc(c)}</button>`).join(""):'<span class="text-xs opacity-60">нет категорий</span>'}</div>
     ${sel("_fExp","Срок годности", opt("all","Все сроки")+opt("expired","Только просрочка")+opt("soon","Скоро (≤14 дней)")+opt("valid","Без просрочки")+opt("noexp","Без срока"))}
     ${sel("_fStock","Наличие", opt("all","Любой остаток")+opt("in","Только в наличии")+opt("zero","Только нулевые")+opt("low","Ниже минимума"))}
     <div class="flex gap-2 mt-2">
@@ -3005,7 +3097,8 @@ function exportXlsxFiltered(){
 // сборка и выгрузка отфильтрованного среза
 async function runFilteredXlsx(){
   const val = id=>{ const e=document.getElementById(id); return e?e.value:"all"; };
-  const f = { type:val("_fType"), loc:val("_fLoc"), cat:val("_fCat"), exp:val("_fExp"), stock:val("_fStock") };
+  const cats = [...document.querySelectorAll("#_fCats .chip.active[data-cat]")].map(x=>x.dataset.cat);
+  const f = { type:val("_fType"), loc:val("_fLoc"), cats, exp:val("_fExp"), stock:val("_fStock") };
   const list = sortedStock(state.stock).filter(s=>_passExportFilter(s,f));
   if(!list.length){ toast("Под фильтр ничего не попало"); return; }
   let XLSX;
@@ -3615,6 +3708,7 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   openProfilesSheet,switchProfile,addProfile,renameProfile,deleteProfile,exportAllProfiles,
   toggleCheck,addCheck,resetChecklist,
   exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,clearLog,wipeAll,toggleTheme,
+  openMove,doMove,
   pomoStart,pomoPause,pomoReset,closeSheet,writeoffExpired,openExpiredView,
   cloudLoginPrompt,cloudLogout,cloudSyncNow});
 
