@@ -178,7 +178,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v123 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v124 · БЕТА</div>
   </div>
 </div>
 
@@ -809,23 +809,13 @@ for(const t of state.tasks){
 /* нормализация существующих количеств: схлопывает накопленные float-эпсилоны
    (91.54999999999998 → 91.55, 12.620000000000001 → 12.62) и заполняет пустую категорию у продуктов */
 for(const s of state.stock){
-  if(s.qty!=="" && s.qty!=null) s.qty = roundQty(s.qty);
   if(s.type==="product" && !s.category){
     s.category = (state.categories.product||[]).includes("Прочие продукты") ? "Прочие продукты" : "";
   }
-  // нормализация batches: id, qty, удаляем мусор; если массив пустой — оставляем legacy режим
-  if(Array.isArray(s.batches)){
-    s.batches = s.batches.filter(b => b && typeof b==="object").map(b => ({
-      id: safeId(b.id),
-      qty: roundQty(b.qty||0),
-      expiry: typeof b.expiry==="string" ? b.expiry : "",
-      location: typeof b.location==="string" ? b.location : "",
-      note: typeof b.note==="string" ? b.note : "",
-      createdAt: typeof b.createdAt==="string" ? b.createdAt : new Date().toISOString(),
-    }));
-    if(s.batches.length===0) delete s.batches;
-    else syncItemFromBatches(s);
-  }
+  // ЕДИНАЯ строгая чистка (как при импорте/загрузке из облака): type-whitelist (иначе битый type из старого
+  // слота → XSS/краш рендера), float-эпсилоны qty, валидация срока, выкидывание зомби-партий qty≤0
+  // (иначе фантомные «место/срок» при нулевом остатке), пересчёт агрегатов из партий.
+  normalizeStockItem(s);
 }
 
 /* МИГРАЦИЯ ЛЕГАСИ: схлопывание "X (до DATE)"-дубликатов в одну карточку с массивом batches.
@@ -2844,7 +2834,7 @@ function renderMore(){
         <button class="btn btn-ghost" onclick="openLocationsEdit()">📍 Места хранения</button>
         <button class="btn btn-ghost" onclick="openCategoriesEdit()">⚙️ Категории</button>
       </div>
-      <div class="text-xs opacity-70 mt-2">Добавляй, переименовывай и удаляй места хранения и категории товаров. То же доступно в разделе «Склад».</div>
+      <div class="text-xs opacity-70 mt-2">Добавляйте, переименовывайте и удаляйте места хранения и категории товаров. То же доступно в разделе «Склад».</div>
     </div>`:""}
 
 
@@ -2858,7 +2848,7 @@ function renderMore(){
         </label>
       </div>
       ${restricted?"":`<button class="btn btn-success w-full mt-2" onclick="exportAllProfiles()">🗄 Резервная копия ВСЕХ баз</button>`}
-      <div class="text-xs opacity-70 mt-2">${restricted?"«Экспорт базы» сохраняет вашу базу в файл. Сохраняй регулярно!":"«Экспорт базы» — только текущая. «Все базы» — один файл со всеми профилями (главный бэкап). Импорт принимает оба формата. Сохраняй регулярно — пригодится, если телефон сбросится!"}</div>
+      <div class="text-xs opacity-70 mt-2">${restricted?"«Экспорт базы» сохраняет вашу базу в файл. Сохраняйте регулярно!":"«Экспорт базы» — только текущая. «Все базы» — один файл со всеми профилями (главный бэкап). Импорт принимает оба формата. Сохраняйте регулярно — пригодится, если телефон сбросится!"}</div>
     </div>
 
     ${(profiles.list.length>1 && !restricted) ? `<div class="card">
@@ -2899,7 +2889,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v123 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v124 · тестовый канал</div>
   `;
 }
 
@@ -3755,9 +3745,13 @@ async function cloudRefresh(refresh_token){
 async function cloudSessionExpired(reason){
   if(!cloud.session && !cloud.ready) return;   // уже разлогинены — не дублируем
   cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.ready=false; cloud.basesLoaded=false;
+  cloud.bases={};                              // имена баз протухшей сессии не должны висеть в UI/cloudActivate
+  cloud._basesLoading=false; cloud.busy=false; cloud.pushPending=false; cloud.applying=false;   // иначе повторный вход залипнет (cloudOnLogin рано выходит при _basesLoading)
   try{ if(cloud.channel && cloud.sb) cloud.sb.removeChannel(cloud.channel); }catch(_){}
-  cloud.channel=null; cloud.subscribedBase=null;
+  try{ if(cloud.tasksChannel && cloud.sb) cloud.sb.removeChannel(cloud.tasksChannel); }catch(_){}
+  cloud.channel=null; cloud.subscribedBase=null; cloud.tasksChannel=null; cloud.tasksSubUid=null; cloud.tasksBusy=false;   // сброс задач: иначе после повторного входа realtime молчит
   clearTimeout(cloud.pushTimer); clearTimeout(cloud.pullTimer); clearTimeout(cloud.retryTimer); clearTimeout(cloud.pullRetryT); clearTimeout(cloud._basesRetryT);
+  clearTimeout(cloud.tasksTimer); clearTimeout(cloud.tasksRetry); clearTimeout(cloud.tasksPullTimer);   // не дёргаем задачи на мёртвом токене
   try{ if(cloud.sb) cloud.sb.auth.signOut().catch(()=>{}); }catch(_){}   // чистим supabase-js, чтобы он не дёргал мёртвый токен через setSession
   clearCloudSess();
   setSyncStatus("error", reason||"Вход устарел — войдите снова");
@@ -4354,9 +4348,9 @@ async function cloudActivate(cid, attempt){
   if(isOffShift(cid)){ setSyncStatus("error","Вы сняты со смены на этой базе — синхронизация недоступна"); return; }   // нет доступа по RLS → не пушим/пуллим (без «REST 403»)
   if(cloud.busy) return;          // уже идёт синхронизация/диалог конфликта — второй заход НЕ запускаем
   cloud.busy=true;                // ставим ДО await: иначе pull во время открытого диалога конфликта затёр бы локальное
-  await ensureSB(); const perm = activeMember();
-  setSyncStatus("syncing","Проверка облака…");
   try{
+    await ensureSB(); const perm = activeMember();   // ВНУТРИ try: сбой ensureSB не должен оставить cloud.busy=true навсегда (иначе весь синк залипает до перезапуска)
+    setSyncStatus("syncing","Проверка облака…");
     const dirty = localStorage.getItem(cloudDirtyKey(cid));
     // count через прямой fetch (не sb.from — он висел в standalone). cloudRest кинет исключение при ошибке.
     const tok = cloud.session && cloud.session.access_token;
@@ -4374,8 +4368,8 @@ async function cloudActivate(cid, attempt){
       cloud._conflictAsked[cid] = true;
       const choice = await chooseSheet(
         `В базе «${cloud.bases[cid]||"облачная"}» есть данные и на этом телефоне, и в общей базе бригады. Какие оставить главными?`,
-        [ { label:"Из общей базы (мои с телефона сохраню отдельной копией)", value:"cloud", color:"btn-primary" },
-          { label:"Мои с телефона (заменю ими общую базу бригады)", value:"local", color:"btn-ghost" } ]);
+        [ { label:"Оставить общую базу бригады (данные с телефона сохраним копией)", value:"cloud", color:"btn-primary" },
+          { label:"Оставить данные с телефона (они заменят общую базу бригады)", value:"local", color:"btn-ghost" } ]);
       if(choice==="local"){
         saveSyncSig(cid,"stock",{}); saveSyncSig(cid,"jr",{});   // локальное — источник: полная выгрузка поверх облака
         try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){}   // dirty ДО push: при сбое выгрузки pull не затрёт выбранное юзером локальное (как в ветке ниже)
@@ -4390,7 +4384,7 @@ async function cloudActivate(cid, attempt){
           localStorage.setItem(slotKey(bkId), raw);
           profiles.list.push({ id:bkId, name: cleanName40((cloud.bases[cid]||"База")+" (локальная копия)") });
           saveProfiles(profiles);
-          toast("Локальные данные сохранены копией");
+          toast("Данные с телефона сохранены копией");
         }
       }catch(_){}
       await cloudPull(cid);
@@ -4400,7 +4394,7 @@ async function cloudActivate(cid, attempt){
       // локальное — источник (первый раз или были оффлайн-правки).
       // dirty снимает САМ cloudPushNow и ТОЛЬКО при успехе — здесь снимать нельзя,
       // иначе при сбое выгрузки маркер «не синхронизировано» потеряется и pull затрёт правки.
-      if(cloudEmpty){ saveSyncSig(cid,"stock",{}); saveSyncSig(cid,"jr",{}); }   // облако пусто → ПОЛНАЯ выгрузка (дельта против пустого снимка = всё)
+      if(cloudEmpty){ saveSyncSig(cid,"stock",{}); saveSyncSig(cid,"jr",{}); try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){} }   // облако пусто → ПОЛНАЯ выгрузка; dirty ДО push: при сбое сети маркер «не синхронизировано» не потеряется (push повторится)
       await cloudPushNow();
     } else {
       await cloudPull(cid);
