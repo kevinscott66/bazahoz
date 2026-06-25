@@ -178,7 +178,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v122 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v123 · БЕТА</div>
   </div>
 </div>
 
@@ -302,7 +302,7 @@ const cloud = {
   sb:null, session:null, profile:null, members:[], bases:{},
   channel:null, subscribedBase:null,
   pushTimer:null, pullTimer:null, applying:false, ready:false, busy:false,
-  pushPending:false, retryTimer:null, pullRetryT:null, basesLoaded:false,
+  pushPending:false, retryTimer:null, pullRetryT:null, baseMembers:[], basesLoaded:false,
   // синк задач (scope по владельцу): отдельные таймеры/канал/флаги
   tasksTimer:null, tasksRetry:null, tasksPullTimer:null, tasksChannel:null, tasksSubUid:null, tasksBusy:false,
 };
@@ -2899,7 +2899,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v122 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v123 · тестовый канал</div>
   `;
 }
 
@@ -3705,7 +3705,7 @@ async function cloudRest(path, token, opts, _retried){
       let perm=false;
       const newTok = await cloudDoRefresh().catch(e=>{ if(e && e.permanent) perm=true; return null; });
       if(newTok) return await cloudRest(path, newTok, opts, true);
-      if(perm){ cloudSessionExpired("Доступ к аккаунту закрыт. Войдите снова"); }   // аккаунт удалён/убран из базы/сменили пароль → не зацикливаемся, просим вход
+      if(perm){ cloudSessionExpired("Вход больше не действует — войдите снова"); }   // аккаунт удалён/убран из базы/сменили пароль → не зацикливаемся, просим вход
     }
     if(!r.ok){
       const detail=(await r.text().catch(()=>"")).slice(0,120);
@@ -3760,10 +3760,10 @@ async function cloudSessionExpired(reason){
   clearTimeout(cloud.pushTimer); clearTimeout(cloud.pullTimer); clearTimeout(cloud.retryTimer); clearTimeout(cloud.pullRetryT); clearTimeout(cloud._basesRetryT);
   try{ if(cloud.sb) cloud.sb.auth.signOut().catch(()=>{}); }catch(_){}   // чистим supabase-js, чтобы он не дёргал мёртвый токен через setSession
   clearCloudSess();
-  setSyncStatus("error", reason||"Сессия завершена — войдите снова");
+  setSyncStatus("error", reason||"Вход устарел — войдите снова");
   try{ renderHeader(); render(); }catch(_){}
   showLoginGate();
-  const err=document.getElementById("lgErr"); if(err) err.textContent = reason || "Сессия завершена — войдите снова";
+  const err=document.getElementById("lgErr"); if(err) err.textContent = reason || "Вход устарел — войдите снова";
 }
 // обновляет access-токен по refresh-токену; ОДИН общий промис на параллельные 401 (без шторма refresh)
 function cloudDoRefresh(){
@@ -3771,7 +3771,7 @@ function cloudDoRefresh(){
   cloud._refreshing = (async()=>{
     try{
       const rt = cloud.session && cloud.session.refresh_token;
-      if(!rt) throw new Error("Сессия истекла — войдите снова");
+      if(!rt) throw new Error("Вход устарел — войдите снова");
       const d = await cloudRefresh(rt);
       saveCloudSess(d); cloud.session = loadCloudSess();
       // отдаём свежий токен и supabase-клиенту (realtime/auth) — он сам НЕ рефрешит (autoRefreshToken=false),
@@ -4084,9 +4084,9 @@ function setSyncStatus(kind, text){
   if(kind==="hidden" || !cloud.ready || !activeCloudId()){ bar.classList.add("hidden"); bar.classList.remove("busy"); chip.classList.add("hidden"); return; }
   const M = {
     syncing:{ bg:"#2563eb", icon:"↻", chip:"↻", txt:text||"Сохранение в облако…" },
-    offline:{ bg:"#b45309", icon:"🔴", chip:"⏳", txt:text||"Нет интернета — данные уйдут в облако, когда он появится" },
+    offline:{ bg:"#92400e", icon:"🔴", chip:"⏳", txt:text||"Нет интернета — данные уйдут в облако, когда он появится" },   /* #b45309 (~4.0:1) → #92400e (~5.9:1): AA для мелкого (12px) текста syncBar, как у .badge-yellow */
     synced: { bg:"#15803d", icon:"✓", chip:"✓", txt:text||"Сохранено в облаке" },
-    error:  { bg:"#b91c1c", icon:"⚠", chip:"⚠", txt:text||"Не удалось сохранить — пробую снова" },
+    error:  { bg:"#b91c1c", icon:"⚠", chip:"⚠", txt:text||"Не удалось сохранить — пробуем снова" },
   };
   const m = M[kind] || M.syncing;
   bar.style.background = m.bg; bar.textContent = `${m.icon} ${m.txt}`;
@@ -4114,9 +4114,13 @@ async function cloudInit(){
       }catch(e){ console.warn("online-reload", e); }
       return;
     }
-    if(cloud.ready && activeCloudId()){ await cloudRefreshMyMembership(); setSyncStatus("syncing","Сеть появилась — синхронизация…"); cloudActivate(activeCloudId()); }
-    // задачи: до-выгружаем отложенные правки и пере-синкаем (не зависят от базы)
-    if(cloud.ready){ if(localStorage.getItem(TASKS_DIRTY)) cloudPushTasksNow().catch(()=>{}); else cloudSyncTasks().catch(()=>{}); }
+    if(cloud.ready){
+      await cloudRelinkIfNeeded();   // дотянуть привязку локальных баз, если вход прошёл, но autolink не отработал
+      const acid=activeCloudId();
+      if(acid){ await cloudRefreshMyMembership(); setSyncStatus("syncing","Сеть появилась — синхронизация…"); cloudActivate(acid); }
+      // задачи: до-выгружаем отложенные правки и пере-синкаем (не зависят от базы)
+      if(localStorage.getItem(TASKS_DIRTY)) cloudPushTasksNow().catch(()=>{}); else cloudSyncTasks().catch(()=>{});
+    }
   });
   window.addEventListener("offline", ()=>{ if(cloud.ready && activeCloudId()) setSyncStatus("offline"); });
   try{
@@ -4331,6 +4335,17 @@ async function cloudAutoLink(){
   if(switchTo && !activeCloudId()){ switchProfile(switchTo, true); return true; }   // true = автопривязка, в обход роль-гарда
   return false;
 }
+// ДОТЯГИВАЕМ привязку: если вход прошёл, но cloudAutoLink не отработал (упала загрузка баз на слабой сети),
+// локальные базы остаются cloudId=None и список оседает мимо облака. Здесь — при ручном ↻ / возврате сети —
+// привязываем локальную базу к облачной с ТЕМ ЖЕ именем (cloudAutoLink идемпотентен и при совпадении имени только
+// проставит cloudId, без создания дубля и reload). Это рычаг восстановления для застрявших на cloudId=None.
+async function cloudRelinkIfNeeded(){
+  if(!cloud.basesLoaded || !cloud.ready) return false;
+  const cloudNames = Object.values(cloud.bases||{});
+  const hasUnlinkedMatch = profiles.list.some(x=>!x.cloudId && cloudNames.includes(x.name));
+  if(hasUnlinkedMatch){ await cloudAutoLink(); return true; }
+  return false;
+}
 /* активация облачной базы: первичная выгрузка / подтягивание / разрешение оффлайн-правок */
 async function cloudActivate(cid, attempt){
   attempt = attempt||0;
@@ -4358,9 +4373,9 @@ async function cloudActivate(cid, attempt){
     if(!dirty && !cloudEmpty && localHasData && neverSynced && perm && perm.can_edit_stock && !cloud._conflictAsked[cid]){
       cloud._conflictAsked[cid] = true;
       const choice = await chooseSheet(
-        `База «${cloud.bases[cid]||"облачная"}»: есть и локальные данные, и данные в облаке. Что оставить?`,
-        [ { label:"Облачные (локальные сохраню копией)", value:"cloud", color:"btn-primary" },
-          { label:"Мои локальные (выгрузить в облако)", value:"local", color:"btn-danger" } ]);
+        `В базе «${cloud.bases[cid]||"облачная"}» есть данные и на этом телефоне, и в общей базе бригады. Какие оставить главными?`,
+        [ { label:"Из общей базы (мои с телефона сохраню отдельной копией)", value:"cloud", color:"btn-primary" },
+          { label:"Мои с телефона (заменю ими общую базу бригады)", value:"local", color:"btn-ghost" } ]);
       if(choice==="local"){
         saveSyncSig(cid,"stock",{}); saveSyncSig(cid,"jr",{});   // локальное — источник: полная выгрузка поверх облака
         try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){}   // dirty ДО push: при сбое выгрузки pull не затрёт выбранное юзером локальное (как в ветке ниже)
@@ -4418,7 +4433,7 @@ async function cloudPull(cid){
     // успеть отредактировать данные → cloudMaybePush уже выставил dirty. НЕ затираем
     // его правку облачными данными — выходим, finally до-выгрузит локальное (push).
     if(localStorage.getItem(cloudDirtyKey(cid))){
-      setSyncStatus("syncing","Локальные правки — выгружаю");
+      setSyncStatus("syncing","Отправка изменений в облако…");
       return;
     }
     // ошибок нет → применяем (только теперь перезаписываем локальные данные)
@@ -4803,8 +4818,9 @@ async function cloudSyncNow(){
   if(cloud.busy){ return; }   // сохранение уже идёт — двойной тап не плодит второй проход
   // базы не загрузились (слабый интернет) → перезапускаем их загрузку; cloudOnLogin сам активирует базу при успехе
   if(!cloud.basesLoaded && cloud.session){ toast("Загрузка баз…"); await cloudOnLogin(cloud.session, 0).catch(()=>{}); return; }
+  await cloudRelinkIfNeeded();   // если база ещё не связана с облаком (после сбоя входа) — привяжем по имени
   const cid = activeCloudId();
-  if(!cid){ toast("Эта база не связана с облаком"); return; }
+  if(!cid){ toast("Эта база пока не связана с облаком. Потяните ↻ при стабильном интернете или переключите базу"); return; }
   await cloudRefreshMyMembership();   // подхватить возврат/снятие со смены
   if(isOffShift(cid)){ setSyncStatus("error","Вы сняты со смены на этой базе — синхронизация недоступна"); render(); return; }
   toast("Сохранение в облако…"); await cloudActivate(cid);
