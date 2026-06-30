@@ -178,7 +178,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v124 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v126 · БЕТА</div>
   </div>
 </div>
 
@@ -2889,7 +2889,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v124 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v126 · тестовый канал</div>
   `;
 }
 
@@ -3470,7 +3470,7 @@ async function wipeAll(){
     if(!await confirmSheet(`База «${activeProfileName()}» — облачная. Обновить локальную копию из облака? Несохранённые локальные правки заменятся облачными. Данные в облаке НЕ удаляются.`,{danger:true,yes:"Обновить из облака"})) return;
     try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(_){}   // отбрасываем несинхронизированное локальное (но НЕ снимок — иначе ложный конфликт при сбое)
     setSyncStatus("syncing","Обновление из облака…");
-    try{ await cloudPull(cid); toast("Обновлено из облака"); }catch(e){ toast("Не удалось обновить — проверьте интернет и нажмите ↻"); }
+    try{ await cloudPull(cid); toast("Обновлено из облака"); }catch(e){ toast("Не удалось обновить — проверьте интернет и нажмите ↻ (обновить) вверху"); }
     nav("dashboard");
     return;
   }
@@ -3811,6 +3811,7 @@ function ensureCanEdit(){ if(!canEditStock()){ toast(isOffShift()?"Вы снят
    сброс пароля — через Edge Function (service_role); роль/active/удаление — напрямую (RLS). */
 const MEMBER_ROLES = [
   { key:"worker",       label:"Хозрабочий",        perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
+  { key:"cook",         label:"Повар",             perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
   { key:"mechanic",     label:"Механик",           perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
   { key:"party_chief",  label:"Начальник партии",  perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
   { key:"site_manager", label:"Начальник участка", perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:true } },
@@ -4278,7 +4279,7 @@ async function cloudOnLogin(session, attempt){
       cloud._basesRetryT = setTimeout(()=>{ cloudOnLogin(session, attempt+1).catch(()=>{}); }, delay);
     } else if(cloudOnline()){
       cloud._basesLoading = false;   // 8 попыток исчерпано — цикл закончен, ждём ручной повтор (↻) или online
-      setSyncStatus("error","Базы не загрузились (слабая сеть). Нажмите ↻ для повтора");
+      setSyncStatus("error","Базы не загрузились (слабый интернет). Нажмите ↻ (обновить) вверху, чтобы повторить");
     } else {
       cloud._basesLoading = false;   // оффлайн — цикл закончен, перезапустится по событию online
       setSyncStatus("offline","Нет сети — базы загрузятся при подключении");
@@ -4471,7 +4472,7 @@ async function cloudPull(cid){
     setSyncStatus("synced","Загружено из облака");
   }catch(e){
     console.warn("cloudPull", e);
-    setSyncStatus("error", "Не удалось загрузить — проверьте интернет и нажмите ↻");
+    setSyncStatus("error", "Не удалось загрузить — проверьте интернет и нажмите ↻ (обновить) вверху");
     // слабая сеть/таймаут → повторим (мягкий backoff), пока онлайн
     if(cloudOnline()){ clearTimeout(cloud.pullRetryT); cloud.pullRetryT=setTimeout(()=>{ if(cloud.ready && cloud.session && !cloud.busy && activeCloudId()===cid) cloudPull(cid).catch(()=>{}); }, 8000); }  // handle хранится → отменяется при выходе; не тянем после logout/смены профиля
   }
@@ -4814,7 +4815,7 @@ async function cloudSyncNow(){
   if(!cloud.basesLoaded && cloud.session){ toast("Загрузка баз…"); await cloudOnLogin(cloud.session, 0).catch(()=>{}); return; }
   await cloudRelinkIfNeeded();   // если база ещё не связана с облаком (после сбоя входа) — привяжем по имени
   const cid = activeCloudId();
-  if(!cid){ toast("Эта база пока не связана с облаком. Потяните ↻ при стабильном интернете или переключите базу"); return; }
+  if(!cid){ toast("Эта база пока не связана с облаком. Нажмите ↻ (обновить) вверху при стабильном интернете или переключите базу"); return; }
   await cloudRefreshMyMembership();   // подхватить возврат/снятие со смены
   if(isOffShift(cid)){ setSyncStatus("error","Вы сняты со смены на этой базе — синхронизация недоступна"); render(); return; }
   toast("Сохранение в облако…"); await cloudActivate(cid);
