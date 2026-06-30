@@ -178,7 +178,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v126 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v127 · БЕТА</div>
   </div>
 </div>
 
@@ -2848,7 +2848,7 @@ function renderMore(){
         </label>
       </div>
       ${restricted?"":`<button class="btn btn-success w-full mt-2" onclick="exportAllProfiles()">🗄 Резервная копия ВСЕХ баз</button>`}
-      <div class="text-xs opacity-70 mt-2">${restricted?"«Экспорт базы» сохраняет вашу базу в файл. Сохраняйте регулярно!":"«Экспорт базы» — только текущая. «Все базы» — один файл со всеми профилями (главный бэкап). Импорт принимает оба формата. Сохраняйте регулярно — пригодится, если телефон сбросится!"}</div>
+      <div class="text-xs opacity-70 mt-2">${restricted?"«Экспорт базы» сохраняет вашу базу в файл. Сохраняйте регулярно!":"«Экспорт базы» — только текущая. «Все базы» — один файл со всеми базами (главный бэкап). Импорт принимает оба формата. Сохраняйте регулярно — пригодится, если телефон сбросится!"}</div>
     </div>
 
     ${(profiles.list.length>1 && !restricted) ? `<div class="card">
@@ -2889,7 +2889,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v126 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v127 · тестовый канал</div>
   `;
 }
 
@@ -4279,7 +4279,7 @@ async function cloudOnLogin(session, attempt){
       cloud._basesRetryT = setTimeout(()=>{ cloudOnLogin(session, attempt+1).catch(()=>{}); }, delay);
     } else if(cloudOnline()){
       cloud._basesLoading = false;   // 8 попыток исчерпано — цикл закончен, ждём ручной повтор (↻) или online
-      setSyncStatus("error","Базы не загрузились (слабый интернет). Нажмите ↻ (обновить) вверху, чтобы повторить");
+      setSyncStatus("error","Базы не загрузились. Нажмите ↻ вверху, чтобы повторить");
     } else {
       cloud._basesLoading = false;   // оффлайн — цикл закончен, перезапустится по событию online
       setSyncStatus("offline","Нет сети — базы загрузятся при подключении");
@@ -4309,7 +4309,11 @@ async function cloudAutoLink(){
   for(const cid of myBases){
     if(profiles.list.some(x=>x.cloudId===cid)) continue;
     const name = cloud.bases[cid] || "Облачная база";
-    const exist = profiles.list.find(x=>!x.cloudId && x.name===name);
+    // привязываем по имени ТОЛЬКО если имя облачной базы уникально. Иначе (две облачные базы с одним именем)
+    // нельзя угадать, к какой привязать локальную → не привязываем молча (создадим новую), чтобы выбор
+    // «оставить мои» в диалоге конфликта не залил локальное ПОВЕРХ чужой одноимённой базы.
+    const nameUnique = Object.values(cloud.bases).filter(n=>n===name).length<=1;
+    const exist = nameUnique ? profiles.list.find(x=>!x.cloudId && x.name===name) : null;
     if(exist){
       exist.cloudId=cid; changed=true;
       // НЕ помечаем dirty при авто-привязке: ОБЛАКО — источник истины.
@@ -4337,7 +4341,9 @@ async function cloudAutoLink(){
 async function cloudRelinkIfNeeded(){
   if(!cloud.basesLoaded || !cloud.ready) return false;
   const cloudNames = Object.values(cloud.bases||{});
-  const hasUnlinkedMatch = profiles.list.some(x=>!x.cloudId && cloudNames.includes(x.name));
+  // дотягиваем привязку только при ОДНОЗНАЧНОМ совпадении имени (имя облачной базы встречается ровно раз) —
+  // иначе можно привязать не к той одноимённой базе.
+  const hasUnlinkedMatch = profiles.list.some(x=>!x.cloudId && cloudNames.filter(n=>n===x.name).length===1);
   if(hasUnlinkedMatch){ await cloudAutoLink(); return true; }
   return false;
 }
@@ -4555,6 +4561,7 @@ async function cloudPushNow(){
   await ensureSB(); const _outerBusy=cloud.busy; cloud.busy=true;   // re-entrant: если нас вызвал cloudActivate (уже busy), НЕ сбрасываем общий busy в своём finally
   try{
     const tok = cloud.session && cloud.session.access_token;
+    let _suspectWipe=false;   // склад подозрительно усох → не снимаем dirty, не рапортуем «synced» (см. ниже)
     if(perm.can_edit_stock){
       // === СКЛАД (ДЕЛЬТА: только изменённые/удалённые позиции, прямым fetch) ===
       const rows = state.stock.map(s=>stockToRow(s,cid));
@@ -4566,6 +4573,7 @@ async function cloudPushNow(){
       // а не на осознанное удаление → пропускаем ВСЮ выгрузку склада (cloud цел, восстановится pull-ом).
       const suspectWipe = prevCount>=20 && rows.length < prevCount*0.1;
       if((rows.length===0 || suspectWipe) && prevCount>0){
+        if(suspectWipe) _suspectWipe=true;   // помним: при усыхании НЕ снимаем dirty и не говорим «synced»
         console.warn("cloudPush: склад подозрительно мал ("+rows.length+" из "+prevCount+") — выгрузка склада пропущена (защита от порчи)");
       } else {
         const upsert = rows.filter(r=> curSig[r.id] !== prevSig[r.id]);   // новое/изменённое
@@ -4615,8 +4623,13 @@ async function cloudPushNow(){
       }
     }
     // ЗАДАЧИ НЕ ВЫГРУЖАЕМ — они общие-локальные (одно расписание на все базы устройства).
-    try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(e){}
-    setSyncStatus("synced");
+    if(_suspectWipe){
+      // склад выглядит повреждённым: НЕ снимаем dirty (чтобы при восстановлении не потерять маркер) и зовём обновить из облака
+      setSyncStatus("error","Склад выглядит повреждённым — нажмите ↻ (обновить) вверху, чтобы восстановить из облака");
+    } else {
+      try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(e){}
+      setSyncStatus("synced");
+    }
   }catch(e){
     console.warn("cloudPushNow", e);
     if(!cloudOnline()){ setSyncStatus("offline"); }   // ждём сеть → событие "online" доpush-ит
@@ -4787,7 +4800,7 @@ function cloudLoginPrompt(){
     // таймаут: если сеть зависла, кнопка не должна висеть вечно (запас под холодный старт free-бэкенда)
     const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания сети")), 55000));
     try{ await Promise.race([cloudLogin(em,pw), timeout]); closeSheet(); }
-    catch(e){ btn.disabled=false; btn.textContent="Войти"; toast("Не удалось войти: "+(e.message||e)); }
+    catch(e){ btn.disabled=false; btn.textContent="Войти"; toast("Не удалось войти: "+(e.message||"проверьте логин, пароль и интернет")); }
   });
 }
 /* прячем «Задачи», если у пользователя нет права смотреть задачи на активной облачной базе */
