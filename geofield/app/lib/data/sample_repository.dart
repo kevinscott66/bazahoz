@@ -30,6 +30,26 @@ class SampleRepository {
     return (Sqflite.firstIntValue(r) ?? 0) + 1;
   }
 
+  Future<List<Sample>> listByParent(String parentType, String parentId) async {
+    final rows = await _db.query(
+      'samples',
+      where: 'parent_type = ? AND parent_id = ? AND deleted = 0',
+      whereArgs: [parentType, parentId],
+      orderBy: 'created_at',
+    );
+    return rows.map(Sample.fromMap).toList();
+  }
+
+  Future<List<Sample>> listByProject(String projectId) async {
+    final rows = await _db.query(
+      'samples',
+      where: 'project_id = ? AND deleted = 0',
+      whereArgs: [projectId],
+      orderBy: 'created_at DESC',
+    );
+    return rows.map(Sample.fromMap).toList();
+  }
+
   /// Upsert пробы + мутация в журнал изменений, в одной транзакции.
   /// [isNew] — вставка (op=insert) или правка (op=update).
   Future<void> save(Sample sample, {required bool isNew}) async {

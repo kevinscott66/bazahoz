@@ -111,6 +111,30 @@ class Sample {
     );
   }
 
+  static Sample fromMap(Map<String, Object?> m) => Sample(
+        id: m['id'] as String,
+        projectId: m['project_id'] as String,
+        parentType: m['parent_type'] as String?,
+        parentId: m['parent_id'] as String?,
+        sampleNumber: m['sample_number'] as String,
+        sampleType: m['sample_type'] as String,
+        barcode: m['barcode'] as String?,
+        depthFrom: m['depth_from'] as double?,
+        depthTo: m['depth_to'] as double?,
+        mass: m['mass'] as double?,
+        lengthM: m['length_m'] as double?,
+        status: SampleStatus.fromDb(m['status'] as String? ?? 'collected'),
+        note: m['note'] as String?,
+        authorId: (m['author_id'] as String?) ?? '',
+        createdAt: m['created_at'] as String,
+        modifiedAt: m['modified_at'] as String,
+        version: (m['version'] as int?) ?? 1,
+        syncStatus: SyncStatus.values.firstWhere(
+            (s) => s.db == m['sync_status'],
+            orElse: () => SyncStatus.pending),
+        deleted: (m['deleted'] as int? ?? 0) != 0,
+      );
+
   Map<String, Object?> toMap() => {
         'id': id,
         'project_id': projectId,

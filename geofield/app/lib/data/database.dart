@@ -5,9 +5,10 @@ import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 /// Открытие локальной базы. Подмножество миграции
-/// geofield/core/schema/001_initial.sql, нужное прототипу (projects, samples,
-/// change_log). Полная схема — в core/schema; здесь только то, что трогает
-/// экран сбора пробы, один в один по колонкам.
+/// geofield/core/schema/001_initial.sql, нужное прототипу (projects, routes,
+/// observation_points, structural_measurements, samples, dictionaries,
+/// change_log). Полная схема — в core/schema; здесь один в один по колонкам
+/// то, что трогают экраны точки наблюдения и сбора пробы.
 class AppDatabase {
   AppDatabase._(this.db);
 
@@ -55,6 +56,95 @@ class AppDatabase {
         version              INTEGER NOT NULL DEFAULT 1,
         sync_status          TEXT NOT NULL DEFAULT 'pending',
         deleted              INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await d.execute('''
+      CREATE TABLE routes (
+        id           TEXT PRIMARY KEY NOT NULL,
+        party_id     TEXT,
+        geologist_id TEXT,
+        route_date   TEXT NOT NULL,
+        title        TEXT,
+        author_id    TEXT,
+        created_at   TEXT NOT NULL,
+        modified_at  TEXT NOT NULL,
+        version      INTEGER NOT NULL DEFAULT 1,
+        sync_status  TEXT NOT NULL DEFAULT 'pending',
+        deleted      INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await d.execute('''
+      CREATE TABLE observation_points (
+        id              TEXT PRIMARY KEY NOT NULL,
+        route_id        TEXT NOT NULL REFERENCES routes(id),
+        number          TEXT NOT NULL,
+        lat             REAL,
+        lon             REAL,
+        elevation       REAL,
+        coord_source    TEXT,
+        gps_accuracy_m  REAL,
+        observed_at     TEXT,
+        object_type     TEXT,
+        rock_code       TEXT,
+        color_code      TEXT,
+        grain           TEXT,
+        alteration_code TEXT,
+        minerals        TEXT,
+        note            TEXT,
+        is_draft        INTEGER NOT NULL DEFAULT 1,
+        author_id       TEXT,
+        created_at      TEXT NOT NULL,
+        modified_at     TEXT NOT NULL,
+        version         INTEGER NOT NULL DEFAULT 1,
+        sync_status     TEXT NOT NULL DEFAULT 'pending',
+        deleted         INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await d.execute('''
+      CREATE TABLE structural_measurements (
+        id            TEXT PRIMARY KEY NOT NULL,
+        parent_type   TEXT NOT NULL,
+        parent_id     TEXT NOT NULL,
+        measure_type  TEXT,
+        dip_azimuth   REAL,
+        dip_angle     REAL,
+        source        TEXT,
+        is_true_angle INTEGER NOT NULL DEFAULT 0,
+        note          TEXT,
+        author_id     TEXT,
+        created_at    TEXT NOT NULL,
+        modified_at   TEXT NOT NULL,
+        version       INTEGER NOT NULL DEFAULT 1,
+        sync_status   TEXT NOT NULL DEFAULT 'pending',
+        deleted       INTEGER NOT NULL DEFAULT 0,
+        CHECK (parent_type IN ('point','interval')),
+        CHECK (dip_azimuth IS NULL OR (dip_azimuth >= 0 AND dip_azimuth < 360)),
+        CHECK (dip_angle IS NULL OR (dip_angle >= 0 AND dip_angle <= 90))
+      )
+    ''');
+
+    await d.execute('''
+      CREATE TABLE dictionaries (
+        id                TEXT PRIMARY KEY NOT NULL,
+        project_id        TEXT REFERENCES projects(id),
+        dict_type         TEXT NOT NULL,
+        code              TEXT NOT NULL,
+        label             TEXT NOT NULL,
+        color             TEXT,
+        sort_order        INTEGER,
+        meta              TEXT,
+        is_pending_review INTEGER NOT NULL DEFAULT 0,
+        dict_version      TEXT,
+        author_id         TEXT,
+        created_at        TEXT NOT NULL,
+        modified_at       TEXT NOT NULL,
+        version           INTEGER NOT NULL DEFAULT 1,
+        sync_status       TEXT NOT NULL DEFAULT 'pending',
+        deleted           INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (project_id, dict_type, code)
       )
     ''');
 

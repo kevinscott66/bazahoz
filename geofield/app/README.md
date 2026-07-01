@@ -46,13 +46,25 @@ flutter analyze         # статанализ
 
 ```
 lib/
-├── main.dart                         точка входа, демо-проект, запуск экрана 6.5
-├── config/features.dart              feature-флаги (барьер заглушек)
-├── theme/tokens.dart                 дизайн-токены
-├── theme/sample_type.dart            типы проб + семантические цвета
-├── models/sample.dart               модель пробы (== таблица samples)
-├── util/sample_number.dart           генерация номера по схеме проекта
-├── data/database.dart                открытие SQLite (WAL) + миграция-подмножество
-├── data/sample_repository.dart       upsert пробы + журнал изменений (транзакция)
-└── screens/sample_capture_screen.dart  экран регистрации пробы (ТЗ 6.5)
+├── main.dart                          точка входа, демо-сид (проект, маршрут, справочники)
+├── config/features.dart               feature-флаги (барьер заглушек)
+├── theme/tokens.dart                  дизайн-токены
+├── theme/sample_type.dart             типы проб + семантические цвета
+├── models/sample.dart                 модель пробы (== таблица samples)
+├── models/observation_point.dart      точка наблюдения + структурный замер
+├── util/sample_number.dart            генерация номера по схеме проекта
+├── util/save_queue.dart               дебаунс + сериализация сохранений (SaveResult)
+├── util/csv_export.dart               CSV без потери полей (RFC 4180, BOM, ';')
+├── data/database.dart                 SQLite (WAL) + миграция-подмножество канона
+├── data/sample_repository.dart        пробы: upsert/softDelete + change_log
+├── data/point_repository.dart         точки и замеры + change_log
+├── data/dictionary_repository.dart    справочники, «на проверку» (ТЗ 6.3)
+└── screens/
+    ├── journal_screen.dart            журнал маршрута: фильтры, сводка, CSV (ТЗ 6.7)
+    ├── point_form_screen.dart         точка наблюдения: блоки, черновик (ТЗ 6.3)
+    └── sample_capture_screen.dart     регистрация пробы + бирка (ТЗ 6.5)
 ```
+
+Поток: журнал → «＋ Точка» → форма точки → «＋ Проба» → регистрация пробы.
+Черновик ≠ ошибка: незаполненная точка сохраняется жёлтым «черновиком» и не
+теряется; противоречие (координата вне диапазона, «До < От») не пишется вовсе.

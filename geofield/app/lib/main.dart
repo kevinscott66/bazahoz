@@ -1,30 +1,37 @@
 import 'package:flutter/material.dart';
 
 import 'data/database.dart';
+import 'data/dictionary_repository.dart';
+import 'data/point_repository.dart';
 import 'data/sample_repository.dart';
-import 'screens/sample_capture_screen.dart';
+import 'screens/journal_screen.dart';
 import 'theme/tokens.dart';
-import 'util/sample_number.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final app = await AppDatabase.open();
-  await _seedDemoProject(app);
+  await _seedDemo(app);
   runApp(GeoFieldApp(database: app));
 }
 
 const _demoProjectId = 'demo-suzun';
+const _demoRouteId = 'demo-route-1';
 const _demoNumbering = 'SUZ-{seq:05}';
 const _demoAuthorId = 'demo-geologist';
 const _demoDeviceId = 'demo-device';
 
-/// Демо-проект, чтобы прототип открывался сразу на экране сбора пробы.
-Future<void> _seedDemoProject(AppDatabase app) async {
+/// Демо-проект, маршрут и стартовые справочники — чтобы прототип открывался
+/// сразу на журнале и форма точки имела реальные подсказки.
+/// Состав справочников — черновой, на ревизию geo-consultant и живому
+/// консультанту (раздел 14 мастер-плана).
+Future<void> _seedDemo(AppDatabase app) async {
   final existing = await app.db.query('projects',
       where: 'id = ?', whereArgs: [_demoProjectId], limit: 1);
   if (existing.isNotEmpty) return;
+
   final now = DateTime.now().toUtc().toIso8601String();
-  await app.db.insert('projects', {
+  final batch = app.db.batch();
+  batch.insert('projects', {
     'id': _demoProjectId,
     'name': 'Демо — Сусуман',
     'area': 'Участок 1',
@@ -34,6 +41,60 @@ Future<void> _seedDemoProject(AppDatabase app) async {
     'created_at': now,
     'modified_at': now,
   });
+  batch.insert('routes', {
+    'id': _demoRouteId,
+    'route_date': now.substring(0, 10),
+    'title': 'Маршрут 1',
+    'geologist_id': _demoAuthorId,
+    'author_id': _demoAuthorId,
+    'created_at': now,
+    'modified_at': now,
+  });
+
+  const objectTypes = [
+    ('outcrop', 'Обнажение'),
+    ('pit', 'Закопушка'),
+    ('deluvium', 'Делювий'),
+    ('bedrock', 'Коренной выход'),
+  ];
+  const rocks = [
+    ('granite', 'Гранит'),
+    ('diorite', 'Диорит'),
+    ('basalt', 'Базальт'),
+    ('sandstone', 'Песчаник'),
+    ('siltstone', 'Алевролит'),
+    ('shale', 'Сланец'),
+    ('quartz_vein', 'Кварцевая жила'),
+  ];
+  var order = 0;
+  for (final (code, label) in objectTypes) {
+    batch.insert('dictionaries', {
+      'id': 'dict-ot-$code',
+      'project_id': _demoProjectId,
+      'dict_type': 'object_type',
+      'code': code,
+      'label': label,
+      'sort_order': order++,
+      'author_id': _demoAuthorId,
+      'created_at': now,
+      'modified_at': now,
+    });
+  }
+  order = 0;
+  for (final (code, label) in rocks) {
+    batch.insert('dictionaries', {
+      'id': 'dict-rock-$code',
+      'project_id': _demoProjectId,
+      'dict_type': 'rock',
+      'code': code,
+      'label': label,
+      'sort_order': order++,
+      'author_id': _demoAuthorId,
+      'created_at': now,
+      'modified_at': now,
+    });
+  }
+  await batch.commit(noResult: true);
 }
 
 class GeoFieldApp extends StatelessWidget {
@@ -43,66 +104,26 @@ class GeoFieldApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final samples = SampleRepository(database.db,
+        deviceId: _demoDeviceId, authorId: _demoAuthorId);
+    final points = PointRepository(database.db,
+        deviceId: _demoDeviceId, authorId: _demoAuthorId);
+    final dictionaries = DictionaryRepository(database.db,
+        deviceId: _demoDeviceId, authorId: _demoAuthorId);
+
     return MaterialApp(
       title: 'GeoField',
       debugShowCheckedModeBanner: false,
       theme: buildGeoFieldTheme(),
-      home: SampleCaptureLauncher(database: database),
-    );
-  }
-}
-
-/// Готовит номер пробы (следующий seq по схеме проекта) и открывает экран 6.5.
-class SampleCaptureLauncher extends StatefulWidget {
-  const SampleCaptureLauncher({super.key, required this.database});
-
-  final AppDatabase database;
-
-  @override
-  State<SampleCaptureLauncher> createState() => _SampleCaptureLauncherState();
-}
-
-class _SampleCaptureLauncherState extends State<SampleCaptureLauncher> {
-  late final SampleRepository _repo;
-  Future<String>? _numberFuture;
-
-  @override
-  void initState() {
-    super.initState();
-    _repo = SampleRepository(widget.database.db,
-        deviceId: _demoDeviceId, authorId: _demoAuthorId);
-    _numberFuture = _nextNumber();
-  }
-
-  Future<String> _nextNumber() async {
-    final seq = await _repo.nextSeq(_demoProjectId);
-    return const SampleNumberTemplate(_demoNumbering).format(seq);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<String>(
-      future: _numberFuture,
-      builder: (context, snap) {
-        if (!snap.hasData) {
-          return const Scaffold(
-            backgroundColor: GfColors.bg,
-            body: Center(child: CircularProgressIndicator()),
-          );
-        }
-        return SampleCaptureScreen(
-          repository: _repo,
-          projectId: _demoProjectId,
-          authorId: _demoAuthorId,
-          initialNumber: snap.data!,
-          // Демо-привязка к точке наблюдения; для керна был бы интервал с глубинами.
-          binding: const ParentBinding(
-            type: 'point',
-            id: 'demo-point-12',
-            label: 'Точка № 12',
-          ),
-        );
-      },
+      home: JournalScreen(
+        points: points,
+        samples: samples,
+        dictionaries: dictionaries,
+        projectId: _demoProjectId,
+        routeId: _demoRouteId,
+        authorId: _demoAuthorId,
+        sampleNumbering: _demoNumbering,
+      ),
     );
   }
 }

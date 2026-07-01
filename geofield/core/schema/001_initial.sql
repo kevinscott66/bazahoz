@@ -176,7 +176,9 @@ CREATE TABLE structural_measurements (
     version       INTEGER NOT NULL DEFAULT 1,
     sync_status   TEXT    NOT NULL DEFAULT 'pending',
     deleted       INTEGER NOT NULL DEFAULT 0,
-    CHECK (parent_type IN ('point', 'interval'))
+    CHECK (parent_type IN ('point', 'interval')),
+    CHECK (dip_azimuth IS NULL OR (dip_azimuth >= 0 AND dip_azimuth < 360)),
+    CHECK (dip_angle IS NULL OR (dip_angle >= 0 AND dip_angle <= 90))
 );
 
 -- ---------------------------------------------------------------------------

@@ -43,6 +43,7 @@ class SampleCaptureScreen extends StatefulWidget {
     required this.authorId,
     required this.initialNumber,
     required this.binding,
+    this.existing,
   });
 
   final SampleRepository repository;
@@ -50,6 +51,9 @@ class SampleCaptureScreen extends StatefulWidget {
   final String authorId;
   final String initialNumber;
   final ParentBinding binding;
+
+  /// Существующая проба — режим редактирования (открытие из журнала, ТЗ §6.7).
+  final Sample? existing;
 
   @override
   State<SampleCaptureScreen> createState() => _SampleCaptureScreenState();
@@ -80,6 +84,22 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
   @override
   void initState() {
     super.initState();
+    final ex = widget.existing;
+    if (ex != null) {
+      // Режим редактирования: запись уже в базе, версия продолжается.
+      _id = ex.id;
+      _createdAt = ex.createdAt;
+      _persistedOnce = true;
+      _version = ex.version;
+      _numberCtrl.text = ex.sampleNumber;
+      _type = SampleType.fromCode(ex.sampleType);
+      if (ex.depthFrom != null) _fromCtrl.text = _fmt(ex.depthFrom!);
+      if (ex.depthTo != null) _toCtrl.text = _fmt(ex.depthTo!);
+      if (ex.mass != null) _massCtrl.text = ex.mass.toString();
+      _noteCtrl.text = ex.note ?? '';
+      _saveState = 'сохранено · не отправлено';
+      return;
+    }
     _id = _newUuidLike();
     _createdAt = _nowIso();
     _numberCtrl.text = widget.initialNumber;
@@ -120,7 +140,9 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
       depthFrom: _parse(_fromCtrl.text),
       depthTo: _parse(_toCtrl.text),
       mass: _parse(_massCtrl.text),
-      status: SampleStatus.collected,
+      // Правка полей не откатывает жизненный цикл: статус существующей пробы
+      // сохраняется (переходы статуса — отдельное действие, не этот экран).
+      status: widget.existing?.status ?? SampleStatus.collected,
       note: _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim(),
       authorId: widget.authorId,
       createdAt: _createdAt,
