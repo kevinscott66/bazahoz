@@ -27,6 +27,11 @@ class ParentBinding {
   final double? depthTo;
 }
 
+/// Итог одного сохранения: сохранено / ввод невалиден / запись провалилась.
+/// Разделены, чтобы выход по «назад» мог уйти при невалидном вводе (сохранять
+/// нечего), но НЕ уходил молча при реальном сбое записи валидных данных.
+enum _SaveResult { saved, invalid, failed }
+
 /// Экран регистрации пробы и печати бирки (ТЗ 6.5).
 /// Автосохранение после каждого действия: проба пишется в базу сразу при
 /// открытии (черновик не теряется) и при каждом изменении — с дебаунсом.
@@ -68,7 +73,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
   // Сериализация сохранений: конкурентные вызовы (автосейв при открытии +
   // «Готово»/«назад») выполняются по очереди, чтобы isNew не прочитался дважды
   // как true и не случилось двух INSERT одной записи.
-  Future<bool> _saveChain = Future.value(true);
+  Future<_SaveResult> _saveChain = Future.value(_SaveResult.saved);
   String _saveState = 'сохранение…';
   bool _saveIsError = false;
 
@@ -132,7 +137,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
   }
 
   /// Ставит сохранение в очередь за предыдущим — без гонок за _persistedOnce.
-  Future<bool> _saveNow() {
+  Future<_SaveResult> _saveNow() {
     _debounce?.cancel();
     _saveChain = _saveChain.then((_) => _doSave());
     return _saveChain;
@@ -140,7 +145,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
 
   /// Одно сохранение. Никогда не бросает: невалидность/ошибка — это видимое
   /// состояние, а не необработанное исключение в фоновом Timer.
-  Future<bool> _doSave() async {
+  Future<_SaveResult> _doSave() async {
     final number = _numberCtrl.text.trim();
     final from = _parse(_fromCtrl.text);
     final to = _parse(_toCtrl.text);
@@ -148,11 +153,11 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
     // не доводя до CHECK-исключения СУБД.
     if (number.isEmpty) {
       _setSave('Номер пробы обязателен', error: true);
-      return false;
+      return _SaveResult.invalid;
     }
     if (from != null && to != null && to < from) {
       _setSave('«До» не может быть меньше «От»', error: true);
-      return false;
+      return _SaveResult.invalid;
     }
     final isNew = !_persistedOnce;
     final nextVersion = isNew ? 1 : _version + 1;
@@ -161,11 +166,12 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
       _persistedOnce = true;
       _version = nextVersion;
       _setSave('сохранено · не отправлено');
-      return true;
+      return _SaveResult.saved;
     } catch (e) {
-      // Ошибка видима пользователю (не проглочена) и не роняет Timer.
+      // Реальный сбой записи (диск/блокировка WAL). Ошибка видима (не проглочена)
+      // и не роняет Timer; вызывающий не должен молча закрывать экран.
       _setSave('ошибка сохранения', error: true);
-      return false;
+      return _SaveResult.failed;
     }
   }
 
@@ -185,9 +191,15 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
       canPop: false,
       onPopInvoked: (didPop) async {
         if (didPop) return;
-        // Системная «назад»/жест: дожать отложенную правку, затем выйти —
-        // экран закрывается без потери данных (ТЗ §0, правило 2).
-        await _saveNow();
+        // Системная «назад»/жест: дожать отложенную правку. Выходим, если
+        // сохранено или ввод невалиден (сохранять нечего — последняя валидная
+        // версия уже в базе). Но если РЕАЛЬНАЯ запись валидных данных провалилась,
+        // не закрываем молча — показываем ошибку (ТЗ §0, правило 2).
+        final r = await _saveNow();
+        if (r == _SaveResult.failed) {
+          _snack('Не удалось сохранить — проверьте память устройства');
+          return;
+        }
         if (mounted) Navigator.of(context).pop();
       },
       child: Scaffold(
@@ -433,10 +445,10 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
         width: double.infinity,
         child: FilledButton(
           onPressed: () async {
-            final ok = await _saveNow();
-            // Не закрываем при невалидном (пустой номер / «До < От») — даём
-            // исправить; последняя валидная версия уже в базе.
-            if (ok && mounted) Navigator.of(context).pop(_id);
+            final r = await _saveNow();
+            // Закрываем только при успешном сохранении. Невалидный ввод (пустой
+            // номер / «До < От») и сбой записи — остаёмся, даём исправить/повторить.
+            if (r == _SaveResult.saved && mounted) Navigator.of(context).pop(_id);
           },
           style: FilledButton.styleFrom(
             backgroundColor: GfColors.accent,
