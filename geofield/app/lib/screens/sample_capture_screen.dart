@@ -563,8 +563,16 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
     );
     if (confirmed != true) return;
     if (_persistedOnce) {
-      await widget.repository
-          .softDelete(_current(version: _version));
+      try {
+        await widget.repository.softDelete(_current(version: _version));
+      } catch (e) {
+        // Симметрично _doSave: реальный сбой хранилища не проглатываем и не
+        // закрываем экран молча — сообщаем, оставляем возможность повторить.
+        _setSave('не удалось удалить — проверьте память устройства',
+            error: true);
+        _snack('Не удалось удалить — проверьте память устройства');
+        return;
+      }
     }
     if (mounted) Navigator.of(context).pop();
   }
