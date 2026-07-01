@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 
@@ -99,7 +97,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
       _noteCtrl.text = ex.note ?? '';
       _isDraft = ex.isDraft;
       _saveState = 'сохранено · не отправлено';
-      _selectedMinerals.addAll(_decodeMinerals(ex.minerals));
+      _selectedMinerals.addAll(decodeMineralCodes(ex.minerals));
     } else {
       _id = const Uuid().v4();
       _createdAt = _nowIso();
@@ -146,15 +144,6 @@ class _PointFormScreenState extends State<PointFormScreen> {
     });
   }
 
-  /// minerals в базе — JSON-массив кодов: '["pyrite","native_gold"]'.
-  static List<String> _decodeMinerals(String? json) {
-    if (json == null || json.isEmpty) return const [];
-    try {
-      return (jsonDecode(json) as List).cast<String>();
-    } catch (_) {
-      return const [];
-    }
-  }
 
   Future<void> _reloadChildren() async {
     final ms = await widget.points.measurementsFor(_id);
@@ -261,7 +250,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
         alterationCode: alterationCode,
         minerals: _selectedMinerals.isEmpty
             ? null
-            : jsonEncode(_selectedMinerals.toList()..sort()),
+            : encodeMineralCodes(_selectedMinerals),
         note: _emptyNull(_noteCtrl.text),
         isDraft: draft,
         authorId: widget.authorId,

@@ -186,7 +186,10 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
       _setSave('Номер пробы обязателен', error: true);
       return _SaveResult.invalid;
     }
-    if (from != null && to != null && to < from) {
+    // Валидируем интервал только когда поля видимы для типа: после смены
+    // типа старый ввод в скрытых полях не должен блокировать сохранение
+    // (он и не персистится — см. _current).
+    if (_type.hasDepthInterval && from != null && to != null && to < from) {
       _setSave('«До» не может быть меньше «От»', error: true);
       return _SaveResult.invalid;
     }

@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -362,17 +361,9 @@ class _JournalScreenState extends State<JournalScreen> {
           await widget.points.measurementsForRoute(widget.routeId);
       final pointById = {for (final pt in _points) pt.id: pt};
 
-      String mineralsText(String? json) {
-        if (json == null || json.isEmpty) return '';
-        try {
-          return (jsonDecode(json) as List)
-              .cast<String>()
-              .map((c) => mineralLabels[c] ?? c)
-              .join(', ');
-        } catch (_) {
-          return json;
-        }
-      }
+      String mineralsText(String? json) => decodeMineralCodes(json)
+          .map((c) => mineralLabels[c] ?? c)
+          .join(', ');
 
       final pointsCsv = toCsv(pointCsvHeader, [
         for (final pt in _points)
@@ -410,6 +401,7 @@ class _JournalScreenState extends State<JournalScreen> {
             s.parentType == 'point' ? pointById[s.parentId]?.lon : null,
             s.depthFrom,
             s.depthTo,
+            s.lengthM,
             s.mass,
             s.status.label,
             s.note,

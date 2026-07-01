@@ -1,4 +1,30 @@
+import 'dart:convert';
+
 import 'sample.dart' show SyncStatus;
+
+/// Формат поля minerals — JSON-массив объектов по контракту схемы
+/// `[{code, intensity}]`; интенсивность пока не заполняется (бэклог,
+/// UNFINISHED.md) — объектная форма выбрана, чтобы добавить её без миграции.
+String encodeMineralCodes(Iterable<String> codes) =>
+    jsonEncode([for (final c in codes.toList()..sort()) {'code': c}]);
+
+/// Терпимый декодер: понимает и объекты `{"code":…}`, и плоские строки
+/// (ранние записи прототипа).
+List<String> decodeMineralCodes(String? json) {
+  if (json == null || json.isEmpty) return const [];
+  try {
+    final list = jsonDecode(json) as List;
+    return [
+      for (final item in list)
+        if (item is String)
+          item
+        else if (item is Map && item['code'] is String)
+          item['code'] as String,
+    ];
+  } catch (_) {
+    return const [];
+  }
+}
 
 /// Точка наблюдения (ТЗ §6.3). Поля соответствуют таблице `observation_points`
 /// (geofield/core/schema/001_initial.sql). Координаты канонически в WGS-84.
@@ -43,7 +69,7 @@ class ObservationPoint {
   final String? colorCode;
   final String? grain;
   final String? alterationCode;
-  final String? minerals; // JSON [{code, intensity}]
+  final String? minerals; // JSON [{code, intensity?}] — см. encodeMineralCodes
   final String? note;
   final bool isDraft;
   final String authorId;
