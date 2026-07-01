@@ -17,9 +17,14 @@ class SampleRepository {
   final Uuid _uuid = const Uuid();
 
   /// Следующий сквозной номер пробы в проекте (для sample_numbering).
+  /// Считаем ВСЕ строки, включая мягко удалённые (deleted=1): иначе номер и
+  /// штрихкод удалённой пробы переиспользуются → дубль штрихкода, и результат
+  /// из лаборатории нельзя однозначно сопоставить (ТЗ §2, §6.9).
+  /// Прод (этап 2): выделенный монотонный счётчик на проект — устойчив к ручной
+  /// правке номеров и к многоустройственной работе.
   Future<int> nextSeq(String projectId) async {
     final r = await _db.rawQuery(
-      'SELECT COUNT(*) AS c FROM samples WHERE project_id = ? AND deleted = 0',
+      'SELECT COUNT(*) AS c FROM samples WHERE project_id = ?',
       [projectId],
     );
     return (Sqflite.firstIntValue(r) ?? 0) + 1;

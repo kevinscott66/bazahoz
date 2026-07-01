@@ -65,7 +65,12 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
   bool _persistedOnce = false;
   bool _gloveMode = false;
   Timer? _debounce;
+  // Сериализация сохранений: конкурентные вызовы (автосейв при открытии +
+  // «Готово»/«назад») выполняются по очереди, чтобы isNew не прочитался дважды
+  // как true и не случилось двух INSERT одной записи.
+  Future<bool> _saveChain = Future.value(true);
   String _saveState = 'сохранение…';
+  bool _saveIsError = false;
 
   @override
   void initState() {
@@ -121,20 +126,33 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
   }
 
   void _scheduleSave() {
-    setState(() => _saveState = 'сохранение…');
+    _setSave('сохранение…');
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 400), _saveNow);
   }
 
-  Future<void> _saveNow() async {
+  /// Ставит сохранение в очередь за предыдущим — без гонок за _persistedOnce.
+  Future<bool> _saveNow() {
     _debounce?.cancel();
-    // Противоречие ловим при вводе, а не в базе (ТЗ §0, правило 3): не пишем
-    // интервал с «До < От» — иначе CHECK в samples отклонит запись исключением.
+    _saveChain = _saveChain.then((_) => _doSave());
+    return _saveChain;
+  }
+
+  /// Одно сохранение. Никогда не бросает: невалидность/ошибка — это видимое
+  /// состояние, а не необработанное исключение в фоновом Timer.
+  Future<bool> _doSave() async {
+    final number = _numberCtrl.text.trim();
     final from = _parse(_fromCtrl.text);
     final to = _parse(_toCtrl.text);
+    // Обязательные поля и противоречия ловим при вводе (ТЗ §0, правило 3),
+    // не доводя до CHECK-исключения СУБД.
+    if (number.isEmpty) {
+      _setSave('Номер пробы обязателен', error: true);
+      return false;
+    }
     if (from != null && to != null && to < from) {
-      if (mounted) setState(() => _saveState = 'До не может быть меньше От');
-      return;
+      _setSave('«До» не может быть меньше «От»', error: true);
+      return false;
     }
     final isNew = !_persistedOnce;
     final nextVersion = isNew ? 1 : _version + 1;
@@ -142,11 +160,19 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
       await widget.repository.save(_current(version: nextVersion), isNew: isNew);
       _persistedOnce = true;
       _version = nextVersion;
-      if (mounted) setState(() => _saveState = 'сохранено · не отправлено');
+      _setSave('сохранено · не отправлено');
+      return true;
     } catch (e) {
-      if (mounted) setState(() => _saveState = 'ошибка сохранения');
-      rethrow; // не проглатываем — данные важнее
+      // Ошибка видима пользователю (не проглочена) и не роняет Timer.
+      _setSave('ошибка сохранения', error: true);
+      return false;
     }
+  }
+
+  void _setSave(String s, {bool error = false}) {
+    _saveState = s;
+    _saveIsError = error;
+    if (mounted) setState(() {});
   }
 
   // --- UI ---------------------------------------------------------------------
@@ -155,7 +181,16 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (didPop) async {
+        if (didPop) return;
+        // Системная «назад»/жест: дожать отложенную правку, затем выйти —
+        // экран закрывается без потери данных (ТЗ §0, правило 2).
+        await _saveNow();
+        if (mounted) Navigator.of(context).pop();
+      },
+      child: Scaffold(
       appBar: AppBar(
         backgroundColor: GfColors.bg,
         title: const Text('Регистрация пробы', style: GfText.screenTitle),
@@ -203,6 +238,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
         ),
       ),
       bottomNavigationBar: _doneBar(),
+      ),
     );
   }
 
@@ -364,7 +400,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
   }
 
   Widget _saveIndicator() {
-    final err = _saveState.startsWith('ошибка');
+    final err = _saveIsError;
     return Row(
       children: [
         Icon(err ? Icons.error_outline : Icons.cloud_off,
@@ -397,8 +433,10 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
         width: double.infinity,
         child: FilledButton(
           onPressed: () async {
-            await _saveNow();
-            if (mounted) Navigator.of(context).pop(_id);
+            final ok = await _saveNow();
+            // Не закрываем при невалидном (пустой номер / «До < От») — даём
+            // исправить; последняя валидная версия уже в базе.
+            if (ok && mounted) Navigator.of(context).pop(_id);
           },
           style: FilledButton.styleFrom(
             backgroundColor: GfColors.accent,
