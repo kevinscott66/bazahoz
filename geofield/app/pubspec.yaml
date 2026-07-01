@@ -1,0 +1,28 @@
+name: geofield
+description: GeoField — полевой сбор геологической первички. Прототип экрана сбора пробы (ТЗ 6.5).
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: '>=3.19.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  uuid: ^4.3.3                 # UUID сущностей и мутаций (офлайн, без коллизий)
+  sqflite: ^2.3.0             # SQLite на мобильных
+  sqflite_common_ffi: ^2.3.0  # SQLite на десктопе (Windows/macOS/Linux)
+  path: ^1.9.0
+  qr_flutter: ^4.1.0          # QR штрихкода пробы на экран
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  # Прод: сюда добавляются офлайн-шрифты (Manrope, JetBrains Mono) как assets —
+  # без сетевой загрузки шрифтов (поле без связи). В прототипе — системный
+  # гротеск + системный моноширинный ('monospace').

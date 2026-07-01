@@ -1,0 +1,80 @@
+import 'dart:convert';
+
+import 'package:sqflite/sqflite.dart';
+import 'package:uuid/uuid.dart';
+
+import '../models/sample.dart';
+
+/// Доступ к пробам. Каждая мутация пишется атомарно: строка `samples` +
+/// запись в `change_log` (event sourcing, sync-protocol.md §1). Так база
+/// готова к дельта-синхронизации с первого дня, а данные не теряются.
+class SampleRepository {
+  SampleRepository(this._db, {required this.deviceId, required this.authorId});
+
+  final Database _db;
+  final String deviceId;
+  final String authorId;
+  final Uuid _uuid = const Uuid();
+
+  /// Следующий сквозной номер пробы в проекте (для sample_numbering).
+  Future<int> nextSeq(String projectId) async {
+    final r = await _db.rawQuery(
+      'SELECT COUNT(*) AS c FROM samples WHERE project_id = ? AND deleted = 0',
+      [projectId],
+    );
+    return (Sqflite.firstIntValue(r) ?? 0) + 1;
+  }
+
+  /// Upsert пробы + мутация в журнал изменений, в одной транзакции.
+  /// [isNew] — вставка (op=insert) или правка (op=update).
+  Future<void> save(Sample sample, {required bool isNew}) async {
+    final map = sample.toMap();
+    await _db.transaction((txn) async {
+      if (isNew) {
+        await txn.insert('samples', map);
+      } else {
+        await txn.update('samples', map,
+            where: 'id = ?', whereArgs: [sample.id]);
+      }
+      await txn.insert('change_log', {
+        'change_id': _uuid.v4(),
+        'entity_table': 'samples',
+        'entity_id': sample.id,
+        'op': isNew ? 'insert' : 'update',
+        'payload': jsonEncode(map),
+        'author_id': authorId,
+        'device_id': deviceId,
+        // Прототип: ISO-время. Прод — HLC (sync-protocol.md §4).
+        'logical_ts': DateTime.now().toUtc().toIso8601String(),
+      });
+    });
+  }
+
+  /// Мягкое удаление: deleted=1 + мутация op=delete (факт удаления
+  /// доедет до сервера синхронизацией).
+  Future<void> softDelete(Sample sample) async {
+    await _db.transaction((txn) async {
+      await txn.update(
+        'samples',
+        {
+          'deleted': 1,
+          'version': sample.version + 1,
+          'modified_at': DateTime.now().toUtc().toIso8601String(),
+          'sync_status': SyncStatus.pending.db,
+        },
+        where: 'id = ?',
+        whereArgs: [sample.id],
+      );
+      await txn.insert('change_log', {
+        'change_id': _uuid.v4(),
+        'entity_table': 'samples',
+        'entity_id': sample.id,
+        'op': 'delete',
+        'payload': '{}',
+        'author_id': authorId,
+        'device_id': deviceId,
+        'logical_ts': DateTime.now().toUtc().toIso8601String(),
+      });
+    });
+  }
+}
