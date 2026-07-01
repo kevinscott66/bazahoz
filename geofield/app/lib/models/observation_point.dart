@@ -111,6 +111,18 @@ class ObservationPoint {
       );
 }
 
+/// Типы структурных замеров (structural_measurements.measure_type).
+/// Состав — по ревизии geo-consultant (рудное золото: жилы, трещиноватость,
+/// контакты — главные замеры, не только слоистость).
+const Map<String, String> measureTypes = {
+  'bedding': 'Слоистость',
+  'foliation': 'Сланцеватость',
+  'joint': 'Трещина',
+  'vein': 'Жила',
+  'contact': 'Контакт',
+  'fault_zone': 'Зона разлома',
+};
+
 /// Структурный замер (таблица `structural_measurements`, родитель — точка).
 class StructuralMeasurement {
   StructuralMeasurement({

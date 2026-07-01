@@ -66,6 +66,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
   final _numberCtrl = TextEditingController();
   final _fromCtrl = TextEditingController();
   final _toCtrl = TextEditingController();
+  final _lengthCtrl = TextEditingController();
   final _massCtrl = TextEditingController();
   final _noteCtrl = TextEditingController();
 
@@ -95,6 +96,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
       _type = SampleType.fromCode(ex.sampleType);
       if (ex.depthFrom != null) _fromCtrl.text = _fmt(ex.depthFrom!);
       if (ex.depthTo != null) _toCtrl.text = _fmt(ex.depthTo!);
+      if (ex.lengthM != null) _lengthCtrl.text = ex.lengthM.toString();
       if (ex.mass != null) _massCtrl.text = ex.mass.toString();
       _noteCtrl.text = ex.note ?? '';
       _saveState = 'сохранено · не отправлено';
@@ -120,6 +122,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
     _numberCtrl.dispose();
     _fromCtrl.dispose();
     _toCtrl.dispose();
+    _lengthCtrl.dispose();
     _massCtrl.dispose();
     _noteCtrl.dispose();
     super.dispose();
@@ -129,16 +132,22 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
 
   Sample _current({required int version}) {
     final number = _numberCtrl.text.trim();
+    // У существующей пробы привязка сохраняется как есть (в т.ч. NULL у
+    // свободной): смена привязки — отдельное явное действие, не автосейв.
+    final ex = widget.existing;
     return Sample(
       id: _id,
       projectId: widget.projectId,
-      parentType: widget.binding.type,
-      parentId: widget.binding.id,
+      parentType: ex != null ? ex.parentType : widget.binding.type,
+      parentId: ex != null ? ex.parentId : widget.binding.id,
       sampleNumber: number,
       sampleType: _type.code,
       barcode: number.isEmpty ? null : number, // штрихкод из номера
-      depthFrom: _parse(_fromCtrl.text),
-      depthTo: _parse(_toCtrl.text),
+      // Поля, не осмысленные для типа, не персистятся, даже если контроллер
+      // хранит старый ввод после переключения типа.
+      depthFrom: _type.hasDepthInterval ? _parse(_fromCtrl.text) : null,
+      depthTo: _type.hasDepthInterval ? _parse(_toCtrl.text) : null,
+      lengthM: _type.hasLength ? _parse(_lengthCtrl.text) : null,
       mass: _parse(_massCtrl.text),
       // Правка полей не откатывает жизненный цикл: статус существующей пробы
       // сохраняется (переходы статуса — отдельное действие, не этот экран).
@@ -251,10 +260,18 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
             const SizedBox(height: GfSpace.x8),
             _numberField(),
             const SizedBox(height: GfSpace.x24),
-            _label('ИНТЕРВАЛ ОТБОРА (м)'),
-            const SizedBox(height: GfSpace.x8),
-            _depthFields(),
-            const SizedBox(height: GfSpace.x16),
+            // Атрибуты зависят от типа пробы: «От/До» у штуфа или шлиха
+            // бессмысленны и путают (ревизия geo-consultant).
+            if (_type.hasDepthInterval) ...[
+              _label('ИНТЕРВАЛ ОТБОРА (м)'),
+              const SizedBox(height: GfSpace.x8),
+              _depthFields(),
+              const SizedBox(height: GfSpace.x16),
+            ],
+            if (_type.hasLength) ...[
+              _numTextField(_lengthCtrl, 'Длина, м'),
+              const SizedBox(height: GfSpace.x16),
+            ],
             _massField(),
             const SizedBox(height: GfSpace.x24),
             _label('БИРКА'),

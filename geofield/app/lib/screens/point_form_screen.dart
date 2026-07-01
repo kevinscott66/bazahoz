@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 
@@ -56,13 +58,17 @@ class _PointFormScreenState extends State<PointFormScreen> {
   final _lonCtrl = TextEditingController();
   final _elevCtrl = TextEditingController();
   final _rockCtrl = TextEditingController();
+  final _alterationCtrl = TextEditingController();
   final _colorCtrl = TextEditingController();
   final _grainCtrl = TextEditingController();
   final _noteCtrl = TextEditingController();
 
   String? _objectType;
+  final Set<String> _selectedMinerals = {};
   List<DictEntry> _objectTypes = const [];
   List<DictEntry> _rocks = const [];
+  List<DictEntry> _alterations = const [];
+  List<DictEntry> _mineralDict = const [];
   List<StructuralMeasurement> _measurements = const [];
   List<Sample> _boundSamples = const [];
 
@@ -93,13 +99,14 @@ class _PointFormScreenState extends State<PointFormScreen> {
       _noteCtrl.text = ex.note ?? '';
       _isDraft = ex.isDraft;
       _saveState = 'сохранено · не отправлено';
+      _selectedMinerals.addAll(_decodeMinerals(ex.minerals));
     } else {
       _id = const Uuid().v4();
       _createdAt = _nowIso();
       _observedAt = _createdAt;
       _numberCtrl.text = widget.initialNumber!;
     }
-    _loadRefs(rockCode: ex?.rockCode);
+    _loadRefs(rockCode: ex?.rockCode, alterationCode: ex?.alterationCode);
     if (ex == null) {
       // Немедленный черновик: точка существует с первого тапа (ТЗ §0, пр.2).
       WidgetsBinding.instance.addPostFrameCallback((_) => _saveNow());
@@ -108,22 +115,45 @@ class _PointFormScreenState extends State<PointFormScreen> {
     }
   }
 
-  Future<void> _loadRefs({String? rockCode}) async {
+  Future<void> _loadRefs({String? rockCode, String? alterationCode}) async {
     final types =
         await widget.dictionaries.list(widget.projectId, 'object_type');
     final rocks = await widget.dictionaries.list(widget.projectId, 'rock');
+    final alterations =
+        await widget.dictionaries.list(widget.projectId, 'alteration');
+    final minerals =
+        await widget.dictionaries.list(widget.projectId, 'mineral');
     String rockLabel = '';
     if (rockCode != null) {
       rockLabel = await widget.dictionaries
               .labelForCode(widget.projectId, 'rock', rockCode) ??
           rockCode;
     }
+    String alterationLabel = '';
+    if (alterationCode != null) {
+      alterationLabel = await widget.dictionaries
+              .labelForCode(widget.projectId, 'alteration', alterationCode) ??
+          alterationCode;
+    }
     if (!mounted) return;
     setState(() {
       _objectTypes = types;
       _rocks = rocks;
+      _alterations = alterations;
+      _mineralDict = minerals;
       if (rockLabel.isNotEmpty) _rockCtrl.text = rockLabel;
+      if (alterationLabel.isNotEmpty) _alterationCtrl.text = alterationLabel;
     });
+  }
+
+  /// minerals в базе — JSON-массив кодов: '["pyrite","native_gold"]'.
+  static List<String> _decodeMinerals(String? json) {
+    if (json == null || json.isEmpty) return const [];
+    try {
+      return (jsonDecode(json) as List).cast<String>();
+    } catch (_) {
+      return const [];
+    }
   }
 
   Future<void> _reloadChildren() async {
@@ -144,6 +174,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
     _lonCtrl.dispose();
     _elevCtrl.dispose();
     _rockCtrl.dispose();
+    _alterationCtrl.dispose();
     _colorCtrl.dispose();
     _grainCtrl.dispose();
     _noteCtrl.dispose();
@@ -190,15 +221,23 @@ class _PointFormScreenState extends State<PointFormScreen> {
       return SaveResult.invalid;
     }
 
-    // Порода: код из справочника; новое значение — «на проверку» (ТЗ §6.3).
+    // Порода и изменения: код из справочника; новое — «на проверку» (ТЗ §6.3).
     String? rockCode;
+    String? alterationCode;
     final rockText = _rockCtrl.text.trim();
+    final alterationText = _alterationCtrl.text.trim();
     try {
       if (rockText.isNotEmpty) {
         rockCode = await widget.dictionaries
                 .codeForLabel(widget.projectId, 'rock', rockText) ??
             await widget.dictionaries
                 .ensurePending(widget.projectId, 'rock', rockText);
+      }
+      if (alterationText.isNotEmpty) {
+        alterationCode = await widget.dictionaries
+                .codeForLabel(widget.projectId, 'alteration', alterationText) ??
+            await widget.dictionaries
+                .ensurePending(widget.projectId, 'alteration', alterationText);
       }
 
       // Черновик, пока не заполнено обязательное (тип, порода, координаты).
@@ -219,6 +258,10 @@ class _PointFormScreenState extends State<PointFormScreen> {
         rockCode: rockCode,
         colorCode: _emptyNull(_colorCtrl.text),
         grain: _emptyNull(_grainCtrl.text),
+        alterationCode: alterationCode,
+        minerals: _selectedMinerals.isEmpty
+            ? null
+            : jsonEncode(_selectedMinerals.toList()..sort()),
         note: _emptyNull(_noteCtrl.text),
         isDraft: draft,
         authorId: widget.authorId,
@@ -383,7 +426,15 @@ class _PointFormScreenState extends State<PointFormScreen> {
           decoration: _dec('Тип объекта'),
         ),
         const SizedBox(height: GfSpace.x12),
-        _rockAutocomplete(),
+        _dictAutocomplete(
+            _rockCtrl, _rocks, 'Порода (справочник; новое — «на проверку»)'),
+        const SizedBox(height: GfSpace.x12),
+        _dictAutocomplete(_alterationCtrl, _alterations,
+            'Вторичные изменения (окварцевание, серицитизация…)'),
+        const SizedBox(height: GfSpace.x12),
+        Text('МИНЕРАЛИЗАЦИЯ', style: GfText.sectionLabel),
+        const SizedBox(height: GfSpace.x8),
+        _mineralChips(),
         const SizedBox(height: GfSpace.x12),
         Row(children: [
           Expanded(child: _textField(_colorCtrl, 'Цвет')),
@@ -403,14 +454,51 @@ class _PointFormScreenState extends State<PointFormScreen> {
     );
   }
 
-  Widget _rockAutocomplete() {
+  Widget _mineralChips() {
+    if (_mineralDict.isEmpty) {
+      return Text('Справочник минералов пуст — обновите с сервера',
+          style: GfText.hint);
+    }
+    return Wrap(
+      spacing: GfSpace.x8,
+      runSpacing: GfSpace.x8,
+      children: _mineralDict.map((m) {
+        final selected = _selectedMinerals.contains(m.code);
+        return FilterChip(
+          label: Text(m.label),
+          selected: selected,
+          onSelected: (v) {
+            setState(() {
+              if (v) {
+                _selectedMinerals.add(m.code);
+              } else {
+                _selectedMinerals.remove(m.code);
+              }
+            });
+            _scheduleSave();
+          },
+          selectedColor: GfColors.accent.withValues(alpha: 0.25),
+          backgroundColor: GfColors.surface,
+          side: BorderSide(
+              color: selected ? GfColors.accent : GfColors.outline),
+          labelStyle: GfText.body.copyWith(
+              fontSize: 14,
+              color:
+                  selected ? GfColors.textPrimary : GfColors.textSecondary),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _dictAutocomplete(
+      TextEditingController mainCtrl, List<DictEntry> options, String hint) {
     return RawAutocomplete<String>(
-      textEditingController: _rockCtrl,
+      textEditingController: mainCtrl,
       focusNode: FocusNode(),
       optionsBuilder: (t) {
         final q = t.text.trim().toLowerCase();
         if (q.isEmpty) return const Iterable<String>.empty();
-        return _rocks
+        return options
             .map((r) => r.label)
             .where((l) => l.toLowerCase().contains(q));
       },
@@ -420,7 +508,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
         focusNode: focus,
         style: GfText.body,
         onChanged: (_) => _scheduleSave(),
-        decoration: _dec('Порода (справочник; новое — «на проверку»)'),
+        decoration: _dec(hint),
       ),
       optionsViewBuilder: (context, onSelected, options) => Align(
         alignment: Alignment.topLeft,
@@ -456,9 +544,12 @@ class _PointFormScreenState extends State<PointFormScreen> {
               const Icon(Icons.architecture,
                   size: 18, color: GfColors.textSecondary),
               const SizedBox(width: GfSpace.x8),
-              Text(
-                'аз. пад. ${_fmtNum(m.dipAzimuth)}° / угол ${_fmtNum(m.dipAngle)}°',
-                style: GfText.number.copyWith(fontSize: 16),
+              Expanded(
+                child: Text(
+                  '${measureTypes[m.measureType] ?? m.measureType ?? '—'}: '
+                  'аз. пад. ${_fmtNum(m.dipAzimuth)}° / угол ${_fmtNum(m.dipAngle)}°',
+                  style: GfText.number.copyWith(fontSize: 16),
+                ),
               ),
             ]),
           ),
@@ -590,34 +681,51 @@ class _PointFormScreenState extends State<PointFormScreen> {
   Future<void> _onAddMeasurement() async {
     final azCtrl = TextEditingController();
     final angCtrl = TextEditingController();
+    // Тип замера обязателен: замер жилы, записанный «слоистостью», даёт ложную
+    // структурную картину в камералке (ревизия geo-consultant).
+    String measureType = 'bedding';
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: GfColors.surfaceHi,
-        title: const Text('Структурный замер'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(
-            controller: azCtrl,
-            style: GfText.number,
-            keyboardType: TextInputType.number,
-            decoration: _dec('Азимут падения, 0–359'),
-          ),
-          const SizedBox(height: GfSpace.x12),
-          TextField(
-            controller: angCtrl,
-            style: GfText.number,
-            keyboardType: TextInputType.number,
-            decoration: _dec('Угол падения, 0–90'),
-          ),
-        ]),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Отмена')),
-          TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Добавить')),
-        ],
+      builder: (_) => StatefulBuilder(
+        builder: (context, setDialog) => AlertDialog(
+          backgroundColor: GfColors.surfaceHi,
+          title: const Text('Структурный замер'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            DropdownButtonFormField<String>(
+              value: measureType,
+              items: measureTypes.entries
+                  .map((e) =>
+                      DropdownMenuItem(value: e.key, child: Text(e.value)))
+                  .toList(),
+              onChanged: (v) => setDialog(() => measureType = v ?? 'bedding'),
+              dropdownColor: GfColors.surfaceHi,
+              style: GfText.body,
+              decoration: _dec('Тип замера'),
+            ),
+            const SizedBox(height: GfSpace.x12),
+            TextField(
+              controller: azCtrl,
+              style: GfText.number,
+              keyboardType: TextInputType.number,
+              decoration: _dec('Азимут падения, 0–359'),
+            ),
+            const SizedBox(height: GfSpace.x12),
+            TextField(
+              controller: angCtrl,
+              style: GfText.number,
+              keyboardType: TextInputType.number,
+              decoration: _dec('Угол падения, 0–90'),
+            ),
+          ]),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Отмена')),
+            TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Добавить')),
+          ],
+        ),
       ),
     );
     final az = _parse(azCtrl.text);
@@ -642,7 +750,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
         id: const Uuid().v4(),
         parentType: 'point',
         parentId: _id,
-        measureType: 'bedding',
+        measureType: measureType,
         dipAzimuth: az,
         dipAngle: ang,
         source: 'manual',
@@ -684,9 +792,18 @@ class _PointFormScreenState extends State<PointFormScreen> {
   }
 
   Future<void> _onDelete() async {
-    if (_boundSamples.isNotEmpty) {
+    // Свежий запрос, не кэш _boundSamples: кэш мог не успеть загрузиться
+    // (гонка с _reloadChildren) — сироты недопустимы.
+    final List<Sample> bound;
+    try {
+      bound = await widget.samples.listByParent('point', _id);
+    } catch (e) {
+      _snack('Не удалось проверить пробы точки — попробуйте ещё раз');
+      return;
+    }
+    if (bound.isNotEmpty) {
       // Не оставляем проб-сирот: осознанное правило вместо каскада-сюрприза.
-      _snack('Сначала удалите или отвяжите пробы точки (${_boundSamples.length})');
+      _snack('Сначала удалите или отвяжите пробы точки (${bound.length})');
       return;
     }
     final confirmed = await showDialog<bool>(

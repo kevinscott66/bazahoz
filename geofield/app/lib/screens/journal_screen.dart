@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -50,6 +51,7 @@ class _JournalScreenState extends State<JournalScreen> {
   List<Sample> _samples = const [];
   _Filter _filter = _Filter.all;
   bool _loading = true;
+  int _reloadGen = 0;
 
   @override
   void initState() {
@@ -58,9 +60,12 @@ class _JournalScreenState extends State<JournalScreen> {
   }
 
   Future<void> _reload() async {
+    // Поколение запроса: медленный старый ответ не затирает свежие данные.
+    final gen = ++_reloadGen;
     final pts = await widget.points.listByRoute(widget.routeId);
-    final smp = await widget.samples.listByProject(widget.projectId);
-    if (!mounted) return;
+    final smp = await widget.samples
+        .listByRoute(widget.routeId, projectId: widget.projectId);
+    if (!mounted || gen != _reloadGen) return;
     setState(() {
       _points = pts;
       _samples = smp;
@@ -343,19 +348,37 @@ class _JournalScreenState extends State<JournalScreen> {
   Future<void> _onExport() async {
     try {
       final dir = await getDatabasesPath();
-      final rockLabels = <String, String>{
-        for (final e in await widget.dictionaries.list(widget.projectId, 'rock'))
-          e.code: e.label,
-      };
-      final typeLabels = <String, String>{
-        for (final e
-            in await widget.dictionaries.list(widget.projectId, 'object_type'))
-          e.code: e.label,
-      };
+      Future<Map<String, String>> labels(String type) async => {
+            for (final e
+                in await widget.dictionaries.list(widget.projectId, type))
+              e.code: e.label,
+          };
+      final rockLabels = await labels('rock');
+      final typeLabels = await labels('object_type');
+      final alterationLabels = await labels('alteration');
+      final mineralLabels = await labels('mineral');
+      final route = await widget.points.routeInfo(widget.routeId);
+      final measurements =
+          await widget.points.measurementsForRoute(widget.routeId);
+      final pointById = {for (final pt in _points) pt.id: pt};
+
+      String mineralsText(String? json) {
+        if (json == null || json.isEmpty) return '';
+        try {
+          return (jsonDecode(json) as List)
+              .cast<String>()
+              .map((c) => mineralLabels[c] ?? c)
+              .join(', ');
+        } catch (_) {
+          return json;
+        }
+      }
 
       final pointsCsv = toCsv(pointCsvHeader, [
         for (final pt in _points)
           [
+            route?.title ?? widget.routeId,
+            route?.date,
             pt.number,
             pt.lat,
             pt.lon,
@@ -367,7 +390,8 @@ class _JournalScreenState extends State<JournalScreen> {
             rockLabels[pt.rockCode] ?? pt.rockCode,
             pt.colorCode,
             pt.grain,
-            pt.alterationCode,
+            alterationLabels[pt.alterationCode] ?? pt.alterationCode,
+            mineralsText(pt.minerals),
             pt.note,
             pt.isDraft ? 'да' : 'нет',
             pt.authorId,
@@ -381,8 +405,9 @@ class _JournalScreenState extends State<JournalScreen> {
             s.sampleNumber,
             SampleType.fromCode(s.sampleType).label,
             s.barcode,
-            s.parentType,
-            s.parentId,
+            s.parentType == 'point' ? pointById[s.parentId]?.number : null,
+            s.parentType == 'point' ? pointById[s.parentId]?.lat : null,
+            s.parentType == 'point' ? pointById[s.parentId]?.lon : null,
             s.depthFrom,
             s.depthTo,
             s.mass,
@@ -391,16 +416,34 @@ class _JournalScreenState extends State<JournalScreen> {
             s.authorId,
             s.createdAt,
             s.modifiedAt,
+            s.parentType,
+            s.parentId,
+          ],
+      ]);
+      final structuresCsv = toCsv(structureCsvHeader, [
+        for (final m in measurements)
+          [
+            pointById[m.parentId]?.number ?? m.parentId,
+            measureTypes[m.measureType] ?? m.measureType,
+            m.dipAzimuth,
+            m.dipAngle,
+            m.source,
+            m.note,
+            m.authorId,
+            m.createdAt,
           ],
       ]);
 
       final pFile = File(p.join(dir, 'geofield_points.csv'));
       final sFile = File(p.join(dir, 'geofield_samples.csv'));
+      final mFile = File(p.join(dir, 'geofield_structures.csv'));
       await pFile.writeAsString(pointsCsv);
       await sFile.writeAsString(samplesCsv);
+      await mFile.writeAsString(structuresCsv);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Выгружено: ${pFile.path} и ${sFile.path}'),
+        content: Text(
+            'Выгружено 3 файла в ${p.dirname(pFile.path)}: точки, пробы, замеры'),
         duration: const Duration(seconds: 6),
       ));
     } catch (e) {

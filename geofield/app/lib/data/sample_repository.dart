@@ -4,6 +4,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/sample.dart';
+import 'change_payload.dart';
 
 /// Доступ к пробам. Каждая мутация пишется атомарно: строка `samples` +
 /// запись в `change_log` (event sourcing, sync-protocol.md §1). Так база
@@ -40,6 +41,23 @@ class SampleRepository {
     return rows.map(Sample.fromMap).toList();
   }
 
+  /// Пробы маршрута: привязанные к точкам маршрута + свободные пробы проекта
+  /// (без привязки), чтобы ничто не пряталось из журнала (ТЗ §6.7 — журнал
+  /// «за день/маршрут», а не свалка всего проекта).
+  Future<List<Sample>> listByRoute(String routeId,
+      {required String projectId}) async {
+    final rows = await _db.rawQuery('''
+      SELECT s.* FROM samples s
+      WHERE s.deleted = 0 AND (
+        (s.parent_type = 'point' AND s.parent_id IN
+          (SELECT id FROM observation_points WHERE route_id = ?))
+        OR (s.parent_type IS NULL AND s.project_id = ?)
+      )
+      ORDER BY s.created_at DESC
+    ''', [routeId, projectId]);
+    return rows.map(Sample.fromMap).toList();
+  }
+
   Future<List<Sample>> listByProject(String projectId) async {
     final rows = await _db.query(
       'samples',
@@ -55,9 +73,15 @@ class SampleRepository {
   Future<void> save(Sample sample, {required bool isNew}) async {
     final map = sample.toMap();
     await _db.transaction((txn) async {
+      Map<String, Object?> payload = map;
       if (isNew) {
         await txn.insert('samples', map);
       } else {
+        // Дельта до update (payload update = только изменённые поля,
+        // sync-protocol.md §1).
+        final old = await txn.query('samples',
+            where: 'id = ?', whereArgs: [sample.id], limit: 1);
+        if (old.isNotEmpty) payload = changedFields(old.first, map);
         await txn.update('samples', map,
             where: 'id = ?', whereArgs: [sample.id]);
       }
@@ -66,7 +90,7 @@ class SampleRepository {
         'entity_table': 'samples',
         'entity_id': sample.id,
         'op': isNew ? 'insert' : 'update',
-        'payload': jsonEncode(map),
+        'payload': jsonEncode(payload),
         'author_id': authorId,
         'device_id': deviceId,
         // Прототип: ISO-время. Прод — HLC (sync-protocol.md §4).

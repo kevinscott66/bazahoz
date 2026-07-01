@@ -51,48 +51,66 @@ Future<void> _seedDemo(AppDatabase app) async {
     'modified_at': now,
   });
 
-  const objectTypes = [
-    ('outcrop', 'Обнажение'),
-    ('pit', 'Закопушка'),
-    ('deluvium', 'Делювий'),
-    ('bedrock', 'Коренной выход'),
-  ];
-  const rocks = [
-    ('granite', 'Гранит'),
-    ('diorite', 'Диорит'),
-    ('basalt', 'Базальт'),
-    ('sandstone', 'Песчаник'),
-    ('siltstone', 'Алевролит'),
-    ('shale', 'Сланец'),
-    ('quartz_vein', 'Кварцевая жила'),
-  ];
-  var order = 0;
-  for (final (code, label) in objectTypes) {
-    batch.insert('dictionaries', {
-      'id': 'dict-ot-$code',
-      'project_id': _demoProjectId,
-      'dict_type': 'object_type',
-      'code': code,
-      'label': label,
-      'sort_order': order++,
-      'author_id': _demoAuthorId,
-      'created_at': now,
-      'modified_at': now,
-    });
-  }
-  order = 0;
-  for (final (code, label) in rocks) {
-    batch.insert('dictionaries', {
-      'id': 'dict-rock-$code',
-      'project_id': _demoProjectId,
-      'dict_type': 'rock',
-      'code': code,
-      'label': label,
-      'sort_order': order++,
-      'author_id': _demoAuthorId,
-      'created_at': now,
-      'modified_at': now,
-    });
+  // Состав — по ревизии geo-consultant (Магаданская область, россыпное +
+  // рудное золото); итоговые перечни утверждает живой консультант
+  // (geofield/domain-review.md).
+  const dicts = <String, List<(String, String)>>{
+    'object_type': [
+      ('outcrop', 'Обнажение'),
+      ('bedrock', 'Коренной выход'),
+      ('shurf', 'Шурф'),
+      ('trench', 'Канава'),
+      ('clearing', 'Расчистка'),
+      ('pit', 'Закопушка'),
+      ('float', 'Свалы/высыпки'),
+      ('deluvium', 'Делювиальные высыпки'),
+      ('alluvium', 'Русловой аллювий'),
+      ('terrace', 'Терраса'),
+    ],
+    'rock': [
+      ('sandstone', 'Песчаник'),
+      ('siltstone', 'Алевролит'),
+      ('mudstone', 'Аргиллит'),
+      ('clay_shale', 'Глинистый сланец'),
+      ('carbon_shale', 'Углисто-глинистый сланец'),
+      ('granite', 'Гранит'),
+      ('granodiorite', 'Гранодиорит'),
+      ('diorite', 'Диорит'),
+      ('dike', 'Дайковая порода'),
+      ('vein_quartz', 'Жильный кварц'),
+      ('beresite', 'Березит'),
+      ('silicified', 'Окварцованная порода'),
+    ],
+    'alteration': [
+      ('silicification', 'Окварцевание'),
+      ('sericitization', 'Серицитизация'),
+      ('sulfidization', 'Сульфидизация'),
+      ('beresitization', 'Березитизация'),
+      ('argillization', 'Аргиллизация'),
+    ],
+    'mineral': [
+      ('pyrite', 'Пирит'),
+      ('arsenopyrite', 'Арсенопирит'),
+      ('galena', 'Галенит'),
+      ('sphalerite', 'Сфалерит'),
+      ('native_gold', 'Видимое золото'),
+    ],
+  };
+  for (final entry in dicts.entries) {
+    var order = 0;
+    for (final (code, label) in entry.value) {
+      batch.insert('dictionaries', {
+        'id': 'dict-${entry.key}-$code',
+        'project_id': _demoProjectId,
+        'dict_type': entry.key,
+        'code': code,
+        'label': label,
+        'sort_order': order++,
+        'author_id': _demoAuthorId,
+        'created_at': now,
+        'modified_at': now,
+      });
+    }
   }
   await batch.commit(noResult: true);
 }
