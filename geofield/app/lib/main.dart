@@ -32,7 +32,19 @@ Future<void> _seedDemo(AppDatabase app) async {
   if (existing.isNotEmpty) return;
 
   final now = DateTime.now().toUtc().toIso8601String();
+  // Сид — бутстрап «как будто пришло с сервера», НЕ пользовательская мутация:
+  // в change_log не пишется (иначе каждое устройство отправит одинаковые
+  // сиды и создаст дубли), sync_status='confirmed' (отправлять нечего),
+  // row_clock — нулевая метка: любой реальный update детерминированно
+  // выигрывает LWW, проходя обычный путь с историей.
+  final seedClock = const Hlc(0, 0, 'seed').encode();
   final batch = app.db.batch();
+
+  void seedRowClock(String table, String id) {
+    batch.insert('row_clocks',
+        {'entity_table': table, 'entity_id': id, 'hlc_ts': seedClock});
+  }
+
   batch.insert('projects', {
     'id': _demoProjectId,
     'name': 'Демо — Сусуман',
@@ -42,7 +54,9 @@ Future<void> _seedDemo(AppDatabase app) async {
     'author_id': _demoAuthorId,
     'created_at': now,
     'modified_at': now,
+    'sync_status': 'confirmed',
   });
+  seedRowClock('projects', _demoProjectId);
   batch.insert('routes', {
     'id': _demoRouteId,
     'route_date': now.substring(0, 10),
@@ -51,7 +65,9 @@ Future<void> _seedDemo(AppDatabase app) async {
     'author_id': _demoAuthorId,
     'created_at': now,
     'modified_at': now,
+    'sync_status': 'confirmed',
   });
+  seedRowClock('routes', _demoRouteId);
 
   // Состав — по ревизии geo-consultant (Магаданская область, россыпное +
   // рудное золото); итоговые перечни утверждает живой консультант
@@ -101,8 +117,9 @@ Future<void> _seedDemo(AppDatabase app) async {
   for (final entry in dicts.entries) {
     var order = 0;
     for (final (code, label) in entry.value) {
+      final id = 'dict-${entry.key}-$code';
       batch.insert('dictionaries', {
-        'id': 'dict-${entry.key}-$code',
+        'id': id,
         'project_id': _demoProjectId,
         'dict_type': entry.key,
         'code': code,
@@ -111,7 +128,9 @@ Future<void> _seedDemo(AppDatabase app) async {
         'author_id': _demoAuthorId,
         'created_at': now,
         'modified_at': now,
+        'sync_status': 'confirmed',
       });
+      seedRowClock('dictionaries', id);
     }
   }
   await batch.commit(noResult: true);

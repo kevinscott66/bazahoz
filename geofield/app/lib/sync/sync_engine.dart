@@ -318,7 +318,20 @@ class SyncEngine {
     var applied = 0, conflicts = 0;
     await _db.transaction((txn) async {
       for (final c in changes) {
-        final ok = await _applyOne(txn, c);
+        bool ok;
+        try {
+          ok = await _applyOne(txn, c);
+        } on DatabaseException catch (e) {
+          // Отказ одной мутации (ошибка уровня стейтмента — транзакция
+          // жива) не должен ронять страницу и блокировать PULL навсегда.
+          await _recordConflict(
+              txn,
+              (c['entity_table'] as String?) ?? '?',
+              (c['entity_id'] as String?) ?? '?',
+              remote: jsonEncode(c),
+              note: 'мутация отклонена базой: $e');
+          ok = false;
+        }
         if (ok) {
           applied++;
         } else {
@@ -343,6 +356,19 @@ class SyncEngine {
     final incomingTs = (c['logical_ts'] as String?) ?? '';
     final payload = (c['payload'] as Map?)?.cast<String, Object?>() ?? {};
 
+    // Метка обязана быть HLC (§4). Не-HLC (мусор, старый ISO-формат) — на
+    // разбор: LWW со смешанными форматами дал бы бессмысленный порядок.
+    final incomingHlc = Hlc.tryParse(incomingTs);
+    if (incomingHlc == null) {
+      await _recordConflict(txn, table ?? '?', entityId ?? '?',
+          remote: jsonEncode(c), note: 'logical_ts не в формате HLC');
+      return false;
+    }
+    // Подтянуть свои часы ДО любых проверок применимости: метку мы УВИДЕЛИ,
+    // и следующая локальная обязана быть строго больше (§4) — даже если сама
+    // мутация уйдёт в conflicts (неизвестная таблица от нового клиента).
+    await clock.receive(txn, incomingHlc);
+
     if (table == null || entityId == null || !_applyTables.contains(table)) {
       await _recordConflict(txn, table ?? '?', entityId ?? '?',
           field: 'entity_table',
@@ -350,18 +376,6 @@ class SyncEngine {
           note: 'неизвестная таблица');
       return false;
     }
-
-    // Метка обязана быть HLC (§4). Не-HLC (мусор, старый ISO-формат) — на
-    // разбор: LWW со смешанными форматами дал бы бессмысленный порядок.
-    final incomingHlc = Hlc.tryParse(incomingTs);
-    if (incomingHlc == null) {
-      await _recordConflict(txn, table, entityId,
-          remote: jsonEncode(c), note: 'logical_ts не в формате HLC');
-      return false;
-    }
-    // Подтянуть свои часы: следующая локальная метка будет строго больше
-    // всего виденного (§4), независимо от исхода LWW ниже.
-    await clock.receive(txn, incomingHlc);
     // HLC последнего писателя строки; '' — строки ещё нет/не писалась.
     final localTs = await rowClock(txn, table, entityId) ?? '';
 
@@ -390,7 +404,19 @@ class SyncEngine {
         // отправлять её обратно нечего, журнал не должен счесть её «своей
         // неотправленной».
         filtered['sync_status'] = 'confirmed';
-        await txn.insert(table, filtered);
+        try {
+          await txn.insert(table, filtered);
+        } on DatabaseException catch (e) {
+          // Коллизия натурального ключа: два устройства офлайн завели одно
+          // и то же под разными id (напр., dictionaries с одним code,
+          // UNIQUE(project_id,dict_type,code)). На разбор — и дальше:
+          // иначе исключение откатит всю страницу и PULL заблокируется
+          // навсегда на этом же пакете.
+          await _recordConflict(txn, table, entityId,
+              remote: jsonEncode(payload),
+              note: 'insert отклонён базой (дубль натурального ключа?): $e');
+          return false;
+        }
         await upsertRowClock(txn, table, entityId, incomingTs);
         if (unknown.isNotEmpty) {
           await _recordConflict(txn, table, entityId,
