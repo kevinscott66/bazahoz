@@ -59,10 +59,15 @@ lib/
 ├── data/sample_repository.dart        пробы: upsert/softDelete + change_log
 ├── data/point_repository.dart         точки и замеры + change_log
 ├── data/dictionary_repository.dart    справочники, «на проверку» (ТЗ 6.3)
+├── data/change_payload.dart           дельта изменённых полей для change_log
+├── sync/packetizer.dart               нарезка дельты на пакеты (протокол §3.1)
+├── sync/relay_client.dart             HTTP-клиент relay (gzip, dart:io)
+├── sync/sync_engine.dart              PUSH/PULL: ack, курсор, LWW+история+конфликты
 └── screens/
     ├── journal_screen.dart            журнал маршрута: фильтры, сводка, CSV (ТЗ 6.7)
     ├── point_form_screen.dart         точка наблюдения: блоки, черновик (ТЗ 6.3)
-    └── sample_capture_screen.dart     регистрация пробы + бирка (ТЗ 6.5)
+    ├── sample_capture_screen.dart     регистрация пробы + бирка (ТЗ 6.5)
+    └── sync_screen.dart               синхронизация: пакеты, пауза, лог (ТЗ 6.8)
 ```
 
 Поток: журнал → «＋ Точка» → форма точки → «＋ Проба» → регистрация пробы.

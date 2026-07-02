@@ -141,6 +141,7 @@ class GeoFieldApp extends StatelessWidget {
         routeId: _demoRouteId,
         authorId: _demoAuthorId,
         sampleNumbering: _demoNumbering,
+        deviceId: _demoDeviceId,
       ),
     );
   }

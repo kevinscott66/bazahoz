@@ -15,6 +15,7 @@ import '../util/csv_export.dart';
 import '../util/sample_number.dart';
 import 'point_form_screen.dart';
 import 'sample_capture_screen.dart';
+import 'sync_screen.dart';
 
 /// Фильтры журнала (ТЗ §6.7).
 enum _Filter { all, drafts, unsent }
@@ -31,6 +32,7 @@ class JournalScreen extends StatefulWidget {
     required this.routeId,
     required this.authorId,
     required this.sampleNumbering,
+    required this.deviceId,
   });
 
   final PointRepository points;
@@ -40,6 +42,7 @@ class JournalScreen extends StatefulWidget {
   final String routeId;
   final String authorId;
   final String sampleNumbering;
+  final String deviceId;
 
   @override
   State<JournalScreen> createState() => _JournalScreenState();
@@ -105,6 +108,17 @@ class _JournalScreenState extends State<JournalScreen> {
             tooltip: 'Выгрузка CSV',
             icon: const Icon(Icons.ios_share, color: GfColors.textSecondary),
             onPressed: _onExport,
+          ),
+          IconButton(
+            tooltip: 'Синхронизация',
+            icon: const Icon(Icons.sync, color: GfColors.textSecondary),
+            onPressed: () async {
+              await Navigator.of(context).push(MaterialPageRoute<void>(
+                builder: (_) => SyncScreen(
+                    db: widget.points.db, deviceId: widget.deviceId),
+              ));
+              await _reload();
+            },
           ),
         ],
       ),

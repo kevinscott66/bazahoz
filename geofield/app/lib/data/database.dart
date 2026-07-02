@@ -192,6 +192,41 @@ class AppDatabase {
       )
     ''');
 
+    await d.execute('''
+      CREATE TABLE sync_state (
+        key    TEXT PRIMARY KEY NOT NULL,
+        value  TEXT
+      )
+    ''');
+
+    await d.execute('''
+      CREATE TABLE conflicts (
+        id             TEXT PRIMARY KEY NOT NULL,
+        entity_table   TEXT NOT NULL,
+        entity_id      TEXT NOT NULL,
+        field          TEXT,
+        local_value    TEXT,
+        remote_value   TEXT,
+        local_version  INTEGER,
+        remote_version INTEGER,
+        detected_at    TEXT NOT NULL,
+        resolved       INTEGER NOT NULL DEFAULT 0,
+        resolution     TEXT
+      )
+    ''');
+
+    await d.execute('''
+      CREATE TABLE record_history (
+        id            TEXT PRIMARY KEY NOT NULL,
+        entity_table  TEXT NOT NULL,
+        entity_id     TEXT NOT NULL,
+        version       INTEGER NOT NULL,
+        snapshot      TEXT NOT NULL,
+        author_id     TEXT,
+        archived_at   TEXT NOT NULL
+      )
+    ''');
+
     await d.execute('CREATE INDEX idx_samples_number ON samples(sample_number)');
     await d.execute('CREATE INDEX idx_samples_barcode ON samples(barcode)');
     await d.execute(
