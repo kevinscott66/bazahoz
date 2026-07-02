@@ -93,7 +93,10 @@ class PointRepository {
     final map = m.toMap();
     await _db.transaction((txn) async {
       await txn.insert('structural_measurements', map);
-      await _log(txn, 'structural_measurements', m.id, 'insert', map);
+      // insertPayload — как у точек/проб: если модель замера обзаведётся
+      // локальными мета-полями, они не утекут на провод.
+      await _log(txn, 'structural_measurements', m.id, 'insert',
+          insertPayload(map));
     });
   }
 
