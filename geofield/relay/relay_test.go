@@ -205,6 +205,98 @@ func TestValidationRejectsBatch(t *testing.T) {
 	}
 }
 
+func TestIntraBatchDuplicate(t *testing.T) {
+	ts, j, _ := testServer(t)
+	// Одна и та же мутация дважды в ОДНОМ пакете — принимается один раз.
+	resp, pr := doPush(t, ts, "secret", "dev-a", false, change("c1", "e1"), change("c1", "e1"))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("статус %d", resp.StatusCode)
+	}
+	if len(pr.Accepted) != 1 || len(pr.Duplicates) != 1 {
+		t.Fatalf("accepted=%v duplicates=%v", pr.Accepted, pr.Duplicates)
+	}
+	if j.LastSeq() != 1 {
+		t.Fatalf("last_seq=%d, ожидалось 1", j.LastSeq())
+	}
+}
+
+func TestAuthorIDRequired(t *testing.T) {
+	ts, _, _ := testServer(t)
+	c := change("c1", "e1")
+	c.AuthorID = ""
+	resp, _ := doPush(t, ts, "secret", "dev-a", false, c)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("статус %d, ожидался 422 (author_id обязателен)", resp.StatusCode)
+	}
+}
+
+func TestUnknownTopLevelFieldTolerated(t *testing.T) {
+	ts, _, _ := testServer(t)
+	// Более новый клиент прислал лишнее поле — пакет не должен отвергаться.
+	body := `{"device_id":"dev-a","client_version":"9.9","changes":[
+	  {"change_id":"c1","entity_table":"samples","entity_id":"e1","op":"insert",
+	   "payload":{"n":1},"author_id":"g1","logical_ts":"2026-07-02T10:00:00Z"}]}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/push", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("статус %d, ожидался 200 (неизвестные поля терпимы)", resp.StatusCode)
+	}
+}
+
+func TestDecompressionBombRejected(t *testing.T) {
+	ts, _, _ := testServer(t)
+	// >64 МиБ нулей сжимаются в десятки КБ — сжатый размер проходит
+	// MaxBytesReader, но распакованный обязан упереться в лимит.
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	zeros := make([]byte, 1<<20)
+	for range 65 {
+		gw.Write(zeros)
+	}
+	gw.Close()
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/push", &buf)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Encoding", "gzip")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("статус %d, ожидался 413", resp.StatusCode)
+	}
+}
+
+func TestReplaySkipsDuplicateChangeID(t *testing.T) {
+	// Повтор change_id на диске (след сбойного ретрая до отката) —
+	// реплей идемпотентен: первая копия остаётся, повтор пропускается.
+	path := filepath.Join(t.TempDir(), "journal.jsonl")
+	lines := `{"seq":1,"device_id":"d","received_at":"t","change_id":"c1","entity_table":"samples","entity_id":"e1","op":"insert","payload":{},"author_id":"g","logical_ts":"t"}
+{"seq":2,"device_id":"d","received_at":"t","change_id":"c1","entity_table":"samples","entity_id":"e1","op":"insert","payload":{},"author_id":"g","logical_ts":"t"}
+{"seq":2,"device_id":"d","received_at":"t","change_id":"c2","entity_table":"samples","entity_id":"e2","op":"insert","payload":{},"author_id":"g","logical_ts":"t"}
+`
+	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenJournal(path)
+	if err != nil {
+		t.Fatalf("реплей с повтором change_id должен пройти: %v", err)
+	}
+	defer j.Close()
+	if j.LastSeq() != 2 {
+		t.Fatalf("last_seq=%d, ожидалось 2", j.LastSeq())
+	}
+	out, _ := j.List(0, 100, "other")
+	if len(out) != 2 || out[0].ChangeID != "c1" || out[1].ChangeID != "c2" {
+		t.Fatalf("реплей дал %+v", out)
+	}
+}
+
 func TestMalformedJSON(t *testing.T) {
 	ts, _, _ := testServer(t)
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/push", bytes.NewBufferString("{нет"))

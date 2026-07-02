@@ -18,6 +18,10 @@ import (
 // щедрый потолок против случайного/злонамеренного гиганта.
 const maxBodyBytes = 8 << 20
 
+// Лимит РАСПАКОВАННОГО тела: gzip-бомба в 8 МиБ разворачивается в гигабайты,
+// MaxBytesReader ограничивает только сжатый поток.
+const maxDecompressedBytes = 64 << 20
+
 const defaultPullLimit = 500
 const maxPullLimit = 5000
 
@@ -83,10 +87,20 @@ func (s *server) handlePush(w http.ResponseWriter, r *http.Request) {
 		reader = gz
 	}
 
+	data, err := io.ReadAll(io.LimitReader(reader, maxDecompressedBytes+1))
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "чтение тела: "+err.Error())
+		return
+	}
+	if len(data) > maxDecompressedBytes {
+		jsonError(w, http.StatusRequestEntityTooLarge, "распакованное тело больше лимита")
+		return
+	}
+
+	// Неизвестные поля верхнего уровня терпимы: более новый клиент не должен
+	// намертво блокироваться о ещё не обновлённый relay (эволюция протокола).
 	var req pushRequest
-	dec := json.NewDecoder(reader)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	if err := json.Unmarshal(data, &req); err != nil {
 		jsonError(w, http.StatusBadRequest, "битый JSON: "+err.Error())
 		return
 	}

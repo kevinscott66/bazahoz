@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -41,6 +42,10 @@ func (c *Change) Validate() error {
 		return errors.New("entity_id пуст")
 	case c.Op != "insert" && c.Op != "update" && c.Op != "delete":
 		return fmt.Errorf("op %q не из insert|update|delete", c.Op)
+	case c.AuthorID == "":
+		// Обязателен по контракту §1: нужен для разрыва ничьей HLC (§4)
+		// и атрибуции в record_history/conflicts (§5).
+		return errors.New("author_id пуст")
 	case c.LogicalTS == "":
 		return errors.New("logical_ts пуст")
 	case len(c.Payload) == 0 || !json.Valid(c.Payload):
@@ -55,9 +60,11 @@ type Journal struct {
 	mu      sync.Mutex
 	f       *os.File
 	path    string
+	size    int64 // подтверждённый размер файла (для отката сбойной записи)
 	lastSeq int64
 	seen    map[string]struct{} // change_id → принят (идемпотентность)
 	items   []StoredChange      // упорядочены по seq
+	broken  bool                // файл в неопределённом состоянии — приём закрыт
 }
 
 // OpenJournal открывает (или создаёт) журнал и реплеит его содержимое.
@@ -70,21 +77,33 @@ func OpenJournal(path string) (*Journal, error) {
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
 	line := 0
+	var goodBytes int64
 	for sc.Scan() {
 		line++
 		b := sc.Bytes()
 		if len(b) == 0 {
+			goodBytes += 1 // пустая строка + \n
 			continue
 		}
 		var rec StoredChange
 		if err := json.Unmarshal(b, &rec); err != nil {
 			// Обрыв на последней строке (падение при записи) допустим и
-			// отбрасывается; порча в середине журнала — стоп, нужен разбор.
+			// отбрасывается — но НЕ молча: если это была уже подтверждённая
+			// клиенту запись (битый сектор и т.п.), след останется в логе.
 			if !sc.Scan() {
+				log.Printf("журнал: последняя строка %d отброшена как оборванная/битая: %v", line, err)
 				break
 			}
 			f.Close()
 			return nil, fmt.Errorf("журнал повреждён на строке %d: %w", line, err)
+		}
+		if _, dup := j.seen[rec.ChangeID]; dup {
+			// Повтор change_id на диске возможен после сбоя записи и ретрая
+			// пакета (см. Append) — реплей идемпотентен: первую копию храним,
+			// повтор пропускаем с предупреждением.
+			log.Printf("журнал: строка %d — повтор change_id %s, пропущена", line, rec.ChangeID)
+			goodBytes += int64(len(b)) + 1
+			continue
 		}
 		if rec.Seq <= j.lastSeq {
 			f.Close()
@@ -93,10 +112,20 @@ func OpenJournal(path string) (*Journal, error) {
 		j.lastSeq = rec.Seq
 		j.seen[rec.ChangeID] = struct{}{}
 		j.items = append(j.items, rec)
+		goodBytes += int64(len(b)) + 1
 	}
 	if err := sc.Err(); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("чтение журнала: %w", err)
+	}
+	j.size = goodBytes
+	// Отброшенный хвост отрезаем сразу, чтобы следующий append не создал
+	// файл со «склеенной» строкой.
+	if st, err := f.Stat(); err == nil && st.Size() > goodBytes {
+		if err := f.Truncate(goodBytes); err != nil {
+			f.Close()
+			return nil, fmt.Errorf("усечение оборванного хвоста: %w", err)
+		}
 	}
 	return j, nil
 }
@@ -110,14 +139,22 @@ func (j *Journal) Append(deviceID string, changes []Change) (accepted, duplicate
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
+	if j.broken {
+		return nil, nil, errors.New("журнал в неопределённом состоянии после сбоя записи — нужен рестарт relay")
+	}
+
 	now := time.Now().UTC().Format(time.RFC3339)
 	var buf []byte
 	var pending []StoredChange
+	inBatch := make(map[string]struct{}) // дедуп внутри одного пакета
 	for _, c := range changes {
-		if _, dup := j.seen[c.ChangeID]; dup {
+		_, dupSeen := j.seen[c.ChangeID]
+		_, dupBatch := inBatch[c.ChangeID]
+		if dupSeen || dupBatch {
 			duplicates = append(duplicates, c.ChangeID)
 			continue
 		}
+		inBatch[c.ChangeID] = struct{}{}
 		rec := StoredChange{
 			Seq:        j.lastSeq + int64(len(pending)) + 1,
 			DeviceID:   deviceID,
@@ -137,12 +174,18 @@ func (j *Journal) Append(deviceID string, changes []Change) (accepted, duplicate
 	}
 	// Одна запись + fsync на пакет: либо пакет на диске целиком, либо
 	// (при падении) его хвост отбросится реплеем как оборванная строка.
+	// При ошибке Write/Sync часть байтов могла лечь на диск — откатываем
+	// файл к подтверждённому размеру, иначе ретрай пакета продублирует
+	// строки с теми же seq и реплей после рестарта откажет.
 	if _, err = j.f.Write(buf); err != nil {
+		j.rollback()
 		return nil, nil, fmt.Errorf("запись журнала: %w", err)
 	}
 	if err = j.f.Sync(); err != nil {
+		j.rollback()
 		return nil, nil, fmt.Errorf("fsync журнала: %w", err)
 	}
+	j.size += int64(len(buf))
 	for _, rec := range pending {
 		j.lastSeq = rec.Seq
 		j.seen[rec.ChangeID] = struct{}{}
@@ -150,6 +193,22 @@ func (j *Journal) Append(deviceID string, changes []Change) (accepted, duplicate
 		accepted = append(accepted, rec.ChangeID)
 	}
 	return accepted, duplicates, nil
+}
+
+// rollback пытается срезать файл до последнего подтверждённого размера.
+// Не вышло — журнал помечается сломанным и приём закрывается (данные на
+// диске целы, но их граница неизвестна; реплей при рестарте разберётся —
+// повторы change_id он пропускает).
+func (j *Journal) rollback() {
+	if err := j.f.Truncate(j.size); err != nil {
+		log.Printf("журнал: откат до %d байт не удался (%v) — приём закрыт до рестарта", j.size, err)
+		j.broken = true
+		return
+	}
+	if err := j.f.Sync(); err != nil {
+		log.Printf("журнал: fsync после отката не удался (%v) — приём закрыт до рестарта", err)
+		j.broken = true
+	}
 }
 
 // List отдаёт мутации с seq > cursor, кроме мутаций самого запрашивающего
