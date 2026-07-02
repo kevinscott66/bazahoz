@@ -72,16 +72,13 @@ class _SyncScreenState extends State<SyncScreen> {
   }
 
   Future<void> _refreshPending() async {
-    final rows = await widget.db.query('change_log',
-        where: 'synced = 0', columns: ['payload']);
-    var bytes = 0;
-    for (final r in rows) {
-      bytes += ((r['payload'] as String?) ?? '').length;
-    }
+    // Та же метрика, которой пакетайзер режет пакеты (wire-байты UTF-8),
+    // а не длина payload в символах — иначе оценка расходится с трафиком.
+    final p = await pendingWireSize(widget.db);
     if (!mounted) return;
     setState(() {
-      _pendingCount = rows.length;
-      _pendingBytes = bytes;
+      _pendingCount = p.count;
+      _pendingBytes = p.bytes;
     });
   }
 

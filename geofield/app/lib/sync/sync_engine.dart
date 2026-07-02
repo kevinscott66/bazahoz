@@ -56,6 +56,27 @@ class SyncResult {
       };
 }
 
+/// Объём неотправленного в БАЙТАХ wire-формата (конверт мутации целиком,
+/// UTF-8) — та же метрика, которой пакетайзер режет на пакеты. Общая точка
+/// для экрана и движка: две разные оценки неизбежно разъехались бы.
+Future<({int count, int bytes})> pendingWireSize(Database db) async {
+  final rows = await db.query('change_log',
+      where: 'synced = 0', orderBy: 'seq', columns: [
+    'change_id',
+    'entity_table',
+    'entity_id',
+    'op',
+    'payload',
+    'author_id',
+    'logical_ts',
+  ]);
+  var bytes = 0;
+  for (final r in rows) {
+    bytes += utf8.encode(jsonEncode(SyncEngine.wireChange(r))).length;
+  }
+  return (count: rows.length, bytes: bytes);
+}
+
 /// Управляемый сбой сеанса. Именно Exception (не Error): ловится ветвью
 /// `on Exception` в run() и превращается в возобновляемый итог сеанса.
 class SyncException implements Exception {
@@ -103,14 +124,7 @@ class SyncEngine {
   void pause() => _paused = true;
 
   /// Объём неотправленного — для «что уйдёт: N записей · X КБ» до сеанса.
-  Future<({int count, int bytes})> pendingSize() async {
-    final rows = await _pendingRows();
-    var bytes = 0;
-    for (final r in rows) {
-      bytes += utf8.encode(jsonEncode(_wireChange(r))).length;
-    }
-    return (count: rows.length, bytes: bytes);
-  }
+  Future<({int count, int bytes})> pendingSize() => pendingWireSize(_db);
 
   Future<SyncResult> run({void Function(SyncProgress)? onProgress}) async {
     _paused = false;
@@ -121,7 +135,7 @@ class SyncEngine {
       // --- PUSH: только дельта, пакетами, с подтверждением ---------------------
       final pending = await _pendingRows();
       final packets = splitIntoPackets(
-        [for (final r in pending) _wireChange(r)],
+        [for (final r in pending) wireChange(r)],
         maxBytes: packetBytes,
       );
       for (var i = 0; i < packets.length; i++) {
@@ -236,7 +250,7 @@ class SyncEngine {
   }
 
   /// Строка change_log → мутация протокола (payload — вложенным объектом).
-  Map<String, Object?> _wireChange(Map<String, Object?> row) => {
+  static Map<String, Object?> wireChange(Map<String, Object?> row) => {
         'change_id': row['change_id'],
         'entity_table': row['entity_table'],
         'entity_id': row['entity_id'],
@@ -249,12 +263,34 @@ class SyncEngine {
   Future<void> _markSynced(Set<String> changeIds, String batchId) async {
     if (changeIds.isEmpty) return;
     await _db.transaction((txn) async {
-      final batch = txn.batch();
-      for (final id in changeIds) {
-        batch.update('change_log', {'synced': 1, 'ack_batch': batchId},
-            where: 'change_id = ?', whereArgs: [id]);
+      final placeholders = List.filled(changeIds.length, '?').join(',');
+      final args = changeIds.toList();
+      // Какие сущности затронуты — до пометки, из тех же строк лога.
+      final entities = await txn.rawQuery(
+          'SELECT DISTINCT entity_table, entity_id FROM change_log '
+          'WHERE change_id IN ($placeholders)',
+          args);
+      await txn.rawUpdate(
+          'UPDATE change_log SET synced = 1, ack_batch = ? '
+          'WHERE change_id IN ($placeholders)',
+          [batchId, ...args]);
+      // Сущность подтверждена, когда по ней не осталось неотправленных
+      // мутаций. Прямой UPDATE sync_status: это мета-поле, НЕ пользовательская
+      // мутация — без инкремента version и без записи в change_log.
+      for (final e in entities) {
+        final table = e['entity_table'] as String;
+        final entityId = e['entity_id'] as String;
+        if (!_applyTables.contains(table)) continue;
+        final remaining = Sqflite.firstIntValue(await txn.rawQuery(
+                'SELECT COUNT(*) FROM change_log '
+                'WHERE entity_table = ? AND entity_id = ? AND synced = 0',
+                [table, entityId])) ??
+            0;
+        if (remaining == 0) {
+          await txn.update(table, {'sync_status': 'confirmed'},
+              where: 'id = ?', whereArgs: [entityId]);
+        }
       }
-      await batch.commit(noResult: true);
     });
   }
 
@@ -388,12 +424,32 @@ class SyncEngine {
       case 'delete':
         if (existing.isEmpty) return true; // нечего удалять — идемпотентно
         final row = existing.first;
+        final localTs = (row['modified_at'] as String?) ?? '';
+        if (incomingTs.compareTo(localTs) <= 0) {
+          // Локальная правка новее чужого удаления — LWW как в update (§5.3):
+          // удаление проигрывает, но след остаётся в истории.
+          await _archive(txn, table, entityId,
+              version: _asInt(row['version']),
+              snapshot: jsonEncode({'losing_remote_delete': c}),
+              author: c['author_id'] as String?);
+          return true;
+        }
+        final localPending = row['sync_status'] == 'pending';
         await _archive(txn, table, entityId,
             version: _asInt(row['version']),
             snapshot: jsonEncode(row),
             author: row['author_id'] as String?);
         await txn.update(table, {'deleted': 1},
             where: 'id = ?', whereArgs: [entityId]);
+        if (localPending) {
+          // Чужое удаление поверх неотправленной локальной правки —
+          // на разбор, как параллельная правка в update.
+          await _recordConflict(txn, table, entityId,
+              field: 'deleted',
+              local: jsonEncode(row),
+              remote: jsonEncode(c),
+              note: 'удаление поверх неотправленной правки: применён LWW');
+        }
         return true;
 
       default:
