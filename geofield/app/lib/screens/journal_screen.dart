@@ -9,6 +9,7 @@ import '../data/point_repository.dart';
 import '../data/sample_repository.dart';
 import '../models/observation_point.dart';
 import '../models/sample.dart';
+import '../sync/hlc.dart';
 import '../theme/sample_type.dart';
 import '../theme/tokens.dart';
 import '../util/csv_export.dart';
@@ -33,6 +34,7 @@ class JournalScreen extends StatefulWidget {
     required this.authorId,
     required this.sampleNumbering,
     required this.deviceId,
+    required this.clock,
   });
 
   final PointRepository points;
@@ -43,6 +45,7 @@ class JournalScreen extends StatefulWidget {
   final String authorId;
   final String sampleNumbering;
   final String deviceId;
+  final HlcClock clock;
 
   @override
   State<JournalScreen> createState() => _JournalScreenState();
@@ -115,7 +118,9 @@ class _JournalScreenState extends State<JournalScreen> {
             onPressed: () async {
               await Navigator.of(context).push(MaterialPageRoute<void>(
                 builder: (_) => SyncScreen(
-                    db: widget.points.db, deviceId: widget.deviceId),
+                    db: widget.points.db,
+                    deviceId: widget.deviceId,
+                    clock: widget.clock),
               ));
               await _reload();
             },

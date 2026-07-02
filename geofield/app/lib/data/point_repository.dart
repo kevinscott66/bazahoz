@@ -5,17 +5,20 @@ import 'package:uuid/uuid.dart';
 
 import '../models/observation_point.dart';
 import '../models/sample.dart';
+import '../sync/hlc.dart';
 import 'change_payload.dart';
 
 /// Доступ к точкам наблюдения и структурным замерам. Тот же инвариант, что и
 /// у проб: каждая мутация — строка сущности + запись в change_log, атомарно
 /// в одной транзакции (sync-protocol.md §1, §8.5).
 class PointRepository {
-  PointRepository(this._db, {required this.deviceId, required this.authorId});
+  PointRepository(this._db,
+      {required this.deviceId, required this.authorId, required this.clock});
 
   final Database _db;
   final String deviceId;
   final String authorId;
+  final HlcClock clock;
   final Uuid _uuid = const Uuid();
 
   /// Доступ к базе для экранов, работающих поверх нескольких таблиц
@@ -137,8 +140,12 @@ class PointRepository {
   }
 
   Future<void> _log(DatabaseExecutor txn, String table, String entityId,
-      String op, Map<String, Object?> payload) {
-    return txn.insert('change_log', {
+      String op, Map<String, Object?> payload) async {
+    // HLC-метка и часы последнего писателя строки — в той же транзакции,
+    // что и мутация (протокол §4): падение не рассинхронизирует их.
+    final ts = (await clock.tick(txn)).encode();
+    await upsertRowClock(txn, table, entityId, ts);
+    await txn.insert('change_log', {
       'change_id': _uuid.v4(),
       'entity_table': table,
       'entity_id': entityId,
@@ -146,8 +153,7 @@ class PointRepository {
       'payload': jsonEncode(payload),
       'author_id': authorId,
       'device_id': deviceId,
-      // Прототип: ISO-время. Прод — HLC (sync-protocol.md §4).
-      'logical_ts': DateTime.now().toUtc().toIso8601String(),
+      'logical_ts': ts,
     });
   }
 }

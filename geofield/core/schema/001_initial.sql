@@ -294,10 +294,22 @@ CREATE TABLE change_log (
 );
 
 -- Пары ключ-значение состояния синхронизации:
---   device_id, last_pulled_seq (курсор входящих с сервера), last_session_at, ...
+--   device_id, last_pulled_seq (курсор входящих с сервера), hlc_state
+--   (состояние гибридных логических часов, §4), last_session, ...
 CREATE TABLE sync_state (
     key    TEXT PRIMARY KEY NOT NULL,
     value  TEXT
+);
+
+-- HLC последнего писателя каждой строки — для LWW при применении чужих
+-- мутаций (sync-protocol.md §4-5). Локальная вспомогательная таблица
+-- устройства: НЕ синхронизируется, ведётся в той же транзакции, что и
+-- мутация/применение.
+CREATE TABLE row_clocks (
+    entity_table TEXT NOT NULL,
+    entity_id    TEXT NOT NULL,
+    hlc_ts       TEXT NOT NULL,          -- сортируемая строка HLC
+    PRIMARY KEY (entity_table, entity_id)
 );
 
 -- Конфликты правок одной записи двумя авторами — для ручного разбора в камералке.

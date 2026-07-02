@@ -216,6 +216,15 @@ class AppDatabase {
     ''');
 
     await d.execute('''
+      CREATE TABLE row_clocks (
+        entity_table TEXT NOT NULL,
+        entity_id    TEXT NOT NULL,
+        hlc_ts       TEXT NOT NULL,
+        PRIMARY KEY (entity_table, entity_id)
+      )
+    ''');
+
+    await d.execute('''
       CREATE TABLE record_history (
         id            TEXT PRIMARY KEY NOT NULL,
         entity_table  TEXT NOT NULL,

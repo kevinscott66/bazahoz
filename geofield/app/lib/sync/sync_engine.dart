@@ -4,6 +4,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../data/change_payload.dart' show localMetaColumns;
+import 'hlc.dart';
 import 'packetizer.dart';
 import 'relay_client.dart';
 
@@ -110,12 +111,14 @@ class SyncEngine {
     this._db,
     this._client, {
     required this.deviceId,
+    required this.clock,
     this.packetBytes = 128 * 1024, // sync.packet_size_kb по умолчанию
   });
 
   final Database _db;
   final RelayClient _client;
   final String deviceId;
+  final HlcClock clock;
   final int packetBytes;
   final Uuid _uuid = const Uuid();
 
@@ -348,6 +351,20 @@ class SyncEngine {
       return false;
     }
 
+    // Метка обязана быть HLC (§4). Не-HLC (мусор, старый ISO-формат) — на
+    // разбор: LWW со смешанными форматами дал бы бессмысленный порядок.
+    final incomingHlc = Hlc.tryParse(incomingTs);
+    if (incomingHlc == null) {
+      await _recordConflict(txn, table, entityId,
+          remote: jsonEncode(c), note: 'logical_ts не в формате HLC');
+      return false;
+    }
+    // Подтянуть свои часы: следующая локальная метка будет строго больше
+    // всего виденного (§4), независимо от исхода LWW ниже.
+    await clock.receive(txn, incomingHlc);
+    // HLC последнего писателя строки; '' — строки ещё нет/не писалась.
+    final localTs = await rowClock(txn, table, entityId) ?? '';
+
     final existing = await txn.query(table,
         where: 'id = ?', whereArgs: [entityId], limit: 1);
 
@@ -374,6 +391,7 @@ class SyncEngine {
         // неотправленной».
         filtered['sync_status'] = 'confirmed';
         await txn.insert(table, filtered);
+        await upsertRowClock(txn, table, entityId, incomingTs);
         if (unknown.isNotEmpty) {
           await _recordConflict(txn, table, entityId,
               field: unknown.join(','),
@@ -391,9 +409,10 @@ class SyncEngine {
           return false;
         }
         final row = existing.first;
-        final localTs = (row['modified_at'] as String?) ?? '';
         if (incomingTs.compareTo(localTs) <= 0) {
-          // Локальная новее/та же: входящая проигрывает, но не стирается (§5.3).
+          // Локальная новее/та же по HLC: входящая проигрывает, но не
+          // стирается (§5.3). Равенство меток при разных device_id
+          // невозможно (device_id — часть метки).
           await _archive(txn, table, entityId,
               version: _asInt(row['version']),
               snapshot: jsonEncode({'losing_remote_delta': payload}),
@@ -421,6 +440,7 @@ class SyncEngine {
           await txn.update(table, filtered,
               where: 'id = ?', whereArgs: [entityId]);
         }
+        await upsertRowClock(txn, table, entityId, incomingTs);
         if (localPending) {
           for (final f in filtered.keys) {
             await _recordConflict(txn, table, entityId,
@@ -435,10 +455,9 @@ class SyncEngine {
       case 'delete':
         if (existing.isEmpty) return true; // нечего удалять — идемпотентно
         final row = existing.first;
-        final localTs = (row['modified_at'] as String?) ?? '';
         if (incomingTs.compareTo(localTs) <= 0) {
-          // Локальная правка новее чужого удаления — LWW как в update (§5.3):
-          // удаление проигрывает, но след остаётся в истории.
+          // Локальная правка новее чужого удаления по HLC — LWW как в
+          // update (§5.3): удаление проигрывает, след остаётся в истории.
           await _archive(txn, table, entityId,
               version: _asInt(row['version']),
               snapshot: jsonEncode({'losing_remote_delete': c}),
@@ -452,6 +471,7 @@ class SyncEngine {
             author: row['author_id'] as String?);
         await txn.update(table, {'deleted': 1},
             where: 'id = ?', whereArgs: [entityId]);
+        await upsertRowClock(txn, table, entityId, incomingTs);
         if (localPending) {
           // Чужое удаление поверх неотправленной локальной правки —
           // на разбор, как параллельная правка в update.

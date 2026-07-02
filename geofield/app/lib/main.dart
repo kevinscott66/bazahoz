@@ -5,13 +5,15 @@ import 'data/dictionary_repository.dart';
 import 'data/point_repository.dart';
 import 'data/sample_repository.dart';
 import 'screens/journal_screen.dart';
+import 'sync/hlc.dart';
 import 'theme/tokens.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final app = await AppDatabase.open();
   await _seedDemo(app);
-  runApp(GeoFieldApp(database: app));
+  final clock = await HlcClock.load(app.db, _demoDeviceId);
+  runApp(GeoFieldApp(database: app, clock: clock));
 }
 
 const _demoProjectId = 'demo-suzun';
@@ -116,18 +118,19 @@ Future<void> _seedDemo(AppDatabase app) async {
 }
 
 class GeoFieldApp extends StatelessWidget {
-  const GeoFieldApp({super.key, required this.database});
+  const GeoFieldApp({super.key, required this.database, required this.clock});
 
   final AppDatabase database;
+  final HlcClock clock;
 
   @override
   Widget build(BuildContext context) {
     final samples = SampleRepository(database.db,
-        deviceId: _demoDeviceId, authorId: _demoAuthorId);
+        deviceId: _demoDeviceId, authorId: _demoAuthorId, clock: clock);
     final points = PointRepository(database.db,
-        deviceId: _demoDeviceId, authorId: _demoAuthorId);
+        deviceId: _demoDeviceId, authorId: _demoAuthorId, clock: clock);
     final dictionaries = DictionaryRepository(database.db,
-        deviceId: _demoDeviceId, authorId: _demoAuthorId);
+        deviceId: _demoDeviceId, authorId: _demoAuthorId, clock: clock);
 
     return MaterialApp(
       title: 'GeoField',
@@ -142,6 +145,7 @@ class GeoFieldApp extends StatelessWidget {
         authorId: _demoAuthorId,
         sampleNumbering: _demoNumbering,
         deviceId: _demoDeviceId,
+        clock: clock,
       ),
     );
   }

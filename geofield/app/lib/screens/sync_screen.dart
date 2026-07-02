@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../sync/hlc.dart';
 import '../sync/relay_client.dart';
 import '../sync/sync_engine.dart';
 import '../theme/tokens.dart';
@@ -11,10 +12,15 @@ import '../theme/tokens.dart';
 /// Большая кнопка, «что уйдёт», прогресс по пакетам с паузой, лог сеанса,
 /// настройки relay. Фото-очереди пока нет (фото не реализованы — UNFINISHED).
 class SyncScreen extends StatefulWidget {
-  const SyncScreen({super.key, required this.db, required this.deviceId});
+  const SyncScreen(
+      {super.key,
+      required this.db,
+      required this.deviceId,
+      required this.clock});
 
   final Database db;
   final String deviceId;
+  final HlcClock clock;
 
   @override
   State<SyncScreen> createState() => _SyncScreenState();
@@ -92,8 +98,8 @@ class _SyncScreenState extends State<SyncScreen> {
 
     final client = RelayClient(
         baseUrl: _urlCtrl.text.trim(), token: _tokenCtrl.text.trim());
-    final engine =
-        SyncEngine(widget.db, client, deviceId: widget.deviceId);
+    final engine = SyncEngine(widget.db, client,
+        deviceId: widget.deviceId, clock: widget.clock);
     setState(() {
       _busy = true;
       _running = engine;

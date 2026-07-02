@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
+import '../sync/hlc.dart';
+
 /// Запись справочника (dictionaries).
 class DictEntry {
   const DictEntry({
@@ -20,11 +22,12 @@ class DictEntry {
 /// породу, которой нет в справочнике, но можно добавить с пометкой «на проверку».
 class DictionaryRepository {
   DictionaryRepository(this._db,
-      {required this.deviceId, required this.authorId});
+      {required this.deviceId, required this.authorId, required this.clock});
 
   final Database _db;
   final String deviceId;
   final String authorId;
+  final HlcClock clock;
   final Uuid _uuid = const Uuid();
 
   Future<List<DictEntry>> list(String projectId, String dictType) async {
@@ -83,6 +86,8 @@ class DictionaryRepository {
           conflictAlgorithm: ConflictAlgorithm.ignore);
       // rowId == 0 — запись уже была (гонка/повтор): мутацию не логируем.
       if (rowId != 0) {
+        final ts = (await clock.tick(txn)).encode();
+        await upsertRowClock(txn, 'dictionaries', map['id'] as String, ts);
         await txn.insert('change_log', {
           'change_id': _uuid.v4(),
           'entity_table': 'dictionaries',
@@ -91,7 +96,7 @@ class DictionaryRepository {
           'payload': jsonEncode(map),
           'author_id': authorId,
           'device_id': deviceId,
-          'logical_ts': now,
+          'logical_ts': ts,
         });
       }
     });

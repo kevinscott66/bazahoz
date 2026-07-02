@@ -4,17 +4,20 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/sample.dart';
+import '../sync/hlc.dart';
 import 'change_payload.dart';
 
 /// Доступ к пробам. Каждая мутация пишется атомарно: строка `samples` +
 /// запись в `change_log` (event sourcing, sync-protocol.md §1). Так база
 /// готова к дельта-синхронизации с первого дня, а данные не теряются.
 class SampleRepository {
-  SampleRepository(this._db, {required this.deviceId, required this.authorId});
+  SampleRepository(this._db,
+      {required this.deviceId, required this.authorId, required this.clock});
 
   final Database _db;
   final String deviceId;
   final String authorId;
+  final HlcClock clock;
   final Uuid _uuid = const Uuid();
 
   /// Следующий сквозной номер пробы в проекте (для sample_numbering).
@@ -85,6 +88,8 @@ class SampleRepository {
         await txn.update('samples', map,
             where: 'id = ?', whereArgs: [sample.id]);
       }
+      final ts = (await clock.tick(txn)).encode();
+      await upsertRowClock(txn, 'samples', sample.id, ts);
       await txn.insert('change_log', {
         'change_id': _uuid.v4(),
         'entity_table': 'samples',
@@ -93,8 +98,7 @@ class SampleRepository {
         'payload': jsonEncode(payload),
         'author_id': authorId,
         'device_id': deviceId,
-        // Прототип: ISO-время. Прод — HLC (sync-protocol.md §4).
-        'logical_ts': DateTime.now().toUtc().toIso8601String(),
+        'logical_ts': ts,
       });
     });
   }
@@ -114,6 +118,8 @@ class SampleRepository {
         where: 'id = ?',
         whereArgs: [sample.id],
       );
+      final ts = (await clock.tick(txn)).encode();
+      await upsertRowClock(txn, 'samples', sample.id, ts);
       await txn.insert('change_log', {
         'change_id': _uuid.v4(),
         'entity_table': 'samples',
@@ -122,7 +128,7 @@ class SampleRepository {
         'payload': '{}',
         'author_id': authorId,
         'device_id': deviceId,
-        'logical_ts': DateTime.now().toUtc().toIso8601String(),
+        'logical_ts': ts,
       });
     });
   }
