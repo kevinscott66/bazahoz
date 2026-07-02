@@ -73,7 +73,7 @@ class SampleRepository {
   Future<void> save(Sample sample, {required bool isNew}) async {
     final map = sample.toMap();
     await _db.transaction((txn) async {
-      Map<String, Object?> payload = map;
+      Map<String, Object?> payload = insertPayload(map);
       if (isNew) {
         await txn.insert('samples', map);
       } else {

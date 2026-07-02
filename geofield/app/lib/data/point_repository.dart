@@ -38,7 +38,8 @@ class PointRepository {
     await _db.transaction((txn) async {
       if (isNew) {
         await txn.insert('observation_points', map);
-        await _log(txn, 'observation_points', point.id, 'insert', map);
+        await _log(txn, 'observation_points', point.id, 'insert',
+            insertPayload(map));
       } else {
         // Дельта до update, в той же транзакции (payload update = только
         // изменённые поля, sync-protocol.md §1).

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
+import '../data/change_payload.dart' show localMetaColumns;
 import 'packetizer.dart';
 import 'relay_client.dart';
 
@@ -360,13 +361,18 @@ class SyncEngine {
             payload.keys.where((k) => !known.contains(k)).toList();
         final filtered = {
           for (final e in payload.entries)
-            if (known.contains(e.key)) e.key: e.value,
+            if (known.contains(e.key) && !localMetaColumns.contains(e.key))
+              e.key: e.value,
         };
         if (filtered['id'] == null) {
           await _recordConflict(txn, table, entityId,
               remote: jsonEncode(payload), note: 'insert без id');
           return false;
         }
+        // Запись пришла с relay — для ЭТОГО устройства она подтверждена:
+        // отправлять её обратно нечего, журнал не должен счесть её «своей
+        // неотправленной».
+        filtered['sync_status'] = 'confirmed';
         await txn.insert(table, filtered);
         if (unknown.isNotEmpty) {
           await _recordConflict(txn, table, entityId,
@@ -402,9 +408,14 @@ class SyncEngine {
             snapshot: jsonEncode(row),
             author: row['author_id'] as String?);
         final known = await _knownColumns(txn, table);
+        // id и локальные мета-поля (sync_status) не применяются: состояние
+        // синхронизации устройства B не должно перезаписываться бухгалтерией A.
         final filtered = {
           for (final e in payload.entries)
-            if (known.contains(e.key) && e.key != 'id') e.key: e.value,
+            if (known.contains(e.key) &&
+                e.key != 'id' &&
+                !localMetaColumns.contains(e.key))
+              e.key: e.value,
         };
         if (filtered.isNotEmpty) {
           await txn.update(table, filtered,
