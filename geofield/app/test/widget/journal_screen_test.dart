@@ -33,7 +33,7 @@ void main() {
     await tester.tap(find.text('＋ Точка'));
     await tester.pumpAndSettle();
     expect(find.byType(PointFormScreen), findsOneWidget);
-    expect(find.widgetWithText(TextField, 'Т-001'), findsOneWidget); // автономер
+    expect(textFieldValued('Т-001'), findsOneWidget); // автономер
     expect(find.text('черновик'), findsOneWidget); // бейдж черновика
 
     // Немедленный черновик уже в базе (ТЗ §0 пр.2) — до любого ввода.
@@ -90,7 +90,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('＋ Точка'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.widgetWithText(TextField, 'Т-001'), 'Т-777');
+    await tester.enterText(textFieldValued('Т-001'), 'Т-777');
     await settleSave(tester);
     await tester.tap(find.text('Готово'));
     await tester.pumpAndSettle();
@@ -98,7 +98,7 @@ void main() {
     await tester.tap(find.text('Точка Т-777'));
     await tester.pumpAndSettle();
     expect(find.byType(PointFormScreen), findsOneWidget);
-    expect(find.widgetWithText(TextField, 'Т-777'), findsOneWidget);
+    expect(textFieldValued('Т-777'), findsOneWidget);
     expect(find.text('сохранено · не отправлено'), findsOneWidget);
   });
 
@@ -120,7 +120,7 @@ void main() {
     await tester.pumpWidget(h.journal());
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Выгрузка CSV'));
-    await realIo(tester);
+    await realIo(tester, const Duration(milliseconds: 1500));
     await tester.pumpAndSettle();
     expect(find.textContaining('Выгружено 3 файла'), findsOneWidget);
   });

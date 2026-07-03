@@ -673,60 +673,14 @@ class _PointFormScreenState extends State<PointFormScreen> {
   }
 
   Future<void> _onAddMeasurement() async {
-    final azCtrl = TextEditingController();
-    final angCtrl = TextEditingController();
-    // Тип замера обязателен: замер жилы, записанный «слоистостью», даёт ложную
-    // структурную картину в камералке (ревизия geo-consultant).
-    String measureType = 'bedding';
-    final ok = await showDialog<bool>(
+    final result = await showDialog<({String type, String az, String ang})>(
       context: context,
-      builder: (_) => StatefulBuilder(
-        builder: (context, setDialog) => AlertDialog(
-          backgroundColor: GfColors.surfaceHi,
-          title: const Text('Структурный замер'),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            DropdownButtonFormField<String>(
-              initialValue: measureType,
-              items: measureTypes.entries
-                  .map((e) =>
-                      DropdownMenuItem(value: e.key, child: Text(e.value)))
-                  .toList(),
-              onChanged: (v) => setDialog(() => measureType = v ?? 'bedding'),
-              dropdownColor: GfColors.surfaceHi,
-              style: GfText.body,
-              decoration: _dec('Тип замера'),
-            ),
-            const SizedBox(height: GfSpace.x12),
-            TextField(
-              controller: azCtrl,
-              style: GfText.number,
-              keyboardType: TextInputType.number,
-              decoration: _dec('Азимут падения, 0–359'),
-            ),
-            const SizedBox(height: GfSpace.x12),
-            TextField(
-              controller: angCtrl,
-              style: GfText.number,
-              keyboardType: TextInputType.number,
-              decoration: _dec('Угол падения, 0–90'),
-            ),
-          ]),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Отмена')),
-            TextButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('Добавить')),
-          ],
-        ),
-      ),
+      builder: (_) => const _MeasurementDialog(),
     );
-    final az = _parse(azCtrl.text);
-    final ang = _parse(angCtrl.text);
-    azCtrl.dispose();
-    angCtrl.dispose();
-    if (ok != true) return;
+    if (result == null) return;
+    final az = _parse(result.az);
+    final ang = _parse(result.ang);
+    final measureType = result.type;
     // Противоречие ловим при вводе (ТЗ §0, пр.3) — до CHECK в базе.
     if (az == null || ang == null || az < 0 || az >= 360 || ang < 0 || ang > 90) {
       _snack('Азимут 0–359, угол 0–90 — проверьте значения');
@@ -891,4 +845,93 @@ class _PointFormScreenState extends State<PointFormScreen> {
   static String _fmtNum(double? v) => v == null ? '—' : v.toStringAsFixed(0);
 
   static String _nowIso() => DateTime.now().toUtc().toIso8601String();
+}
+
+/// Диалог структурного замера. Отдельный StatefulWidget: контроллеры живут
+/// со своим State и уничтожаются ПОСЛЕ анимации закрытия маршрута —
+/// dispose сразу после showDialog ронял поля («used after being disposed»).
+/// Тип замера обязателен: замер жилы, записанный «слоистостью», даёт ложную
+/// структурную картину в камералке (ревизия geo-consultant).
+class _MeasurementDialog extends StatefulWidget {
+  const _MeasurementDialog();
+
+  @override
+  State<_MeasurementDialog> createState() => _MeasurementDialogState();
+}
+
+class _MeasurementDialogState extends State<_MeasurementDialog> {
+  final _azCtrl = TextEditingController();
+  final _angCtrl = TextEditingController();
+  String _type = 'bedding';
+
+  @override
+  void dispose() {
+    _azCtrl.dispose();
+    _angCtrl.dispose();
+    super.dispose();
+  }
+
+  InputDecoration _dec(String hint) {
+    OutlineInputBorder b(Color c) => OutlineInputBorder(
+          borderRadius: BorderRadius.circular(GfRadius.r12),
+          borderSide: BorderSide(color: c),
+        );
+    return InputDecoration(
+      hintText: hint,
+      labelText: hint,
+      labelStyle: GfText.hint,
+      hintStyle: GfText.hint,
+      filled: true,
+      fillColor: GfColors.surface,
+      contentPadding: const EdgeInsets.symmetric(
+          horizontal: GfSpace.x16, vertical: GfSpace.x16),
+      enabledBorder: b(GfColors.outline),
+      focusedBorder: b(GfColors.accent),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: GfColors.surfaceHi,
+      title: const Text('Структурный замер'),
+      content: SingleChildScrollView(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          DropdownButtonFormField<String>(
+            initialValue: _type,
+            items: measureTypes.entries
+                .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
+                .toList(),
+            onChanged: (v) => setState(() => _type = v ?? 'bedding'),
+            dropdownColor: GfColors.surfaceHi,
+            style: GfText.body,
+            decoration: _dec('Тип замера'),
+          ),
+          const SizedBox(height: GfSpace.x12),
+          TextField(
+            controller: _azCtrl,
+            style: GfText.number,
+            keyboardType: TextInputType.number,
+            decoration: _dec('Азимут падения, 0–359'),
+          ),
+          const SizedBox(height: GfSpace.x12),
+          TextField(
+            controller: _angCtrl,
+            style: GfText.number,
+            keyboardType: TextInputType.number,
+            decoration: _dec('Угол падения, 0–90'),
+          ),
+        ]),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Отмена')),
+        TextButton(
+            onPressed: () => Navigator.pop(
+                context, (type: _type, az: _azCtrl.text, ang: _angCtrl.text)),
+            child: const Text('Добавить')),
+      ],
+    );
+  }
 }

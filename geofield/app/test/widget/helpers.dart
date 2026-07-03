@@ -81,6 +81,12 @@ void tallPhone(WidgetTester tester) {
   addTearDown(tester.view.reset);
 }
 
+/// TextField по фактическому значению контроллера: find.widgetWithText
+/// ловит и label, и hint (у полей точки они совпадают со значением) и
+/// возвращает один TextField трижды.
+Finder textFieldValued(String value) => find.byWidgetPredicate(
+    (w) => w is TextField && w.controller?.text == value);
+
 /// Дать реальному вводу-выводу (файлы, сокеты) завершиться под FakeAsync.
 Future<void> realIo(WidgetTester tester,
     [Duration d = const Duration(milliseconds: 500)]) {
