@@ -86,6 +86,10 @@ void main() {
         ),
         isNew: true);
     await tester.tap(find.text('Синхронизировать'));
+    // Реальному сокету (connection refused) нужно настоящее время,
+    // не фейковое: даём событию дойти внутри runAsync.
+    await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 800)));
     await tester.pumpAndSettle(const Duration(seconds: 2));
     // Сеанс завершился неуспехом, но управляемо: карточка сеанса с «обрыв».
     expect(find.textContaining('ПОСЛЕДНИЙ СЕАНС'), findsOneWidget);

@@ -22,7 +22,10 @@ class TestHarness {
 
   static Future<TestHarness> create() async {
     sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
+    // NoIsolate: под FakeAsync-зоной testWidgets ответы из другого изолята
+    // не доставляются — база в том же изоляте завершает futures микротасками,
+    // которые прокачивает pump().
+    databaseFactory = databaseFactoryFfiNoIsolate;
     // Отдельная in-memory база на тест — без взаимных следов.
     final db = await databaseFactory.openDatabase(
       inMemoryDatabasePath,
