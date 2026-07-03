@@ -345,6 +345,7 @@ CREATE INDEX idx_points_route      ON observation_points(route_id);
 CREATE INDEX idx_boreholes_project ON boreholes(project_id);
 CREATE INDEX idx_intervals_bh      ON core_intervals(borehole_id, depth_from);
 CREATE INDEX idx_struct_parent     ON structural_measurements(parent_type, parent_id);
+CREATE INDEX idx_samples_project   ON samples(project_id);
 CREATE INDEX idx_samples_number    ON samples(sample_number);
 CREATE INDEX idx_samples_barcode   ON samples(barcode);
 CREATE INDEX idx_samples_parent    ON samples(parent_type, parent_id);
@@ -352,3 +353,5 @@ CREATE INDEX idx_results_sample    ON sample_results(sample_id);
 CREATE INDEX idx_photos_parent     ON photos(parent_type, parent_id);
 CREATE INDEX idx_dict_type         ON dictionaries(project_id, dict_type);
 CREATE INDEX idx_changelog_unsynced ON change_log(synced) WHERE synced = 0;
+-- Подтверждение сущностей после ack (_markSynced) ищет по (таблица, id).
+CREATE INDEX idx_changelog_entity   ON change_log(entity_table, entity_id);

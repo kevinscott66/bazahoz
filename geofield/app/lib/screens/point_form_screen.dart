@@ -116,25 +116,28 @@ class _PointFormScreenState extends State<PointFormScreen> {
   }
 
   Future<void> _loadRefs({String? rockCode, String? alterationCode}) async {
-    final types =
-        await widget.dictionaries.list(widget.projectId, 'object_type');
-    final rocks = await widget.dictionaries.list(widget.projectId, 'rock');
-    final alterations =
-        await widget.dictionaries.list(widget.projectId, 'alteration');
-    final minerals =
-        await widget.dictionaries.list(widget.projectId, 'mineral');
-    String rockLabel = '';
-    if (rockCode != null) {
-      rockLabel = await widget.dictionaries
-              .labelForCode(widget.projectId, 'rock', rockCode) ??
-          rockCode;
-    }
-    String alterationLabel = '';
-    if (alterationCode != null) {
-      alterationLabel = await widget.dictionaries
-              .labelForCode(widget.projectId, 'alteration', alterationCode) ??
-          alterationCode;
-    }
+    // Запросы независимы — параллельно, а не 6 последовательных round-trip
+    // на каждый тап «＋ Точка» (perf-audit: отзывчивость главного жеста).
+    final d = widget.dictionaries;
+    final results = await Future.wait<Object?>([
+      d.list(widget.projectId, 'object_type'),
+      d.list(widget.projectId, 'rock'),
+      d.list(widget.projectId, 'alteration'),
+      d.list(widget.projectId, 'mineral'),
+      if (rockCode != null) d.labelForCode(widget.projectId, 'rock', rockCode),
+      if (alterationCode != null)
+        d.labelForCode(widget.projectId, 'alteration', alterationCode),
+    ]);
+    final types = results[0]! as List<DictEntry>;
+    final rocks = results[1]! as List<DictEntry>;
+    final alterations = results[2]! as List<DictEntry>;
+    final minerals = results[3]! as List<DictEntry>;
+    var i = 4;
+    final rockLabel =
+        rockCode == null ? '' : (results[i++] as String? ?? rockCode);
+    final alterationLabel = alterationCode == null
+        ? ''
+        : (results[i] as String? ?? alterationCode);
     if (!mounted) return;
     setState(() {
       _objectTypes = types;

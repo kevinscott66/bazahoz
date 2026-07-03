@@ -158,13 +158,16 @@ class _JournalScreenState extends State<JournalScreen> {
                         ? const Center(
                             child: Text('Пока пусто — начните с «＋ Точка»',
                                 style: GfText.hint))
-                        : ListView(
+                        // .builder — виртуализация (ТЗ §10.5): строятся только
+                        // видимые карточки, многодневный журнал не жрёт память
+                        // и кадры на открытии.
+                        : ListView.builder(
                             padding: const EdgeInsets.fromLTRB(GfSpace.x16, 0,
                                 GfSpace.x16, GfSpace.x24 * 3),
-                            children: [
-                              for (final pt in points) _pointCard(pt),
-                              for (final s in samples) _sampleCard(s),
-                            ],
+                            itemCount: points.length + samples.length,
+                            itemBuilder: (_, i) => i < points.length
+                                ? _pointCard(points[i])
+                                : _sampleCard(samples[i - points.length]),
                           ),
                   ),
                 ],

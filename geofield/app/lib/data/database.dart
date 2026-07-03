@@ -236,6 +236,13 @@ class AppDatabase {
       )
     ''');
 
+    await d.execute(
+        'CREATE INDEX idx_points_route ON observation_points(route_id)');
+    await d.execute('CREATE INDEX idx_measurements_parent '
+        'ON structural_measurements(parent_type, parent_id)');
+    await d.execute('CREATE INDEX idx_samples_project ON samples(project_id)');
+    await d.execute('CREATE INDEX idx_changelog_entity '
+        'ON change_log(entity_table, entity_id)');
     await d.execute('CREATE INDEX idx_samples_number ON samples(sample_number)');
     await d.execute('CREATE INDEX idx_samples_barcode ON samples(barcode)');
     await d.execute(
