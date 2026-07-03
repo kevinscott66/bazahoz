@@ -223,18 +223,19 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
-      onPopInvoked: (didPop) async {
+      onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
         // Системная «назад»/жест: дожать отложенную правку. Выходим, если
         // сохранено или ввод невалиден (сохранять нечего — последняя валидная
         // версия уже в базе). Но если РЕАЛЬНАЯ запись валидных данных провалилась,
         // не закрываем молча — показываем ошибку (ТЗ §0, правило 2).
+        final navigator = Navigator.of(context); // до async-разрыва
         final r = await _saveNow();
         if (r == _SaveResult.failed) {
           _snack('Не удалось сохранить — проверьте память устройства');
           return;
         }
-        if (mounted) Navigator.of(context).pop();
+        if (mounted) navigator.pop();
       },
       child: Scaffold(
       appBar: AppBar(
@@ -523,7 +524,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
           children: [
             _labelWidget(number),
             const SizedBox(height: GfSpace.x12),
-            Text('Нет принтера — сфотографировать/наклеить код от руки',
+            const Text('Нет принтера — сфотографировать/наклеить код от руки',
                 style: GfText.hint, textAlign: TextAlign.center),
           ],
         ),

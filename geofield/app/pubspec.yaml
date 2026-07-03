@@ -21,6 +21,13 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^3.0.0
 
+# Нативная сборка sqlite3: использовать системную библиотеку вместо скачивания
+# прекомпилированной (в средах за прокси скачивание бьётся о проверку хэша).
+hooks:
+  user_defines:
+    sqlite3:
+      source: system
+
 flutter:
   uses-material-design: true
   # Прод: сюда добавляются офлайн-шрифты (Manrope, JetBrains Mono) как assets —

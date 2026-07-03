@@ -1,0 +1,17 @@
+{
+  "assets": [
+    {
+      "encoding": {
+        "id": "package:sqlite3/src/ffi/libsqlite3.g.dart",
+        "link_mode": {
+          "type": "dynamic_loading_system",
+          "uri": "libsqlite3.so"
+        }
+      },
+      "type": "code_assets/code"
+    }
+  ],
+  "assets_for_linking": {},
+  "status": "success",
+  "timestamp": "2026-07-03 08:29:54.000"
+}

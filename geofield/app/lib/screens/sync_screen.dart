@@ -160,7 +160,7 @@ class _SyncScreenState extends State<SyncScreen> {
               _progressCard(_progress!),
               const SizedBox(height: GfSpace.x24),
             ],
-            Text('RELAY', style: GfText.sectionLabel),
+            const Text('RELAY', style: GfText.sectionLabel),
             const SizedBox(height: GfSpace.x8),
             TextField(
               controller: _urlCtrl,
@@ -280,7 +280,7 @@ class _SyncScreenState extends State<SyncScreen> {
         border: Border.all(color: GfColors.outline),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('ПОСЛЕДНИЙ СЕАНС', style: GfText.sectionLabel),
+        const Text('ПОСЛЕДНИЙ СЕАНС', style: GfText.sectionLabel),
         const SizedBox(height: GfSpace.x8),
         Text(
           '${s['at'] ?? '—'}\n'

@@ -13,7 +13,6 @@ import '../sync/hlc.dart';
 import '../theme/sample_type.dart';
 import '../theme/tokens.dart';
 import '../util/csv_export.dart';
-import '../util/sample_number.dart';
 import 'point_form_screen.dart';
 import 'sample_capture_screen.dart';
 import 'sync_screen.dart';
@@ -156,7 +155,7 @@ class _JournalScreenState extends State<JournalScreen> {
                   ),
                   Expanded(
                     child: (points.isEmpty && samples.isEmpty)
-                        ? Center(
+                        ? const Center(
                             child: Text('Пока пусто — начните с «＋ Точка»',
                                 style: GfText.hint))
                         : ListView(

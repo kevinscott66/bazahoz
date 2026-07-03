@@ -284,14 +284,15 @@ class _PointFormScreenState extends State<PointFormScreen> {
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
-      onPopInvoked: (didPop) async {
+      onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
+        final navigator = Navigator.of(context); // до async-разрыва
         final r = await _saveNow();
         if (r == SaveResult.failed) {
           _snack('Не удалось сохранить — проверьте память устройства');
           return;
         }
-        if (mounted) Navigator.of(context).pop();
+        if (mounted) navigator.pop();
       },
       child: Scaffold(
         appBar: AppBar(
@@ -355,7 +356,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('НОМЕР ТОЧКИ', style: GfText.sectionLabel),
+        const Text('НОМЕР ТОЧКИ', style: GfText.sectionLabel),
         const SizedBox(height: GfSpace.x8),
         TextField(
           controller: _numberCtrl,
@@ -364,7 +365,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
           decoration: _dec('Т-001'),
         ),
         const SizedBox(height: GfSpace.x16),
-        Text('КООРДИНАТЫ (WGS-84)', style: GfText.sectionLabel),
+        const Text('КООРДИНАТЫ (WGS-84)', style: GfText.sectionLabel),
         const SizedBox(height: GfSpace.x8),
         Row(children: [
           Expanded(child: _numField(_latCtrl, 'Широта')),
@@ -401,7 +402,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         DropdownButtonFormField<String>(
-          value: _objectType,
+          initialValue: _objectType,
           items: _objectTypes
               .map((e) =>
                   DropdownMenuItem(value: e.code, child: Text(e.label)))
@@ -421,7 +422,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
         _dictAutocomplete(_alterationCtrl, _alterations,
             'Вторичные изменения (окварцевание, серицитизация…)'),
         const SizedBox(height: GfSpace.x12),
-        Text('МИНЕРАЛИЗАЦИЯ', style: GfText.sectionLabel),
+        const Text('МИНЕРАЛИЗАЦИЯ', style: GfText.sectionLabel),
         const SizedBox(height: GfSpace.x8),
         _mineralChips(),
         const SizedBox(height: GfSpace.x12),
@@ -445,7 +446,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
 
   Widget _mineralChips() {
     if (_mineralDict.isEmpty) {
-      return Text('Справочник минералов пуст — обновите с сервера',
+      return const Text('Справочник минералов пуст — обновите с сервера',
           style: GfText.hint);
     }
     return Wrap(
@@ -681,7 +682,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
           title: const Text('Структурный замер'),
           content: Column(mainAxisSize: MainAxisSize.min, children: [
             DropdownButtonFormField<String>(
-              value: measureType,
+              initialValue: measureType,
               items: measureTypes.entries
                   .map((e) =>
                       DropdownMenuItem(value: e.key, child: Text(e.value)))
@@ -795,6 +796,8 @@ class _PointFormScreenState extends State<PointFormScreen> {
       _snack('Сначала удалите или отвяжите пробы точки (${bound.length})');
       return;
     }
+    if (!mounted) return; // выше был await — экран могли закрыть
+    final navigator = Navigator.of(context); // до следующего async-разрыва
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -825,7 +828,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
         return;
       }
     }
-    if (mounted) Navigator.of(context).pop();
+    if (mounted) navigator.pop();
   }
 
   // --- helpers ------------------------------------------------------------------
@@ -866,6 +869,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
   }
 
   void _snack(String m) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
   }
 

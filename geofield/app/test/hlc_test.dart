@@ -13,15 +13,16 @@ void main() {
     });
 
     test('лексикографика == HLC-порядок', () {
+      int cmp(Hlc a, Hlc b) => a.encode().compareTo(b.encode());
       // Перенос миллисекунды.
-      expect(const Hlc(9, Hlc.maxCounter, 'z').encode(),
-          lessThan(const Hlc(10, 0, 'a').encode()));
+      expect(cmp(const Hlc(9, Hlc.maxCounter, 'z'), const Hlc(10, 0, 'a')),
+          isNegative);
       // Счётчик при равных миллисекундах.
-      expect(const Hlc(5000, 3, 'a').encode(),
-          lessThan(const Hlc(5000, 4, 'a').encode()));
+      expect(
+          cmp(const Hlc(5000, 3, 'a'), const Hlc(5000, 4, 'a')), isNegative);
       // Ничья (m,c) — детерминированно по device_id.
-      expect(const Hlc(5000, 3, 'dev-a').encode(),
-          lessThan(const Hlc(5000, 3, 'dev-b').encode()));
+      expect(cmp(const Hlc(5000, 3, 'dev-a'), const Hlc(5000, 3, 'dev-b')),
+          isNegative);
     });
 
     test('мусор не парсится', () {

@@ -1,4 +1,3 @@
-import 'dart:ui' show FontFeature;
 import 'package:flutter/material.dart';
 
 /// Дизайн-токены GeoField (ТЗ 4.3). Своя тема, свои токены — не дефолт Material.
