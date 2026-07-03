@@ -1,0 +1,68 @@
+name: geofield
+
+on:
+  push:
+    paths:
+      - 'geofield/**'
+      - '.github/workflows/geofield.yml'
+  pull_request:
+    paths:
+      - 'geofield/**'
+      - '.github/workflows/geofield.yml'
+
+jobs:
+  relay:
+    name: relay (go vet + test -race)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: geofield/relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false # зависимостей нет, go.sum отсутствует
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+
+  app:
+    name: app (analyze + 52 tests, включая живой e2e с relay)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: geofield/app
+    steps:
+      - uses: actions/checkout@v4
+      # Go нужен e2e-тесту: он собирает и поднимает настоящий relay.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      # Системная libsqlite3: pubspec задаёт hooks.user_defines.sqlite3.source=system
+      # (прекомпилированная не проходит проверку хэша за перехватывающими прокси).
+      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+  schema:
+    name: канон схемы применяется в sqlite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          python3 - <<'PY'
+          import sqlite3
+          sql = open('geofield/core/schema/001_initial.sql').read()
+          con = sqlite3.connect(':memory:')
+          con.executescript(sql)
+          n = con.execute(
+              "SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
+          assert n >= 19, f'ожидалось >=19 таблиц, получено {n}'
+          print(f'схема применяется, таблиц: {n}')
+          PY
