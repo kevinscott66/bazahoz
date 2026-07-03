@@ -56,7 +56,9 @@ class _PointFormScreenState extends State<PointFormScreen> {
   final _lonCtrl = TextEditingController();
   final _elevCtrl = TextEditingController();
   final _rockCtrl = TextEditingController();
+  final _rockFocus = FocusNode();
   final _alterationCtrl = TextEditingController();
+  final _alterationFocus = FocusNode();
   final _colorCtrl = TextEditingController();
   final _grainCtrl = TextEditingController();
   final _noteCtrl = TextEditingController();
@@ -163,7 +165,9 @@ class _PointFormScreenState extends State<PointFormScreen> {
     _lonCtrl.dispose();
     _elevCtrl.dispose();
     _rockCtrl.dispose();
+    _rockFocus.dispose();
     _alterationCtrl.dispose();
+    _alterationFocus.dispose();
     _colorCtrl.dispose();
     _grainCtrl.dispose();
     _noteCtrl.dispose();
@@ -416,10 +420,10 @@ class _PointFormScreenState extends State<PointFormScreen> {
           decoration: _dec('Тип объекта'),
         ),
         const SizedBox(height: GfSpace.x12),
-        _dictAutocomplete(
-            _rockCtrl, _rocks, 'Порода (справочник; новое — «на проверку»)'),
+        _dictAutocomplete(_rockCtrl, _rockFocus, _rocks,
+            'Порода (справочник; новое — «на проверку»)'),
         const SizedBox(height: GfSpace.x12),
-        _dictAutocomplete(_alterationCtrl, _alterations,
+        _dictAutocomplete(_alterationCtrl, _alterationFocus, _alterations,
             'Вторичные изменения (окварцевание, серицитизация…)'),
         const SizedBox(height: GfSpace.x12),
         const Text('МИНЕРАЛИЗАЦИЯ', style: GfText.sectionLabel),
@@ -480,11 +484,11 @@ class _PointFormScreenState extends State<PointFormScreen> {
     );
   }
 
-  Widget _dictAutocomplete(
-      TextEditingController mainCtrl, List<DictEntry> options, String hint) {
+  Widget _dictAutocomplete(TextEditingController mainCtrl, FocusNode focus,
+      List<DictEntry> options, String hint) {
     return RawAutocomplete<String>(
       textEditingController: mainCtrl,
-      focusNode: FocusNode(),
+      focusNode: focus,
       optionsBuilder: (t) {
         final q = t.text.trim().toLowerCase();
         if (q.isEmpty) return const Iterable<String>.empty();

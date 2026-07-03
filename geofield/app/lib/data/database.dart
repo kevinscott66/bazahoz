@@ -34,13 +34,14 @@ class AppDatabase {
           await d.execute('PRAGMA synchronous = NORMAL');
           await d.execute('PRAGMA busy_timeout = 5000');
         },
-        onCreate: (d, _) => _migrate001(d),
+        onCreate: (d, _) => migrate001(d),
       ),
     );
     return AppDatabase._(database);
   }
 
-  static Future<void> _migrate001(Database d) async {
+  /// Публична для тестов: стенды поднимают ту же схему на in-memory базе.
+  static Future<void> migrate001(Database d) async {
     await d.execute('''
       CREATE TABLE projects (
         id                   TEXT PRIMARY KEY NOT NULL,
