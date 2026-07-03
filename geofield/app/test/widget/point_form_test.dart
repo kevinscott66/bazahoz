@@ -9,6 +9,7 @@ import 'helpers.dart';
 
 void main() {
   Future<TestHarness> pumpPoint(WidgetTester tester) async {
+    tallPhone(tester);
     final h = await TestHarness.create();
     addTearDown(h.close);
     await tester.pumpWidget(h.wrap(PointFormScreen(

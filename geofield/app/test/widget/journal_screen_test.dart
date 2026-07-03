@@ -8,6 +8,7 @@ import 'helpers.dart';
 void main() {
   testWidgets('пустой журнал: сводка нулевая, подсказка, FAB на месте',
       (tester) async {
+    tallPhone(tester);
     final h = await TestHarness.create();
     addTearDown(h.close);
     await tester.pumpWidget(h.journal());
@@ -23,6 +24,7 @@ void main() {
 
   testWidgets('FAB открывает форму точки с автономером; возврат обновляет журнал',
       (tester) async {
+    tallPhone(tester);
     final h = await TestHarness.create();
     addTearDown(h.close);
     await tester.pumpWidget(h.journal());
@@ -31,7 +33,7 @@ void main() {
     await tester.tap(find.text('＋ Точка'));
     await tester.pumpAndSettle();
     expect(find.byType(PointFormScreen), findsOneWidget);
-    expect(find.text('Т-001'), findsOneWidget); // автономер по маршруту
+    expect(find.widgetWithText(TextField, 'Т-001'), findsOneWidget); // автономер
     expect(find.text('черновик'), findsOneWidget); // бейдж черновика
 
     // Немедленный черновик уже в базе (ТЗ §0 пр.2) — до любого ввода.
@@ -81,6 +83,7 @@ void main() {
 
   testWidgets('тап по карточке точки открывает редактирование с её данными',
       (tester) async {
+    tallPhone(tester);
     final h = await TestHarness.create();
     addTearDown(h.close);
     await tester.pumpWidget(h.journal());
@@ -95,11 +98,12 @@ void main() {
     await tester.tap(find.text('Точка Т-777'));
     await tester.pumpAndSettle();
     expect(find.byType(PointFormScreen), findsOneWidget);
-    expect(find.text('Т-777'), findsOneWidget);
+    expect(find.widgetWithText(TextField, 'Т-777'), findsOneWidget);
     expect(find.text('сохранено · не отправлено'), findsOneWidget);
   });
 
   testWidgets('кнопка синхронизации открывает SyncScreen', (tester) async {
+    tallPhone(tester);
     final h = await TestHarness.create();
     addTearDown(h.close);
     await tester.pumpWidget(h.journal());
@@ -110,11 +114,13 @@ void main() {
   });
 
   testWidgets('выгрузка CSV пишет 3 файла и показывает снек', (tester) async {
+    tallPhone(tester);
     final h = await TestHarness.create();
     addTearDown(h.close);
     await tester.pumpWidget(h.journal());
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Выгрузка CSV'));
+    await realIo(tester);
     await tester.pumpAndSettle();
     expect(find.textContaining('Выгружено 3 файла'), findsOneWidget);
   });

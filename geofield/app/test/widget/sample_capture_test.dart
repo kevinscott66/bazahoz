@@ -10,6 +10,7 @@ import 'helpers.dart';
 void main() {
   Future<TestHarness> pumpSample(WidgetTester tester,
       {Sample? existing}) async {
+    tallPhone(tester);
     final h = await TestHarness.create();
     addTearDown(h.close);
     await tester.pumpWidget(h.wrap(SampleCaptureScreen(

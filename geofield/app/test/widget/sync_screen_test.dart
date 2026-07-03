@@ -55,10 +55,10 @@ void main() {
           modifiedAt: now,
         ),
         isNew: true);
-    // Обновить экран (повторный pump того же виджета перезапустит initState
-    // только при новом ключе — проще пере-pump).
+    // Повторный pump того же типа без ключа не пересоздаёт State —
+    // новый key заставляет initState (и _refreshPending) выполниться заново.
     await tester.pumpWidget(h.wrap(SyncScreen(
-        db: h.db, deviceId: demoDeviceId, clock: h.clock)));
+        key: UniqueKey(), db: h.db, deviceId: demoDeviceId, clock: h.clock)));
     await tester.pumpAndSettle();
     expect(find.textContaining('Уйдёт: 1 записей'), findsOneWidget);
     expect(find.textContaining('КБ (до сжатия)'), findsOneWidget);

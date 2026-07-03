@@ -72,3 +72,17 @@ Future<void> settleSave(WidgetTester tester) async {
   await tester.pump(const Duration(milliseconds: 450));
   await tester.pumpAndSettle();
 }
+
+/// Высокий «полевой» вьюпорт: ListView в дефолтных 600px не строит секции
+/// ниже сгиба (viewport culling) — финдеры не видят СТРУКТУРУ/кнопки/индикатор.
+void tallPhone(WidgetTester tester) {
+  tester.view.physicalSize = const Size(1080, 2800);
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.reset);
+}
+
+/// Дать реальному вводу-выводу (файлы, сокеты) завершиться под FakeAsync.
+Future<void> realIo(WidgetTester tester,
+    [Duration d = const Duration(milliseconds: 500)]) {
+  return tester.runAsync(() => Future<void>.delayed(d));
+}
