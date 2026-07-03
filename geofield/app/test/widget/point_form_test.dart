@@ -74,7 +74,7 @@ void main() {
       (tester) async {
     final h = await pumpPoint(tester);
     // Тип объекта из выпадающего списка.
-    await tester.tap(find.text('Тип объекта').first); // label+hint = 2 текста
+    await tester.tap(find.byType(DropdownButtonFormField<String>));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Шурф').last);
     await tester.pumpAndSettle();

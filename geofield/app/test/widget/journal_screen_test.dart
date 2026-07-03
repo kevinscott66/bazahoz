@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geofield/screens/point_form_screen.dart';
 import 'package:geofield/screens/sync_screen.dart';
@@ -119,8 +120,13 @@ void main() {
     await tester.pumpWidget(h.journal());
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Выгрузка CSV'));
-    await realIo(tester, const Duration(milliseconds: 1500));
-    await tester.pump();
+    // Файловому I/O нужно реальное время; ждём появления снека итерациями.
+    var found = false;
+    for (var i = 0; i < 10 && !found; i++) {
+      await realIo(tester, const Duration(milliseconds: 300));
+      await tester.pump();
+      found = tester.any(find.byType(SnackBar));
+    }
     await tester.pumpAndSettle();
     expect(find.textContaining('Выгружено 3 файла'), findsOneWidget);
   });

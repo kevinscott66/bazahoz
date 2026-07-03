@@ -47,18 +47,26 @@ class DictionaryRepository {
   }
 
   /// Найти код по видимой подписи (регистронезависимо) или по коду.
+  /// Сравнение — в Dart: LOWER() в SQLite понижает только ASCII, кириллица
+  /// «Гранит» не находилась и дублировалась «на проверку». Справочники
+  /// невелики, полный проход дешевле собственной collation.
   Future<String?> codeForLabel(
       String projectId, String dictType, String text) async {
     final t = text.trim().toLowerCase();
     if (t.isEmpty) return null;
     final rows = await _db.query(
       'dictionaries',
-      where:
-          'project_id = ? AND dict_type = ? AND deleted = 0 AND (LOWER(label) = ? OR code = ?)',
-      whereArgs: [projectId, dictType, t, t],
-      limit: 1,
+      columns: ['code', 'label'],
+      where: 'project_id = ? AND dict_type = ? AND deleted = 0',
+      whereArgs: [projectId, dictType],
     );
-    return rows.isEmpty ? null : rows.first['code'] as String;
+    for (final r in rows) {
+      final code = r['code'] as String;
+      if (code == t || (r['label'] as String).toLowerCase() == t) {
+        return code;
+      }
+    }
+    return null;
   }
 
   /// Добавить значение «на проверку» (ТЗ §6.3), идемпотентно. Возвращает код.
