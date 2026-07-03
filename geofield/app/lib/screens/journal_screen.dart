@@ -444,13 +444,15 @@ class _JournalScreenState extends State<JournalScreen> {
           ],
       ]);
 
-      await Directory(dir).create(recursive: true);
-      final pFile = File(p.join(dir, 'geofield_points.csv'));
-      final sFile = File(p.join(dir, 'geofield_samples.csv'));
-      final mFile = File(p.join(dir, 'geofield_structures.csv'));
-      await pFile.writeAsString(pointsCsv);
-      await sFile.writeAsString(samplesCsv);
-      await mFile.writeAsString(structuresCsv);
+      // Синхронная запись: объём — килобайты, действие явное и редкое;
+      // async-файловый I/O к тому же не завершается под FakeAsync тестов.
+      Directory(dir).createSync(recursive: true);
+      final pFile = File(p.join(dir, 'geofield_points.csv'))
+        ..writeAsStringSync(pointsCsv);
+      File(p.join(dir, 'geofield_samples.csv'))
+          .writeAsStringSync(samplesCsv);
+      File(p.join(dir, 'geofield_structures.csv'))
+          .writeAsStringSync(structuresCsv);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(
