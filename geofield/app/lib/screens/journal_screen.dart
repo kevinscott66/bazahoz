@@ -444,6 +444,7 @@ class _JournalScreenState extends State<JournalScreen> {
           ],
       ]);
 
+      await Directory(dir).create(recursive: true);
       final pFile = File(p.join(dir, 'geofield_points.csv'));
       final sFile = File(p.join(dir, 'geofield_samples.csv'));
       final mFile = File(p.join(dir, 'geofield_structures.csv'));

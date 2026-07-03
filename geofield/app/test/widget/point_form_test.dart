@@ -74,7 +74,7 @@ void main() {
       (tester) async {
     final h = await pumpPoint(tester);
     // Тип объекта из выпадающего списка.
-    await tester.tap(find.text('Тип объекта'));
+    await tester.tap(find.text('Тип объекта').first); // label+hint = 2 текста
     await tester.pumpAndSettle();
     await tester.tap(find.text('Шурф').last);
     await tester.pumpAndSettle();
@@ -192,7 +192,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(SampleCaptureScreen), findsOneWidget);
     expect(find.text('Привязано к: Точка № Т-001'), findsOneWidget);
-    expect(find.text('SUZ-00001'), findsOneWidget);
+    expect(textFieldValued('SUZ-00001'), findsOneWidget);
   });
 
   testWidgets('удаление точки с пробами запрещено; без проб — мягкое удаление',

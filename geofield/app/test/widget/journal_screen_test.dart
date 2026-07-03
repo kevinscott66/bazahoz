@@ -1,4 +1,3 @@
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geofield/screens/point_form_screen.dart';
 import 'package:geofield/screens/sync_screen.dart';
@@ -121,6 +120,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Выгрузка CSV'));
     await realIo(tester, const Duration(milliseconds: 1500));
+    await tester.pump();
     await tester.pumpAndSettle();
     expect(find.textContaining('Выгружено 3 файла'), findsOneWidget);
   });
