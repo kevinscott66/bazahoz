@@ -7,6 +7,7 @@ import 'package:sqflite/sqflite.dart' show getDatabasesPath;
 import '../data/dictionary_repository.dart';
 import '../data/point_repository.dart';
 import '../data/sample_repository.dart';
+import '../lab/lab_service.dart';
 import '../models/observation_point.dart';
 import '../models/sample.dart';
 import '../sync/hlc.dart';
@@ -15,6 +16,7 @@ import '../theme/tokens.dart';
 import '../util/csv_export.dart';
 import 'point_form_screen.dart';
 import 'sample_capture_screen.dart';
+import 'lab_screen.dart';
 import 'sync_screen.dart';
 
 /// Фильтры журнала (ТЗ §6.7).
@@ -34,6 +36,7 @@ class JournalScreen extends StatefulWidget {
     required this.sampleNumbering,
     required this.deviceId,
     required this.clock,
+    required this.lab,
   });
 
   final PointRepository points;
@@ -45,6 +48,7 @@ class JournalScreen extends StatefulWidget {
   final String sampleNumbering;
   final String deviceId;
   final HlcClock clock;
+  final LabService lab;
 
   @override
   State<JournalScreen> createState() => _JournalScreenState();
@@ -110,6 +114,22 @@ class _JournalScreenState extends State<JournalScreen> {
             tooltip: 'Выгрузка CSV',
             icon: const Icon(Icons.ios_share, color: GfColors.textSecondary),
             onPressed: _onExport,
+          ),
+          IconButton(
+            tooltip: 'Лаборатория',
+            icon: const Icon(Icons.science_outlined,
+                color: GfColors.textSecondary),
+            onPressed: () async {
+              await Navigator.of(context).push(MaterialPageRoute<void>(
+                builder: (_) => LabScreen(
+                  samples: widget.samples,
+                  dictionaries: widget.dictionaries,
+                  lab: widget.lab,
+                  projectId: widget.projectId,
+                ),
+              ));
+              await _reload();
+            },
           ),
           IconButton(
             tooltip: 'Синхронизация',

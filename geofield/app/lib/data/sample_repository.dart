@@ -103,6 +103,60 @@ class SampleRepository {
     });
   }
 
+  /// Разрешённые переходы жизненного цикла пробы (ТЗ §2, §6.5).
+  static const Map<SampleStatus, SampleStatus> _nextStatus = {
+    SampleStatus.collected: SampleStatus.packed,
+    SampleStatus.packed: SampleStatus.sent,
+    SampleStatus.sent: SampleStatus.resultReceived,
+  };
+
+  /// Перевод статуса. Только вперёд по цепочке collected→packed→sent→
+  /// result_received; прыжок или откат — ArgumentError (инвариант
+  /// logic-auditor: статус не прыгает мимо разрешённых переходов).
+  /// [allowSkipPacked] — ведомость отправки переводит collected сразу в sent
+  /// (упаковка и отправка одним действием — обычная полевая практика).
+  Future<void> advanceStatus(Sample sample, SampleStatus to,
+      {bool allowSkipPacked = false}) async {
+    final valid = _nextStatus[sample.status] == to ||
+        (allowSkipPacked &&
+            sample.status == SampleStatus.collected &&
+            to == SampleStatus.sent);
+    if (!valid) {
+      throw ArgumentError(
+          'недопустимый переход статуса: ${sample.status.db} → ${to.db}');
+    }
+    final updated = sample.copyWith(
+      status: to,
+      modifiedAt: DateTime.now().toUtc().toIso8601String(),
+      version: sample.version + 1,
+      syncStatus: SyncStatus.pending,
+    );
+    await save(updated, isNew: false);
+  }
+
+  /// Пробы проекта по статусу (для ведомости и разбора).
+  Future<List<Sample>> listByStatus(
+      String projectId, List<SampleStatus> statuses) async {
+    final placeholders = List.filled(statuses.length, '?').join(',');
+    final rows = await _db.query(
+      'samples',
+      where: 'project_id = ? AND deleted = 0 AND status IN ($placeholders)',
+      whereArgs: [projectId, ...statuses.map((s) => s.db)],
+      orderBy: 'sample_number',
+    );
+    return rows.map(Sample.fromMap).toList();
+  }
+
+  /// Проба по штрихкоду (привязка результатов лаборатории).
+  Future<List<Sample>> byBarcode(String projectId, String barcode) async {
+    final rows = await _db.query(
+      'samples',
+      where: 'project_id = ? AND deleted = 0 AND barcode = ?',
+      whereArgs: [projectId, barcode],
+    );
+    return rows.map(Sample.fromMap).toList();
+  }
+
   /// Мягкое удаление: deleted=1 + мутация op=delete (факт удаления
   /// доедет до сервера синхронизацией).
   Future<void> softDelete(Sample sample) async {

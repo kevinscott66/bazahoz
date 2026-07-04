@@ -5,6 +5,7 @@ import 'data/demo_seed.dart';
 import 'data/dictionary_repository.dart';
 import 'data/point_repository.dart';
 import 'data/sample_repository.dart';
+import 'lab/lab_service.dart';
 import 'screens/journal_screen.dart';
 import 'sync/hlc.dart';
 import 'theme/tokens.dart';
@@ -31,6 +32,8 @@ class GeoFieldApp extends StatelessWidget {
         deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
     final dictionaries = DictionaryRepository(database.db,
         deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
+    final lab = LabService(database.db, samples,
+        deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
 
     return MaterialApp(
       title: 'GeoField',
@@ -46,6 +49,7 @@ class GeoFieldApp extends StatelessWidget {
         sampleNumbering: demoNumbering,
         deviceId: demoDeviceId,
         clock: clock,
+        lab: lab,
       ),
     );
   }

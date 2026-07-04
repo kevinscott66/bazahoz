@@ -176,6 +176,27 @@ class AppDatabase {
     ''');
 
     await d.execute('''
+      CREATE TABLE sample_results (
+        id           TEXT PRIMARY KEY NOT NULL,
+        sample_id    TEXT NOT NULL REFERENCES samples(id),
+        lab_code     TEXT,
+        element      TEXT NOT NULL,
+        value        REAL,
+        unit         TEXT,
+        method       TEXT,
+        analyzed_at  TEXT,
+        author_id    TEXT,
+        created_at   TEXT NOT NULL,
+        modified_at  TEXT NOT NULL,
+        version      INTEGER NOT NULL DEFAULT 1,
+        sync_status  TEXT NOT NULL DEFAULT 'pending',
+        deleted      INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await d
+        .execute('CREATE INDEX idx_results_sample ON sample_results(sample_id)');
+
+    await d.execute('''
       CREATE TABLE change_log (
         seq          INTEGER PRIMARY KEY AUTOINCREMENT,
         change_id    TEXT NOT NULL UNIQUE,

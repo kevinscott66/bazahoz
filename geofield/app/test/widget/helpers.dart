@@ -5,6 +5,7 @@ import 'package:geofield/data/demo_seed.dart';
 import 'package:geofield/data/dictionary_repository.dart';
 import 'package:geofield/data/point_repository.dart';
 import 'package:geofield/data/sample_repository.dart';
+import 'package:geofield/lab/lab_service.dart';
 import 'package:geofield/screens/journal_screen.dart';
 import 'package:geofield/sync/hlc.dart';
 import 'package:geofield/theme/tokens.dart';
@@ -12,13 +13,15 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 /// Живой стенд: реальная SQLite (in-memory, ffi) с демо-сидом + репозитории.
 class TestHarness {
-  TestHarness._(this.db, this.clock, this.points, this.samples, this.dicts);
+  TestHarness._(this.db, this.clock, this.points, this.samples, this.dicts,
+      this.lab);
 
   final Database db;
   final HlcClock clock;
   final PointRepository points;
   final SampleRepository samples;
   final DictionaryRepository dicts;
+  final LabService lab;
 
   static Future<TestHarness> create() async {
     sqfliteFfiInit();
@@ -43,7 +46,9 @@ class TestHarness {
         deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
     final dicts = DictionaryRepository(db,
         deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
-    return TestHarness._(db, clock, points, samples, dicts);
+    final lab = LabService(db, samples,
+        deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
+    return TestHarness._(db, clock, points, samples, dicts, lab);
   }
 
   Widget journal() => MaterialApp(
@@ -58,6 +63,7 @@ class TestHarness {
           sampleNumbering: demoNumbering,
           deviceId: demoDeviceId,
           clock: clock,
+          lab: lab,
         ),
       );
 
