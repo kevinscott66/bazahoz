@@ -178,7 +178,7 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v128 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v129 · БЕТА</div>
   </div>
 </div>
 
@@ -768,7 +768,10 @@ function ensureTomb(){
   if(!state.delLoc || typeof state.delLoc!=="object" || Array.isArray(state.delLoc)) state.delLoc={};
   if(!state.delCat || typeof state.delCat!=="object" || Array.isArray(state.delCat)) state.delCat={};
   for(const k of STOCK_TYPE_KEYS){ if(!Array.isArray(state.delLoc[k])) state.delLoc[k]=[]; if(!Array.isArray(state.delCat[k])) state.delCat[k]=[]; }
+  if(!Array.isArray(state.delJr)) state.delJr=[];   // надгробия ЯВНО удалённых журнальных записей (id) — чтобы удаление доехало до облака и не воскресало pull-ом
 }
+// пометить журнальную запись удалённой (append-only облако удаляет только помеченные — усечение квоты надгробий НЕ ставит)
+function tombJr(id){ if(!id) return; ensureTomb(); if(!state.delJr.includes(id)){ state.delJr.push(id); if(state.delJr.length>3000) state.delJr=state.delJr.slice(-2000); } }
 function tombAdd(map,type,name){ ensureTomb(); const a=map[type]; if(name && !a.includes(name)) a.push(name); }      // удалили имя → в надгробия
 function tombRevive(map,type,name){ ensureTomb(); const i=(map[type]||[]).indexOf(name); if(i>=0) map[type].splice(i,1); } // снова добавили/переименовали в это имя → снимаем надгробие
 /* state.locations — пользовательские места хранения. При первом запуске сидим из дефолтов.
@@ -1860,12 +1863,13 @@ async function deleteOp(kind, opId){
       // если принятый заказ — удалить парную запись в Поступлении по точному id (fallback: по совпадению)
       if(kind==="order"){
         if(op.receiptId){
+          tombJr(op.receiptId);   // надгробие парной записи «Поступление» — чтобы не воскресла pull-ом
           state.journals.receipt = (state.journals.receipt||[]).filter(r=>r.id!==op.receiptId);
         } else {
           // старые записи без receiptId — фолбэк на эвристику (снесёт только одну первую совпадающую)
           const arr = state.journals.receipt||[];
           const idx = arr.findIndex(r=>r.productId===product.id && Number(r.qty)===Number(op.qty) && (r.note||"").startsWith("Из заказа"));
-          if(idx>=0) arr.splice(idx,1);
+          if(idx>=0){ tombJr(arr[idx].id); arr.splice(idx,1); }
         }
       }
       // если позиция была авто-создана (qty=0 и нет других журнальных записей) — предложить удалить.
@@ -1876,6 +1880,7 @@ async function deleteOp(kind, opId){
   } else {
     if(!await confirmSheet(`Удалить запись?\n${op.productName} — ${fmtQty(op.qty)} ${op.unit||""}`,{danger:true,yes:"Удалить"})) return;
   }
+  tombJr(opId);   // надгробие удаляемой записи — удаление доедет до облака, pull её не вернёт
   state.journals[kind] = state.journals[kind].filter(o=>o.id!==opId);
   logOp("OP_DEL", `${kind} ${op.productName} ${fmtQty(op.qty)}${revert?" (откат)":""}`);
   saveState(); render();
@@ -2532,6 +2537,7 @@ async function deleteStock(id){
   if(state.journals){
     JOURNAL_KEYS.forEach(k=>{
       if(Array.isArray(state.journals[k])){
+        state.journals[k].forEach(op=>{ if(op.productId===id) tombJr(op.id); });   // надгробия — чтобы удалённые с товаром записи не воскресли pull-ом
         state.journals[k] = state.journals[k].filter(op=> op.productId!==id);
       }
     });
@@ -2889,7 +2895,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v128 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v129 · тестовый канал</div>
   `;
 }
 
@@ -4454,7 +4460,8 @@ async function cloudPull(cid){
       return normalizeStockItem(s);   // та же чистка, что при импорте: type-whitelist (XSS), партии, пересчёт qty из партий
     });
     const J=emptyJournals();
-    (jr||[]).forEach(r=>{ if(J[r.kind]) J[r.kind].push({ ...(r.data||{}), id:safeId(r.id) }); });
+    const _delJrSet = new Set(Array.isArray(state.delJr)?state.delJr:[]);   // не воскрешаем явно удалённые (если облачное удаление ещё не доехало / чужой re-push)
+    (jr||[]).forEach(r=>{ const rid=safeId(r.id); if(_delJrSet.has(rid)) return; if(J[r.kind]) J[r.kind].push({ ...(r.data||{}), id:rid }); });
     for(const k in J) J[k] = J[k].sort((a,b)=>(b.ts||"").localeCompare(a.ts||"")).slice(0,500);   // держим локально свежие 500 (как при quota-усечении) — иначе на малой памяти цикл pull↔усечение; облачный архив полный
     state.journals = J;
     // ЗАДАЧИ НЕ ТЯНЕМ из облака — они общие-локальные (одно расписание на все базы),
@@ -4623,12 +4630,13 @@ async function cloudPushNow(){
       const prevJSig = loadSyncSig(cid,"jr");
       if(!(jrows.length===0 && Object.keys(prevJSig).length>0)){
         const jup = jrows.filter(r=> curJSig[r.id]!==prevJSig[r.id]);
-        // ЖУРНАЛЫ НЕ УДАЛЯЕМ из облака вообще: облачный журнал — полный архив,
-        // а локальный усекается по квоте localStorage (slice(0,500) — свежие 500 — при QuotaExceeded).
-        // Любое локальное «исчезновение» записи (усечение ИЛИ ручное удаление) НЕ должно
-        // стирать запись из облачного архива. Записи журнала append-only, у каждой уникальный id —
-        // повторного появления при pull это не вызовет конфликтов. Только добавляем/обновляем.
+        // УСЕЧЕНИЕ по квоте (slice 500) НЕ удаляет из облака — архив полный (нет надгробия).
+        // ЯВНОЕ удаление пользователя (deleteOp → tombJr) удаляет из облака — иначе pull воскрешал бы запись.
+        // Удаляем только надгробленные id, которые РЕАЛЬНО были в облаке (есть в prevJSig) — по одному разу
+        // (после saveSyncSig(curJSig) их нет в подписи → повторно не удаляем).
         if(jup.length) await cloudRestUpsert("journal_entries", jup, tok);
+        const jrToDel = (Array.isArray(state.delJr)?state.delJr:[]).filter(id=> prevJSig[id]!==undefined);
+        if(jrToDel.length) await cloudRestDelete("journal_entries", jrToDel, tok).catch(e=>console.warn("jr del", e));
         saveSyncSig(cid,"jr",curJSig);
       }
     }
