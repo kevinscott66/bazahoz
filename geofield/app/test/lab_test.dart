@@ -53,6 +53,22 @@ void main() {
           'barcode;element;value\n"S-1;x";Au;1.0\n');
       expect(r.rows.single.barcode, 'S-1;x');
     });
+
+    test('колонка «Номер» не перехватывает штрихкод (приоритет синонимов)',
+        () {
+      final r = parseLabResults('Номер;Штрихкод;Элемент;Содержание\n'
+          '1;SUZ-00007;Au;0.5\n');
+      expect(r.rows.single.barcode, 'SUZ-00007',
+          reason: 'порядковый номер строки — не идентификатор пробы');
+    });
+
+    test('случайный ; в заголовке не ломает выбор запятой-разделителя', () {
+      final r = parseLabResults('Sample,Element,Result,Unit (mg/kg; ppm)\n'
+          'S-1,Au,1.5,g/t\n'
+          'S-2,Ag,7.0,g/t\n');
+      expect(r.rows, hasLength(2));
+      expect(r.rows.first.barcode, 'S-1');
+    });
   });
 
   group('LabService на реальной базе', () {
@@ -167,6 +183,39 @@ void main() {
       final again =
           (await samples.byBarcode(demoProjectId, 'SUZ-00001')).single;
       expect(await lab.markDispatched([again]), 0);
+    });
+
+    test('двойной вызов со stale-объектами: один переход, версия растёт один раз',
+        () async {
+      final a = await addSample('s1', 'SUZ-00001');
+      // Оба вызова с ОДНИМ устаревшим снапшотом (двойной тап).
+      expect(await lab.markDispatched([a]), 1);
+      expect(await lab.markDispatched([a]), 0,
+          reason: 'advanceStatus читает свежий статус, не снапшот');
+      final row = (await db.query('samples', where: "id = 's1'")).single;
+      expect(row['version'], 2, reason: 'ровно один инкремент версии');
+      final log = await db.query('change_log',
+          where: "entity_table = 'samples' AND op = 'update'");
+      expect(log, hasLength(1), reason: 'одна мутация, не две');
+    });
+
+    test('повторный импорт того же файла — дубли не плодятся', () async {
+      final a = await addSample('s1', 'SUZ-00001');
+      await lab.markDispatched([a]);
+      const file = 'barcode;element;value;unit\nSUZ-00001;Au;2.4;г/т\n';
+      final first = await lab.importResults(demoProjectId, file);
+      expect(first.applied, 1);
+      final second = await lab.importResults(demoProjectId, file);
+      expect(second.applied, 0);
+      expect(second.issues.single, contains('уже принят'));
+      expect(await db.query('sample_results'), hasLength(1));
+
+      // Пере-анализ с другим значением — вставляется, но подсвечен.
+      final third = await lab.importResults(demoProjectId,
+          'barcode;element;value;unit\nSUZ-00001;Au;2.6;г/т\n');
+      expect(third.applied, 1);
+      expect(third.issues.single, contains('на разбор'));
+      expect(await db.query('sample_results'), hasLength(2));
     });
   });
 }

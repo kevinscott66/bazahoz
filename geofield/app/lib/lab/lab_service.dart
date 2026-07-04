@@ -72,19 +72,19 @@ class LabService {
     ]);
   }
 
-  /// Отправка партии: перевод статусов в «отправлена» (collected — со
+  /// Отправка партии: перевод статусов в «отправлена» (collected — с
   /// пропуском packed: упаковка и отправка одним действием). Возвращает
-  /// число отправленных.
+  /// число реально переведённых. Идемпотентен: advanceStatus сам читает
+  /// свежий статус в транзакции, повтор/двойной тап даёт 0 переходов.
+  /// Пробы независимы: сбой на N-й не откатывает предыдущие — повторный
+  /// вызов доведёт остальных.
   Future<int> markDispatched(List<Sample> samples) async {
     var n = 0;
     for (final s in samples) {
-      if (s.status == SampleStatus.sent ||
-          s.status == SampleStatus.resultReceived) {
-        continue; // уже отправлена — ведомость можно печатать повторно
-      }
-      await _samples.advanceStatus(s, SampleStatus.sent,
+      if (s.status == SampleStatus.resultReceived) continue; // конечный статус
+      final advanced = await _samples.advanceStatus(s, SampleStatus.sent,
           allowSkipPacked: true);
-      n++;
+      if (advanced) n++;
     }
     return n;
   }
@@ -112,6 +112,22 @@ class LabService {
         continue;
       }
       final sample = matches.single;
+      // Дедуп: повторный импорт того же файла не плодит строки результатов.
+      final existing = await _db.query('sample_results',
+          where: 'sample_id = ? AND element = ? AND deleted = 0',
+          whereArgs: [sample.id, row.element]);
+      final exactDup = existing.any((r) =>
+          r['value'] == row.value && (r['unit'] as String?) == row.unit);
+      if (exactDup) {
+        issues.add('строка ${row.line}: результат ${row.element} по '
+            '«${row.barcode}» уже принят — пропущен (повторный импорт?)');
+        continue;
+      }
+      if (existing.isNotEmpty) {
+        // Пере-анализ/контрольная проба: вставляем, но подсвечиваем.
+        issues.add('строка ${row.line}: повторный результат ${row.element} '
+            'по «${row.barcode}» с другим значением — на разбор');
+      }
       await _insertResult(sample.id, row);
       applied++;
       touched[sample.id] = sample;
@@ -119,15 +135,16 @@ class LabService {
 
     var updated = 0;
     for (final sample in touched.values) {
-      if (sample.status == SampleStatus.resultReceived) continue;
-      if (sample.status != SampleStatus.sent) {
+      try {
+        // advanceStatus читает СВЕЖИЙ статус в транзакции: sent →
+        // result_received; уже result_received → false (повтор безопасен).
+        final advanced =
+            await _samples.advanceStatus(sample, SampleStatus.resultReceived);
+        if (advanced) updated++;
+      } on ArgumentError {
         issues.add('проба ${sample.sampleNumber}: результат пришёл, но проба '
-            'не значилась отправленной (${sample.status.label}) — статус '
-            'оставлен, на разбор');
-        continue;
+            'не значилась отправленной — статус оставлен, на разбор');
       }
-      await _samples.advanceStatus(sample, SampleStatus.resultReceived);
-      updated++;
     }
     return ImportOutcome(
         applied: applied, samplesUpdated: updated, issues: issues);

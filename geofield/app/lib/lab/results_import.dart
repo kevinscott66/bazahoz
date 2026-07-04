@@ -62,15 +62,23 @@ const Map<String, List<String>> _headerSynonyms = {
   'method': ['метод', 'method', 'анализ', 'assay'],
 };
 
-/// Определить разделитель по строке заголовка: берём тот, что даёт больше
-/// колонок (лаборатории шлют и ';', и ',', и табуляцию).
-String detectDelimiter(String headerLine) {
-  var best = ';';
-  var bestCount = -1;
+/// Определить разделитель (лаборатории шлют и ';', и ',', и табуляцию).
+/// Не только по заголовку: кандидат обязан давать ОДИНАКОВОЕ число колонок
+/// (>1) в заголовке и первых строках данных — иначе случайный ';' внутри
+/// текста заголовка выигрывает у настоящего разделителя.
+String detectDelimiter(List<String> lines) {
+  final sample = lines.take(5).toList();
+  String best = ';';
+  var bestScore = -1;
   for (final d in const [';', ',', '\t']) {
-    final count = _splitCsvLine(headerLine, d).length;
-    if (count > bestCount) {
-      bestCount = count;
+    final counts = [for (final l in sample) _splitCsvLine(l, d).length];
+    final headerCols = counts.first;
+    if (headerCols < 2) continue;
+    final consistent = counts.every((c) => c == headerCols);
+    // Консистентность важнее ширины; при равенстве — больше колонок.
+    final score = (consistent ? 1000 : 0) + headerCols;
+    if (score > bestScore) {
+      bestScore = score;
       best = d;
     }
   }
@@ -110,14 +118,19 @@ List<String> _splitCsvLine(String line, String delimiter) {
 
 int? _findColumn(List<String> headers, String field) {
   final synonyms = _headerSynonyms[field]!;
-  for (var i = 0; i < headers.length; i++) {
-    final h = headers[i].trim().toLowerCase();
-    if (synonyms.contains(h)) return i;
+  final lower = [for (final h in headers) h.trim().toLowerCase()];
+  // Порядок СИНОНИМОВ важнее порядка колонок: иначе в файле
+  // «Номер;Штрихкод;…» порядковый «Номер» перехватил бы штрихкод.
+  for (final s in synonyms) {
+    final i = lower.indexOf(s);
+    if (i >= 0) return i;
   }
-  // Частичное совпадение (например «штрихкод пробы»).
-  for (var i = 0; i < headers.length; i++) {
-    final h = headers[i].trim().toLowerCase();
-    if (synonyms.any((s) => s.length > 2 && h.contains(s))) return i;
+  // Частичное совпадение (например «штрихкод пробы») — тем же приоритетом.
+  for (final s in synonyms) {
+    if (s.length <= 2) continue;
+    for (var i = 0; i < lower.length; i++) {
+      if (lower[i].contains(s)) return i;
+    }
   }
   return null;
 }
@@ -146,7 +159,7 @@ ParsedResults parseLabResults(String text) {
     return const ParsedResults(rows: [], issues: ['файл пуст']);
   }
 
-  final delimiter = detectDelimiter(lines.first);
+  final delimiter = detectDelimiter(lines);
   final headers = _splitCsvLine(lines.first, delimiter);
   final iBarcode = _findColumn(headers, 'barcode');
   final iElement = _findColumn(headers, 'element');

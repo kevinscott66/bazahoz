@@ -37,6 +37,7 @@ class _LabScreenState extends State<LabScreen> {
   List<Sample> _sent = const [];
   List<Sample> _done = const [];
   bool _loading = true;
+  bool _busy = false; // двойной тап «Сформировать» не запускает второй проход
 
   @override
   void initState() {
@@ -88,7 +89,7 @@ class _LabScreenState extends State<LabScreen> {
             child: SizedBox(
               height: GfTouch.min,
               child: FilledButton(
-                onPressed: _pending.isEmpty ? null : _onDispatch,
+                onPressed: (_pending.isEmpty || _busy) ? null : _onDispatch,
                 style: FilledButton.styleFrom(
                   backgroundColor: GfColors.accent,
                   foregroundColor: GfColors.onAccent,
@@ -182,7 +183,12 @@ class _LabScreenState extends State<LabScreen> {
     );
     if (confirmed != true) return;
 
+    setState(() => _busy = true);
+    var advanced = 0;
     try {
+      // Сначала статусы (источник правды), затем файл: иначе сбой переводов
+      // оставлял бы на диске ведомость «отправлено всё», противореча базе.
+      advanced = await widget.lab.markDispatched(_pending);
       final typeLabels = {
         for (final t in SampleType.values) t.code: t.label,
       };
@@ -193,16 +199,19 @@ class _LabScreenState extends State<LabScreen> {
       final file = File(p.join(dir,
           'geofield_dispatch_${DateTime.now().toUtc().millisecondsSinceEpoch}.csv'))
         ..writeAsStringSync(csv);
-      final n = await widget.lab.markDispatched(_pending);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Ведомость: ${file.path} · отправлено проб: $n'),
+        content: Text('Ведомость: ${file.path} · отправлено проб: $advanced'),
         duration: const Duration(seconds: 6),
       ));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Ведомость не сформирована: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(advanced > 0
+              ? 'Статусы переведены ($advanced), но ведомость не записана: $e'
+              : 'Ведомость не сформирована: $e')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
     await _reload();
   }

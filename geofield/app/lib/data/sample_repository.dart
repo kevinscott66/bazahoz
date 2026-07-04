@@ -111,27 +111,54 @@ class SampleRepository {
   };
 
   /// Перевод статуса. Только вперёд по цепочке collected→packed→sent→
-  /// result_received; прыжок или откат — ArgumentError (инвариант
-  /// logic-auditor: статус не прыгает мимо разрешённых переходов).
+  /// result_received; прыжок или откат — ArgumentError.
   /// [allowSkipPacked] — ведомость отправки переводит collected сразу в sent
   /// (упаковка и отправка одним действием — обычная полевая практика).
-  Future<void> advanceStatus(Sample sample, SampleStatus to,
+  ///
+  /// Полностью транзакционен ОТ СВЕЖЕГО чтения строки: переданный объект —
+  /// только id. Иначе двойной тап/повторный вызов со stale-снапшотом
+  /// перезаписывал строку старыми полями и не двигал version (§8.4-8.5).
+  /// Возвращает true — переход выполнен; false — строка уже в целевом
+  /// статусе (идемпотентный повтор).
+  Future<bool> advanceStatus(Sample sample, SampleStatus to,
       {bool allowSkipPacked = false}) async {
-    final valid = _nextStatus[sample.status] == to ||
-        (allowSkipPacked &&
-            sample.status == SampleStatus.collected &&
-            to == SampleStatus.sent);
-    if (!valid) {
-      throw ArgumentError(
-          'недопустимый переход статуса: ${sample.status.db} → ${to.db}');
-    }
-    final updated = sample.copyWith(
-      status: to,
-      modifiedAt: DateTime.now().toUtc().toIso8601String(),
-      version: sample.version + 1,
-      syncStatus: SyncStatus.pending,
-    );
-    await save(updated, isNew: false);
+    return _db.transaction((txn) async {
+      final rows = await txn.query('samples',
+          where: 'id = ?', whereArgs: [sample.id], limit: 1);
+      if (rows.isEmpty) {
+        throw ArgumentError('проба ${sample.id} не найдена');
+      }
+      final fresh = Sample.fromMap(rows.first);
+      if (fresh.status == to) return false; // уже там — повтор безопасен
+      final valid = _nextStatus[fresh.status] == to ||
+          (allowSkipPacked &&
+              fresh.status == SampleStatus.collected &&
+              to == SampleStatus.sent);
+      if (!valid) {
+        throw ArgumentError(
+            'недопустимый переход статуса: ${fresh.status.db} → ${to.db}');
+      }
+      final delta = <String, Object?>{
+        'status': to.db,
+        'modified_at': DateTime.now().toUtc().toIso8601String(),
+        'version': fresh.version + 1,
+      };
+      await txn.update('samples', {...delta, 'sync_status': 'pending'},
+          where: 'id = ?', whereArgs: [sample.id]);
+      final ts = (await clock.tick(txn)).encode();
+      await upsertRowClock(txn, 'samples', sample.id, ts);
+      await txn.insert('change_log', {
+        'change_id': _uuid.v4(),
+        'entity_table': 'samples',
+        'entity_id': sample.id,
+        'op': 'update',
+        'payload': jsonEncode(delta),
+        'author_id': authorId,
+        'device_id': deviceId,
+        'logical_ts': ts,
+      });
+      return true;
+    });
   }
 
   /// Пробы проекта по статусу (для ведомости и разбора).
