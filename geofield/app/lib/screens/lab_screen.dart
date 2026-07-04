@@ -89,7 +89,10 @@ class _LabScreenState extends State<LabScreen> {
             child: SizedBox(
               height: GfTouch.min,
               child: FilledButton(
-                onPressed: (_pending.isEmpty || _busy) ? null : _onDispatch,
+                onPressed:
+                    ((_pending.isEmpty && _sent.isEmpty) || _busy)
+                        ? null
+                        : _onDispatch,
                 style: FilledButton.styleFrom(
                   backgroundColor: GfColors.accent,
                   foregroundColor: GfColors.onAccent,
@@ -98,9 +101,11 @@ class _LabScreenState extends State<LabScreen> {
                       borderRadius: BorderRadius.circular(GfRadius.r12)),
                 ),
                 child: Text(
-                  _pending.isEmpty
-                      ? 'Нечего отправлять'
-                      : 'Ведомость (${_pending.length})',
+                  _pending.isNotEmpty
+                      ? 'Ведомость (${_pending.length})'
+                      : _sent.isNotEmpty
+                          ? 'Ведомость повторно (${_sent.length})'
+                          : 'Нечего отправлять',
                   style: const TextStyle(
                       fontSize: 16, fontWeight: FontWeight.w700),
                 ),
@@ -163,14 +168,23 @@ class _LabScreenState extends State<LabScreen> {
   }
 
   Future<void> _onDispatch() async {
-    final count = _pending.length;
+    // Очередь пуста, но есть отправленные — повторная печать ведомости
+    // (после сбоя записи файла документ иначе не получить, §6.9).
+    final reprint = _pending.isEmpty;
+    final batch = reprint ? _sent : _pending;
+    final count = batch.length;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: GfColors.surfaceHi,
-        title: const Text('Сформировать ведомость?'),
-        content: Text('$count проб будут помечены отправленными в '
-            'лабораторию; ведомость сохранится CSV-файлом.'),
+        title: Text(reprint
+            ? 'Повторная ведомость?'
+            : 'Сформировать ведомость?'),
+        content: Text(reprint
+            ? 'Ведомость по $count уже отправленным пробам сохранится '
+                'CSV-файлом; статусы не изменятся.'
+            : '$count проб будут помечены отправленными в '
+                'лабораторию; ведомость сохранится CSV-файлом.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -188,11 +202,11 @@ class _LabScreenState extends State<LabScreen> {
     try {
       // Сначала статусы (источник правды), затем файл: иначе сбой переводов
       // оставлял бы на диске ведомость «отправлено всё», противореча базе.
-      advanced = await widget.lab.markDispatched(_pending);
+      advanced = await widget.lab.markDispatched(batch);
       final typeLabels = {
         for (final t in SampleType.values) t.code: t.label,
       };
-      final csv = widget.lab.buildDispatchCsv(_pending,
+      final csv = widget.lab.buildDispatchCsv(batch,
           typeLabel: (code) => typeLabels[code] ?? code);
       final dir = await getDatabasesPath();
       Directory(dir).createSync(recursive: true);

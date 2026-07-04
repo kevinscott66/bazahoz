@@ -199,6 +199,18 @@ void main() {
       expect(log, hasLength(1), reason: 'одна мутация, не две');
     });
 
+    test('мягко удалённая проба не «оживает» переводом статуса', () async {
+      final a = await addSample('s1', 'SUZ-00001');
+      await samples.softDelete(a);
+      expect(
+          () => samples.advanceStatus(a, SampleStatus.sent,
+              allowSkipPacked: true),
+          throwsArgumentError);
+      final row = (await db.query('samples', where: "id = 's1'")).single;
+      expect(row['status'], 'collected');
+      expect(row['deleted'], 1);
+    });
+
     test('повторный импорт того же файла — дубли не плодятся', () async {
       final a = await addSample('s1', 'SUZ-00001');
       await lab.markDispatched([a]);

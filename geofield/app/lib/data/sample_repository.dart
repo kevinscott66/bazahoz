@@ -123,10 +123,12 @@ class SampleRepository {
   Future<bool> advanceStatus(Sample sample, SampleStatus to,
       {bool allowSkipPacked = false}) async {
     return _db.transaction((txn) async {
+      // deleted = 0: мягко удалённая параллельно проба не «оживает»
+      // продвижением статуса в обход soft-delete.
       final rows = await txn.query('samples',
-          where: 'id = ?', whereArgs: [sample.id], limit: 1);
+          where: 'id = ? AND deleted = 0', whereArgs: [sample.id], limit: 1);
       if (rows.isEmpty) {
-        throw ArgumentError('проба ${sample.id} не найдена');
+        throw ArgumentError('проба ${sample.id} не найдена или удалена');
       }
       final fresh = Sample.fromMap(rows.first);
       if (fresh.status == to) return false; // уже там — повтор безопасен

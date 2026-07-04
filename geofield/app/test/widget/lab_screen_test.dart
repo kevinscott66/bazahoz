@@ -79,6 +79,24 @@ void main() {
     expect(rows.map((r) => r['status']), everyElement('sent'));
   });
 
+  testWidgets('повторная ведомость по отправленным: файл без переходов',
+      (tester) async {
+    final h = await pumpLab(tester, seed: [
+      mk('s1', 'SUZ-00001', status: SampleStatus.sent),
+    ]);
+    // Очередь пуста, но кнопка предлагает повторную печать.
+    expect(find.text('Ведомость повторно (1)'), findsOneWidget);
+    await tester.tap(find.text('Ведомость повторно (1)'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('статусы не изменятся'), findsOneWidget);
+    await tester.tap(find.text('Сформировать'));
+    await realIo(tester);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('отправлено проб: 0'), findsOneWidget);
+    final row = (await h.db.query('samples')).single;
+    expect(row['status'], 'sent', reason: 'повторная печать без переходов');
+  });
+
   testWidgets('импорт: файл с результатами закрывает пробу', (tester) async {
     final h = await pumpLab(tester, seed: [
       mk('s1', 'SUZ-00001', status: SampleStatus.sent),
