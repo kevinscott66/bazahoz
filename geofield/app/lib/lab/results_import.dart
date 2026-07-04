@@ -143,7 +143,7 @@ ParsedResults parseLabResults(String text) {
       .where((l) => l.trim().isNotEmpty)
       .toList();
   if (lines.isEmpty) {
-    return ParsedResults(rows: const [], issues: ['файл пуст']);
+    return const ParsedResults(rows: [], issues: ['файл пуст']);
   }
 
   final delimiter = detectDelimiter(lines.first);
