@@ -100,7 +100,7 @@
   .light #navbar{ border-top-color:#e5e7eb; }
   .light .list-box{ border-color:#e5e7eb; }
   .btn:disabled, .btn[disabled]{ opacity:.45; cursor:default; }
-  .btn.px-2{ min-width:40px; }
+  .btn.px-2{ min-width:44px; }
   /* индикатор активной синхронизации — бегущая полоска снизу sync-бара */
   #syncBar.busy{ overflow:hidden; }
   #syncBar.busy::after{ content:""; position:absolute; bottom:0; left:-35%; height:2px; width:35%; background:rgba(255,255,255,.85); border-radius:2px; animation:syncslide 1.1s ease-in-out infinite; }
@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v135 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v136 · БЕТА</div>
   </div>
 </div>
 
@@ -309,6 +309,7 @@ const CLOUD_CFG = {
 const LOGIN_DOMAIN = "@bazahoz.app";
 const cloud = {
   sb:null, session:null, profile:null, members:[], bases:{},
+  orgRoles:[], _baseParty:{},   // территориальные/глобальные роли + карта база→партия (RBAC v2)
   channel:null, subscribedBase:null,
   pushTimer:null, pullTimer:null, applying:false, ready:false, busy:false,
   pushPending:false, retryTimer:null, pullRetryT:null, baseMembers:[], basesLoaded:false,
@@ -2904,7 +2905,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v135 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v136 · тестовый канал</div>
   `;
 }
 
@@ -3845,6 +3846,12 @@ function myRank(){
   (cloud.members||[]).forEach(m=>{ if(m.active!==false && m.can_manage) r = Math.max(r, rankOf(m.role)||2); });
   return r;
 }
+// роли, назначаемые текущим пользователем: СТРОГО ниже своего ранга. keepRole — текущую роль участника
+// показываем всегда (чтобы её было видно активной), даже если она равна/выше моего ранга.
+function assignableRoles(keepRole){
+  const mine = myRank();
+  return MEMBER_ROLES.filter(r => r.rank < mine || r.key === keepRole);
+}
 function canManageBase(){
   const cid=activeCloudId(); if(!cid) return false;
   if(cloud.profile && cloud.profile.is_admin) return true;
@@ -3955,13 +3962,13 @@ async function _patchMember(uid, body, okMsg){
 function openMemberRole(uid){
   const m=_findBM(uid); if(!m){ toast("Список устарел. Закройте и откройте заново"); return; }
   const mine=myRank();
-  // можно назначить только роль СТРОГО НИЖЕ своей (защита от повышения выше себя; сервер это тоже проверяет)
-  const avail=MEMBER_ROLES.filter(r=>r.rank<mine || r.key===m.role);
+  // показываем все базовые роли; роли РАВНЫЕ/ВЫШЕ моего ранга — disabled (назначить можно только строго ниже).
+  // сервер (Edge Function/RLS) — последний рубеж; здесь это UX + защита от случайного повышения.
   openSheet(`<div class="font-bold text-xl mb-3">Роль: ${esc(m.username)}</div>
     <div class="space-y-2">
-      ${avail.map(r=>`<button class="btn ${m.role===r.key?"btn-primary":"btn-ghost"} w-full" ${r.rank>=mine&&r.key!==m.role?"disabled style=\"opacity:.4\"":""} onclick="setMemberRole('${uid}','${r.key}')">${esc(r.label)}</button>`).join("")}
+      ${MEMBER_ROLES.map(r=>{const locked=r.rank>=mine && r.key!==m.role; return `<button class="btn ${m.role===r.key?"btn-primary":"btn-ghost"} w-full" ${locked?"disabled":""} onclick="setMemberRole('${uid}','${r.key}')">${esc(r.label)}</button>`;}).join("")}
     </div>
-    <div class="text-xs opacity-60 mt-2">Роль определяет, что человек может: вести склад, задачи, управлять базой. «Начальник участка» сможет сам добавлять и убирать работников. Роли выше вашей — недоступны.</div>
+    <div class="text-xs opacity-60 mt-2">Роль определяет, что человек может: вести склад, задачи, управлять базой. «Начальник участка» сможет сам добавлять и убирать работников. Роли равные вашей или выше — недоступны.</div>
     <button class="btn btn-ghost w-full mt-3" data-close>Отмена</button>`);
 }
 async function setMemberRole(uid, roleKey){
@@ -4040,6 +4047,7 @@ async function memberRemove(uid){
   }catch(e){ toast("Не удалось: "+(e.message||"Проверьте интернет и повторите")); }
 }
 function openAddMember(){
+  const _amRoles = assignableRoles();   // роли строго ниже моего ранга
   openSheet(`<div class="font-bold text-xl mb-3">＋ Новый работник</div>
     <div class="space-y-3">
       <div><div class="text-sm opacity-70 mb-1">Логин (от 3 до 32: английские буквы, цифры, _)</div>
@@ -4047,22 +4055,25 @@ function openAddMember(){
       <div><div class="text-sm opacity-70 mb-1">Пароль (не короче 6 символов)</div>
         <input class="input" id="amp" type="text" autocapitalize="none" autocorrect="off" placeholder="придумайте пароль" /></div>
       <div><div class="text-sm opacity-70 mb-1">Роль</div>
-        <select class="input" id="amr">${MEMBER_ROLES.filter(r=>r.rank<myRank()).map(r=>`<option value="${r.key}">${esc(r.label)}</option>`).join("")}</select></div>
+        ${_amRoles.length
+          ? `<select class="input" id="amr">${_amRoles.map(r=>`<option value="${r.key}">${esc(r.label)}</option>`).join("")}</select>`
+          : `<div class="err-text text-sm">Нет ролей, которые вы можете назначить. Обратитесь к директору.</div>`}</div>
     </div>
     <div class="flex gap-2 mt-3">
       <button class="btn btn-ghost flex-1" data-close>Отмена</button>
-      <button class="btn btn-success flex-1" id="amGo">Создать</button>
+      ${_amRoles.length?`<button class="btn btn-success flex-1" id="amGo">Создать</button>`:``}
     </div>
     <div class="text-xs opacity-60 mt-2">Логин будет: <span id="amHint">…${LOGIN_DOMAIN}</span>. Передайте работнику этот логин и пароль, который задали выше — он войдёт по ним.</div>`);
   const u=document.getElementById("amu");
   u.addEventListener("input",()=>{ document.getElementById("amHint").textContent=((u.value.trim().toLowerCase())||"…")+LOGIN_DOMAIN; });
-  document.getElementById("amGo").onclick=()=>doAddMember();
+  const go=document.getElementById("amGo"); if(go) go.onclick=()=>doAddMember();
 }
 async function doAddMember(){
   const cid=activeCloudId();
   const username=(document.getElementById("amu").value||"").trim().toLowerCase();
   const password=document.getElementById("amp").value||"";
-  const role=document.getElementById("amr").value;
+  const roleEl=document.getElementById("amr"); const role=roleEl?roleEl.value:"";
+  if(!role){ toast("Выберите роль"); return; }
   if(!/^[a-z0-9_]{3,32}$/.test(username)){ toast("Логин: от 3 до 32 символов — английские буквы, цифры, _"); return; }
   if(password.length<6){ toast("Пароль не короче 6 символов"); return; }
   const btn=document.getElementById("amGo"); btn.disabled=true; btn.textContent="Создание…";
@@ -4961,8 +4972,17 @@ async function cloudRefreshMyMembership(){
     if(cloud.busy) return;   // не переписываем cloud.members посреди идущего синка (push/pull читают права)
     const tok=cloud.session && cloud.session.access_token; const uid=cloud.profile && cloud.profile.id;
     if(!tok || !uid) return;
-    const mem=await cloudRest(`base_members?select=*&user_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:20000});
-    if(Array.isArray(mem)){ cloud.members=mem; renderHeader(); }
+    // тянем членства + территориальные роли + карту база→партия одним заходом (иначе canManageBase/myRank
+    // рассинхронятся: партийный управляющий мог бы «потерять» доступ к базе, отсутствующей в _baseParty).
+    const [mem, orgs, bs] = await Promise.all([
+      cloudRest(`base_members?select=*&user_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:20000}),
+      cloudRest(`org_roles?select=*&user_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:20000}).catch(()=>null),
+      cloudRest(`bases?select=id,name,party_id`, tok, {timeout:20000}).catch(()=>null),
+    ]);
+    if(Array.isArray(mem)) cloud.members=mem;
+    if(Array.isArray(orgs)) cloud.orgRoles=orgs;
+    if(Array.isArray(bs)){ cloud.bases={}; cloud._baseParty={}; bs.forEach(b=>{ cloud.bases[b.id]=b.name; cloud._baseParty[b.id]=b.party_id||null; }); }
+    renderHeader();
   }catch(_){}
 }
 async function cloudSyncNow(){
