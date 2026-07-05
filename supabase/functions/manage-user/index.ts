@@ -53,17 +53,24 @@ type Caps = { rank: number; global: boolean; parties: Set<string>; bases: Set<st
 // возможности вызывающего: макс. ранг + территория (для проверки «строго ниже + в своей зоне»)
 async function callerCaps(admin: any, uid: string): Promise<Caps> {
   const caps: Caps = { rank: 0, global: false, parties: new Set(), bases: new Set() };
-  const { data: pr } = await admin.from("profiles").select("is_admin").eq("id", uid).maybeSingle();
+  // FAIL-CLOSED: ошибка любого запроса → бросаем, вызывающий вернёт 500. Иначе при сбое БД
+  // ранг цели занизился бы до 0 и позволил перехватить старшего (fail-open).
+  const { data: pr, error: pe } = await admin.from("profiles").select("is_admin").eq("id", uid).maybeSingle();
+  if (pe) throw new Error("caps_profiles");
   if (pr?.is_admin) { caps.rank = 6; caps.global = true; }
-  const { data: orgs } = await admin.from("org_roles").select("role,party_id,active,can_manage").eq("user_id", uid).eq("active", true);
+  const { data: orgs, error: oe } = await admin.from("org_roles").select("role,party_id,active,can_manage").eq("user_id", uid).eq("active", true);
+  if (oe) throw new Error("caps_org");
   for (const o of orgs || []) {
     caps.rank = Math.max(caps.rank, rankOf(o.role));
     if (o.role === "party_chief" && o.party_id) caps.parties.add(o.party_id);
     if (GLOBAL_ROLES.has(o.role) && o.can_manage) caps.global = true; // director/gen.director управляют глобально
   }
-  const { data: bms } = await admin.from("base_members").select("base_id,role,can_manage,active").eq("user_id", uid).eq("active", true);
+  const { data: bms, error: be } = await admin.from("base_members").select("base_id,role,can_manage,active").eq("user_id", uid).eq("active", true);
+  if (be) throw new Error("caps_bm");
   for (const m of bms || []) {
-    if (m.can_manage) { caps.rank = Math.max(caps.rank, rankOf(m.role || "site_manager") || 2); caps.bases.add(m.base_id); }
+    // ранг — ВСЕГДА от роли (не от изменяемого флага can_manage). Территория (право рулить базой) — по can_manage.
+    caps.rank = Math.max(caps.rank, rankOf(m.role || "site_manager"));
+    if (m.can_manage) caps.bases.add(m.base_id);
   }
   return caps;
 }
@@ -110,7 +117,7 @@ Deno.serve(async (req) => {
   let p: any;
   try { p = await req.json(); } catch { return json({ error: "bad json" }, 400); }
   const action = String(p.action || "");
-  const uuid = (v: string) => /^[0-9a-f-]{36}$/i.test(v);
+  const uuid = (v: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 
   const { data: prof } = await admin.from("profiles").select("is_admin").eq("id", callerId).maybeSingle();
 
@@ -229,9 +236,22 @@ Deno.serve(async (req) => {
       if (error) return json({ error: "Не удалось снять роль" }, 400);
       return json({ ok: true });
     }
-    const row: any = { user_id: targetId, role, active: true, party_id: pval, ...PRESETS[role] };
-    const { error } = await admin.from("org_roles").upsert(row, { onConflict: "user_id,role,party_id" });
-    if (error) { console.error("org upsert", error); return json({ error: "Не удалось выдать роль" }, 400); }
+    // ручной upsert: onConflict по колонкам НЕ совпадёт с выражённым unique-индексом (coalesce(party_id,...))
+    // для глобальных ролей (party_id NULL) → вернул бы ошибку. Поэтому check-then-insert/update.
+    let ex = admin.from("org_roles").select("user_id").eq("user_id", targetId).eq("role", role);
+    ex = pval ? ex.eq("party_id", pval) : ex.is("party_id", null);
+    const { data: exist, error: exErr } = await ex.maybeSingle();
+    if (exErr) { console.error("org exist", exErr); return json({ error: "Не удалось выдать роль" }, 400); }
+    const row: any = { active: true, ...PRESETS[role] };
+    if (exist) {
+      let upd = admin.from("org_roles").update(row).eq("user_id", targetId).eq("role", role);
+      upd = pval ? upd.eq("party_id", pval) : upd.is("party_id", null);
+      const { error } = await upd;
+      if (error) { console.error("org update", error); return json({ error: "Не удалось выдать роль" }, 400); }
+    } else {
+      const { error } = await admin.from("org_roles").insert({ user_id: targetId, role, party_id: pval, ...row });
+      if (error) { console.error("org insert", error); return json({ error: "Не удалось выдать роль" }, 400); }
+    }
     return json({ ok: true });
   }
 
