@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v134 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v135 · БЕТА</div>
   </div>
 </div>
 
@@ -2904,7 +2904,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v134 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v135 · тестовый канал</div>
   `;
 }
 
@@ -3759,7 +3759,7 @@ async function cloudRefresh(refresh_token){
 // постоянный сбой рефреша → чистый выход на экран входа (аккаунт удалён/токен отозван/сменили пароль)
 async function cloudSessionExpired(reason){
   if(!cloud.session && !cloud.ready) return;   // уже разлогинены — не дублируем
-  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.ready=false; cloud.basesLoaded=false;
+  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.ready=false; cloud.basesLoaded=false;
   cloud.bases={};                              // имена баз протухшей сессии не должны висеть в UI/cloudActivate
   cloud._basesLoading=false; cloud.busy=false; cloud.pushPending=false; cloud.applying=false;   // иначе повторный вход залипнет (cloudOnLogin рано выходит при _basesLoading)
   try{ if(cloud.channel && cloud.sb) cloud.sb.removeChannel(cloud.channel); }catch(_){}
@@ -3824,20 +3824,35 @@ function ensureCanEdit(){ if(!canEditStock()){ toast(isOffShift()?"Вы снят
    Роль = пресет прав (источник истины для RLS — флаги). Менеджер (can_manage)
    или владелец (is_admin) управляет участниками СВОЕЙ базы. Создание логина и
    сброс пароля — через Edge Function (service_role); роль/active/удаление — напрямую (RLS). */
+// rank — лестница иерархии: назначить/выдать можно только роль СТРОГО НИЖЕ своей (совпадает с сервером role_rank).
+// В карточке участников БАЗЫ доступны только базовые роли (rank 1-2); партийные/глобальные назначаются через отдельный поток.
 const MEMBER_ROLES = [
-  { key:"worker",       label:"Хозрабочий",        perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
-  { key:"cook",         label:"Повар",             perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
-  { key:"mechanic",     label:"Механик",           perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
-  { key:"party_chief",  label:"Начальник партии",  perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
-  { key:"site_manager", label:"Начальник участка", perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:true } },
-  { key:"accounting",   label:"Бухгалтерия",       perm:{can_view_stock:true, can_edit_stock:false, can_view_tasks:false, can_edit_tasks:false, can_manage:false} },
+  { key:"worker",       label:"Хозрабочий",        rank:1, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
+  { key:"cook",         label:"Повар",             rank:1, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
+  { key:"mechanic",     label:"Механик",           rank:1, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
+  { key:"site_manager", label:"Начальник участка", rank:2, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:true } },
 ];
-const roleLabel = (k)=> (MEMBER_ROLES.find(r=>r.key===k)||{label: k==="owner"?"Владелец":(k==="custom"?"Особая":(k||"—"))}).label;
+// полная лестница рангов (в т.ч. территориальные/глобальные роли — для подписей и вычисления своего ранга)
+const ROLE_RANK = { owner:6, general_director:5, director:4, party_chief:3, site_manager:2, worker:1, cook:1, mechanic:1, accounting:1 };
+const ROLE_LABELS = { owner:"Владелец", general_director:"Ген. директор", director:"Директор", party_chief:"Начальник партии", site_manager:"Начальник участка", worker:"Хозрабочий", cook:"Повар", mechanic:"Механик", accounting:"Бухгалтерия", custom:"Особая" };
+const rankOf = (k)=> ROLE_RANK[k] || 0;
+const roleLabel = (k)=> (MEMBER_ROLES.find(r=>r.key===k)||{}).label || ROLE_LABELS[k] || k || "—";
+// ранг текущего пользователя: владелец=6, иначе макс по глобальным/партийным (org_roles) и по управляемым базам.
+function myRank(){
+  if(cloud.profile && cloud.profile.is_admin) return 6;
+  let r = 0;
+  (cloud.orgRoles||[]).forEach(o=>{ if(o.active!==false) r = Math.max(r, rankOf(o.role)); });
+  (cloud.members||[]).forEach(m=>{ if(m.active!==false && m.can_manage) r = Math.max(r, rankOf(m.role)||2); });
+  return r;
+}
 function canManageBase(){
   const cid=activeCloudId(); if(!cid) return false;
   if(cloud.profile && cloud.profile.is_admin) return true;
   const m=memberOf(cid);
-  return !!(m && m.active!==false && m.can_manage);
+  if(m && m.active!==false && m.can_manage) return true;
+  // партийный/глобальный управляющий: директор/ген.директор (глобально) или начальник партии своей партии
+  const partyId = (cloud._baseParty||{})[cid];
+  return (cloud.orgRoles||[]).some(o=> o.active!==false && o.can_manage && (o.party_id==null || o.party_id===partyId));
 }
 // вызов Edge Function manage-user (создание логина / сброс пароля — service_role на сервере)
 async function cloudCallFn(action, payload){
@@ -3939,15 +3954,19 @@ async function _patchMember(uid, body, okMsg){
 }
 function openMemberRole(uid){
   const m=_findBM(uid); if(!m){ toast("Список устарел. Закройте и откройте заново"); return; }
+  const mine=myRank();
+  // можно назначить только роль СТРОГО НИЖЕ своей (защита от повышения выше себя; сервер это тоже проверяет)
+  const avail=MEMBER_ROLES.filter(r=>r.rank<mine || r.key===m.role);
   openSheet(`<div class="font-bold text-xl mb-3">Роль: ${esc(m.username)}</div>
     <div class="space-y-2">
-      ${MEMBER_ROLES.map(r=>`<button class="btn ${m.role===r.key?"btn-primary":"btn-ghost"} w-full" onclick="setMemberRole('${uid}','${r.key}')">${esc(r.label)}</button>`).join("")}
+      ${avail.map(r=>`<button class="btn ${m.role===r.key?"btn-primary":"btn-ghost"} w-full" ${r.rank>=mine&&r.key!==m.role?"disabled style=\"opacity:.4\"":""} onclick="setMemberRole('${uid}','${r.key}')">${esc(r.label)}</button>`).join("")}
     </div>
-    <div class="text-xs opacity-60 mt-2">Роль определяет, что человек может: вести склад, задачи, управлять базой. «Начальник участка» сможет сам добавлять и убирать работников.</div>
+    <div class="text-xs opacity-60 mt-2">Роль определяет, что человек может: вести склад, задачи, управлять базой. «Начальник участка» сможет сам добавлять и убирать работников. Роли выше вашей — недоступны.</div>
     <button class="btn btn-ghost w-full mt-3" data-close>Отмена</button>`);
 }
 async function setMemberRole(uid, roleKey){
   const r=MEMBER_ROLES.find(x=>x.key===roleKey); if(!r) return;
+  if(r.rank>=myRank()){ toast("Нельзя назначить роль равную или выше вашей"); return; }
   if(_wouldOrphan(uid,{role:roleKey})){ toast("База останется без управляющего. Сначала назначьте другого «Начальника участка»"); return; }
   await _patchMember(uid, Object.assign({ role:roleKey }, r.perm), "Роль обновлена");
 }
@@ -4028,7 +4047,7 @@ function openAddMember(){
       <div><div class="text-sm opacity-70 mb-1">Пароль (не короче 6 символов)</div>
         <input class="input" id="amp" type="text" autocapitalize="none" autocorrect="off" placeholder="придумайте пароль" /></div>
       <div><div class="text-sm opacity-70 mb-1">Роль</div>
-        <select class="input" id="amr">${MEMBER_ROLES.map(r=>`<option value="${r.key}">${esc(r.label)}</option>`).join("")}</select></div>
+        <select class="input" id="amr">${MEMBER_ROLES.filter(r=>r.rank<myRank()).map(r=>`<option value="${r.key}">${esc(r.label)}</option>`).join("")}</select></div>
     </div>
     <div class="flex gap-2 mt-3">
       <button class="btn btn-ghost flex-1" data-close>Отмена</button>
@@ -4325,17 +4344,19 @@ async function cloudOnLogin(session, attempt){
     // 3 независимых запроса — ПАРАЛЛЕЛЬНО (последовательно было бы ~3× дольше на медленной сети).
     // Общий таймаут 25с: зависший PostgREST-запрос не должен оставлять загрузку висеть вечно.
     const tok = session.access_token;
-    const [prof, mem, bs] = await Promise.race([
+    const [prof, mem, bs, orgs] = await Promise.race([
       Promise.all([
         cloudRest(`profiles?select=*&id=eq.${encodeURIComponent(uidv)}`, tok),
         cloudRest(`base_members?select=*&user_id=eq.${encodeURIComponent(uidv)}`, tok),   // ТОЛЬКО мои членства: RLS теперь даёт менеджеру видеть и чужие строки, но cloud.members = «мои права»
-        cloudRest(`bases?select=id,name`, tok),
+        cloudRest(`bases?select=id,name,party_id`, tok),
+        cloudRest(`org_roles?select=*&user_id=eq.${encodeURIComponent(uidv)}`, tok).catch(()=>[]),   // территориальные/глобальные роли (может отсутствовать на старом бэке → [] )
       ]),
       new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания облака")),25000))   // запас под слабый канал/дальний маршрут
     ]);
     cloud.profile = (Array.isArray(prof) && prof[0]) || { id:uidv, username:session.user.email };
     cloud.members = Array.isArray(mem) ? mem : [];
-    cloud.bases = {}; (Array.isArray(bs)?bs:[]).forEach(b=>cloud.bases[b.id]=b.name);
+    cloud.orgRoles = Array.isArray(orgs) ? orgs : [];
+    cloud.bases = {}; cloud._baseParty = {}; (Array.isArray(bs)?bs:[]).forEach(b=>{ cloud.bases[b.id]=b.name; cloud._baseParty[b.id]=b.party_id||null; });
     cloud.ready = true; cloud.basesLoaded = true;   // базы реально получены из облака
     cloud._basesLoading = false; clearTimeout(cloud._basesRetryT);   // цикл загрузки баз завершён успехом
     hideLoginGate();                           // успешный вход — прячем полноэкранный гейт
@@ -4391,7 +4412,7 @@ async function cloudLogout(){
   clearTimeout(cloud.pushTimer); clearTimeout(cloud.retryTimer); clearTimeout(cloud.pullTimer); clearTimeout(cloud.pullRetryT);   // отложенные склад-операции не должны срабатывать после выхода
   // задачи привязаны к аккаунту (owner) — при выходе НЕ оставляем их локально, иначе следующий юзер их увидит/выгрузит
   state.tasks=[]; try{ localStorage.removeItem(TASKS_KEY); localStorage.removeItem(TASKS_DIRTY); }catch(e){}
-  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
+  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
   cloud.tasksChannel=null; cloud.tasksSubUid=null; cloud.tasksBusy=false; cloud.basesLoaded=false;   // сброс задач: иначе после входа другим юзером realtime молчит
   clearCloudSess();   // чистим своё хранилище сессии, иначе при запуске восстановит вход
   // снимаем флаг «без облака» — при следующем запуске снова покажется вход (нет сессии → гейт)
