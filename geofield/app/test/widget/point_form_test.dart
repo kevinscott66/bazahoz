@@ -73,10 +73,10 @@ void main() {
       'заполнение обязательного снимает черновик; порода из справочника по коду',
       (tester) async {
     final h = await pumpPoint(tester);
-    // Тип объекта из выпадающего списка.
-    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    // Тип объекта из шторки-пикера.
+    await tester.tap(find.text('Тип объекта'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Шурф').last);
+    await tester.tap(find.text('Шурф'));
     await tester.pumpAndSettle();
     // Порода — автоподсказка из справочника.
     await tester.enterText(
@@ -135,10 +135,10 @@ void main() {
     await tester.ensureVisible(find.text('+ Замер'));
     await tester.tap(find.text('+ Замер'));
     await tester.pumpAndSettle();
-    // Тип по умолчанию «Слоистость» — меняем на «Жила».
+    // Тип по умолчанию «Слоистость» — меняем на «Жила» через шторку.
     await tester.tap(find.text('Слоистость'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Жила').last);
+    await tester.tap(find.text('Жила'));
     await tester.pumpAndSettle();
     await tester.enterText(
         find.widgetWithText(TextField, 'Азимут падения, 0–359'), '400');
@@ -154,7 +154,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Слоистость'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Жила').last);
+    await tester.tap(find.text('Жила'));
     await tester.pumpAndSettle();
     await tester.enterText(
         find.widgetWithText(TextField, 'Азимут падения, 0–359'), '120');
