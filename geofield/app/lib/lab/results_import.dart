@@ -4,6 +4,8 @@
 /// разделитель определяется автоматически, кириллица и BOM терпимы.
 library;
 
+import '../util/csv_export.dart' show csvBom;
+
 /// Одна строка результатов из файла лаборатории.
 class LabResultRow {
   const LabResultRow({
@@ -150,11 +152,9 @@ ParsedResults parseLabResults(String text) {
   final rows = <LabResultRow>[];
 
   // BOM и пустые строки терпимы.
-  final clean = text.startsWith('﻿') ? text.substring(1) : text;
-  final lines = clean
-      .split(RegExp(r'\r?\n'))
-      .where((l) => l.trim().isNotEmpty)
-      .toList();
+  final clean = text.startsWith(csvBom) ? text.substring(1) : text;
+  final lines =
+      clean.split(RegExp(r'\r?\n')).where((l) => l.trim().isNotEmpty).toList();
   if (lines.isEmpty) {
     return const ParsedResults(rows: [], issues: ['файл пуст']);
   }
@@ -175,8 +175,7 @@ ParsedResults parseLabResults(String text) {
     ].join(', ');
     return ParsedResults(
         rows: const [],
-        issues: ['не распознаны обязательные колонки: $missing '
-            '(заголовок: ${lines.first})']);
+        issues: ['не распознаны обязательные колонки: $missing']);
   }
 
   String? cell(List<String> cells, int? i) =>

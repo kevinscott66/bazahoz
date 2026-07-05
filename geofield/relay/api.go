@@ -25,6 +25,10 @@ const maxDecompressedBytes = 64 << 20
 const defaultPullLimit = 500
 const maxPullLimit = 5000
 
+// Потолок мутаций в одном пакете: остальное режется клиентским пакетайзером
+// задолго до этой цифры; здесь — защита от сломанного клиента.
+const maxChangesPerPush = 10000
+
 // pushRequest — пакет мутаций от устройства (sync-protocol.md §3.1).
 type pushRequest struct {
 	DeviceID string   `json:"device_id"`
@@ -70,7 +74,9 @@ func (s *server) auth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "last_seq": s.journal.LastSeq()})
+	// Единственный неаутентифицированный маршрут: без last_seq —
+	// интенсивность работ партии не для посторонних глаз.
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *server) handlePush(w http.ResponseWriter, r *http.Request) {
@@ -110,6 +116,11 @@ func (s *server) handlePush(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Changes) == 0 {
 		jsonError(w, http.StatusUnprocessableEntity, "пустой пакет")
+		return
+	}
+	if len(req.Changes) > maxChangesPerPush {
+		jsonError(w, http.StatusUnprocessableEntity,
+			fmt.Sprintf("пакет больше %d мутаций", maxChangesPerPush))
 		return
 	}
 	// Пакет атомарен: одна невалидная мутация — отказ целиком (клиенту

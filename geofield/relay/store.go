@@ -30,26 +30,36 @@ type StoredChange struct {
 	Change
 }
 
+// Потолки полей: одна мутация не должна занимать мегабайты в вечном журнале
+// (DoS обладателем токена / сломанным клиентом).
+const (
+	maxIDLen      = 128
+	maxTableLen   = 64
+	maxTSLen      = 64
+	maxPayloadLen = 1 << 20 // 1 МиБ на payload одной мутации
+)
+
 // Validate — валидация мутации до приёма. Пакет с невалидной мутацией
 // отвергается целиком (приём атомарен, возобновление остаётся простым).
 func (c *Change) Validate() error {
 	switch {
-	case c.ChangeID == "":
-		return errors.New("change_id пуст")
-	case c.EntityTable == "":
-		return errors.New("entity_table пуст")
-	case c.EntityID == "":
-		return errors.New("entity_id пуст")
+	case c.ChangeID == "" || len(c.ChangeID) > maxIDLen:
+		return errors.New("change_id пуст или длиннее лимита")
+	case c.EntityTable == "" || len(c.EntityTable) > maxTableLen:
+		return errors.New("entity_table пуст или длиннее лимита")
+	case c.EntityID == "" || len(c.EntityID) > maxIDLen:
+		return errors.New("entity_id пуст или длиннее лимита")
 	case c.Op != "insert" && c.Op != "update" && c.Op != "delete":
 		return fmt.Errorf("op %q не из insert|update|delete", c.Op)
-	case c.AuthorID == "":
+	case c.AuthorID == "" || len(c.AuthorID) > maxIDLen:
 		// Обязателен по контракту §1: нужен для разрыва ничьей HLC (§4)
 		// и атрибуции в record_history/conflicts (§5).
-		return errors.New("author_id пуст")
-	case c.LogicalTS == "":
-		return errors.New("logical_ts пуст")
-	case len(c.Payload) == 0 || !json.Valid(c.Payload):
-		return errors.New("payload не является корректным JSON")
+		return errors.New("author_id пуст или длиннее лимита")
+	case c.LogicalTS == "" || len(c.LogicalTS) > maxTSLen:
+		return errors.New("logical_ts пуст или длиннее лимита")
+	case len(c.Payload) == 0 || len(c.Payload) > maxPayloadLen ||
+		!json.Valid(c.Payload):
+		return errors.New("payload пуст, больше лимита или не JSON")
 	}
 	return nil
 }

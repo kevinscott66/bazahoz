@@ -62,8 +62,8 @@ class SyncResult {
 /// UTF-8) — та же метрика, которой пакетайзер режет на пакеты. Общая точка
 /// для экрана и движка: две разные оценки неизбежно разъехались бы.
 Future<({int count, int bytes})> pendingWireSize(Database db) async {
-  final rows = await db.query('change_log',
-      where: 'synced = 0', orderBy: 'seq', columns: [
+  final rows = await db
+      .query('change_log', where: 'synced = 0', orderBy: 'seq', columns: [
     'change_id',
     'entity_table',
     'entity_id',
@@ -126,9 +126,6 @@ class SyncEngine {
 
   /// Пауза после текущего пакета (кнопка «Пауза», ТЗ 6.8).
   void pause() => _paused = true;
-
-  /// Объём неотправленного — для «что уйдёт: N записей · X КБ» до сеанса.
-  Future<({int count, int bytes})> pendingSize() => pendingWireSize(_db);
 
   Future<SyncResult> run({void Function(SyncProgress)? onProgress}) async {
     _paused = false;
@@ -240,8 +237,8 @@ class SyncEngine {
   // --- PUSH внутренности ---------------------------------------------------------
 
   Future<List<Map<String, Object?>>> _pendingRows() {
-    return _db.query('change_log',
-        where: 'synced = 0', orderBy: 'seq', columns: [
+    return _db
+        .query('change_log', where: 'synced = 0', orderBy: 'seq', columns: [
       'seq',
       'change_id',
       'entity_table',
@@ -324,12 +321,9 @@ class SyncEngine {
         } on DatabaseException catch (e) {
           // Отказ одной мутации (ошибка уровня стейтмента — транзакция
           // жива) не должен ронять страницу и блокировать PULL навсегда.
-          await _recordConflict(
-              txn,
-              (c['entity_table'] as String?) ?? '?',
+          await _recordConflict(txn, (c['entity_table'] as String?) ?? '?',
               (c['entity_id'] as String?) ?? '?',
-              remote: jsonEncode(c),
-              note: 'мутация отклонена базой: $e');
+              remote: jsonEncode(c), note: 'мутация отклонена базой: $e');
           ok = false;
         }
         if (ok) {
@@ -388,8 +382,7 @@ class SyncEngine {
         // Колонки, которых локальная схема не знает (более новый клиент), —
         // отбрасываем с фиксацией в conflicts, а не роняем вставку.
         final known = await _knownColumns(txn, table);
-        final unknown =
-            payload.keys.where((k) => !known.contains(k)).toList();
+        final unknown = payload.keys.where((k) => !known.contains(k)).toList();
         final filtered = {
           for (final e in payload.entries)
             if (known.contains(e.key) && !localMetaColumns.contains(e.key))
@@ -463,8 +456,8 @@ class SyncEngine {
               e.key: e.value,
         };
         if (filtered.isNotEmpty) {
-          await txn.update(table, filtered,
-              where: 'id = ?', whereArgs: [entityId]);
+          await txn
+              .update(table, filtered, where: 'id = ?', whereArgs: [entityId]);
         }
         await upsertRowClock(txn, table, entityId, incomingTs);
         if (localPending) {
@@ -519,6 +512,11 @@ class SyncEngine {
   final Map<String, Set<String>> _columnsCache = {};
 
   Future<Set<String>> _knownColumns(Transaction txn, String table) async {
+    // Защита в глубину: имя таблицы интерполируется в PRAGMA — whitelist
+    // обязан выполняться здесь, а не только в вызывающем коде.
+    if (!_applyTables.contains(table)) {
+      throw SyncException('таблица вне whitelist: $table');
+    }
     final cached = _columnsCache[table];
     if (cached != null) return cached;
     final info = await txn.rawQuery('PRAGMA table_info($table)');
@@ -528,9 +526,7 @@ class SyncEngine {
   }
 
   Future<void> _archive(Transaction txn, String table, String entityId,
-      {required int version,
-      required String snapshot,
-      String? author}) {
+      {required int version, required String snapshot, String? author}) {
     return txn.insert('record_history', {
       'id': _uuid.v4(),
       'entity_table': table,

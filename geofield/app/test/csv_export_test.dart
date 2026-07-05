@@ -28,11 +28,30 @@ void main() {
       expect(csvCell('a,b', delimiter: ','), '"a,b"');
       expect(csvCell('a,b', delimiter: ';'), 'a,b');
     });
+
+    test('инъекция формул нейтрализуется префиксом-апострофом', () {
+      // Примечание пробы «=HYPERLINK(...)» не должно исполниться в Excel.
+      expect(csvCell('=SUM(A1)'), "'=SUM(A1)");
+      expect(csvCell('+7 900 000-00-00'), "'+7 900 000-00-00");
+      expect(csvCell('-1|calc'), "'-1|calc");
+      expect(csvCell('@cmd'), "'@cmd");
+      // Кавычки внутри формулы: сначала префикс, потом обычное RFC-экранирование.
+      expect(csvCell('=HYPERLINK("http://evil")'),
+          '"\'=HYPERLINK(""http://evil"")"');
+    });
+
+    test('числа (в т.ч. отрицательные) формулами не считаются', () {
+      expect(csvCell(-42.5), '-42.5');
+      expect(csvCell(-1), '-1');
+    });
   });
 
   group('toCsv', () {
     test('заголовок + строки + BOM', () {
-      final csv = toCsv(['a', 'b'], [
+      final csv = toCsv([
+        'a',
+        'b'
+      ], [
         ['1', '2'],
         ['3', 'x;y'],
       ]);
@@ -44,7 +63,10 @@ void main() {
     test('несовпадение длины строки с заголовком — ошибка, а не потеря полей',
         () {
       expect(
-        () => toCsv(['a', 'b'], [
+        () => toCsv([
+          'a',
+          'b'
+        ], [
           ['только-одно']
         ]),
         throwsArgumentError,

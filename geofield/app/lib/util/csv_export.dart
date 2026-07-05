@@ -9,7 +9,13 @@ const csvBom = '﻿';
 /// или перевод строки — оборачиваем в кавычки, кавычки внутри удваиваем.
 String csvCell(Object? value, {String delimiter = ';'}) {
   if (value == null) return '';
-  final s = value.toString();
+  var s = value.toString();
+  // Нейтрализация CSV-инъекции формул: текст, начинающийся с =+-@, Excel
+  // исполняет как формулу (=HYPERLINK и т.п. в примечании пробы). Числа
+  // (в т.ч. отрицательные) приходят как num и не префиксуются.
+  if (value is String && s.isNotEmpty && '=+-@'.contains(s[0])) {
+    s = "'$s";
+  }
   final needsQuoting = s.contains(delimiter) ||
       s.contains('"') ||
       s.contains('\n') ||

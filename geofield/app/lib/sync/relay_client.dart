@@ -32,12 +32,14 @@ class PullPage {
 /// Ошибка обмена с relay: код и текст сервера — для лога сеанса и решения
 /// о повторе (5xx — повторяемо, 4xx — нет, чинить пакет/настройки).
 class RelayException implements Exception {
-  RelayException(this.statusCode, this.message);
+  /// Текст усечён: тело ответа сервера (server-controlled) не должно целиком
+  /// попадать в снеки и persistent-лог сеансов.
+  RelayException(this.statusCode, String message)
+      : message =
+            message.length > 200 ? '${message.substring(0, 200)}…' : message;
 
   final int statusCode;
   final String message;
-
-  bool get retryable => statusCode >= 500;
 
   @override
   String toString() => 'relay $statusCode: $message';
@@ -54,6 +56,23 @@ class RelayClient {
   final String token;
   final HttpClient _http;
 
+  /// Потолок на ответ relay: сломанный/злонамеренный сервер не должен
+  /// укладывать клиента гигабайтным потоком.
+  static const int maxResponseBytes = 32 << 20;
+
+  Future<String> _readBody(HttpClientResponse resp) async {
+    final buf = StringBuffer();
+    var bytes = 0;
+    await for (final chunk in resp.transform(utf8.decoder)) {
+      bytes += chunk.length;
+      if (bytes > maxResponseBytes) {
+        throw RelayException(0, 'ответ relay больше $maxResponseBytes байт');
+      }
+      buf.write(chunk);
+    }
+    return buf.toString();
+  }
+
   Future<PushAck> push(
       String deviceId, List<Map<String, Object?>> changes) async {
     final body = gzip.encode(utf8.encode(jsonEncode({
@@ -66,7 +85,7 @@ class RelayClient {
     req.headers.set('Content-Encoding', 'gzip');
     req.add(body);
     final resp = await req.close();
-    final text = await resp.transform(utf8.decoder).join();
+    final text = await _readBody(resp);
     if (resp.statusCode != HttpStatus.ok) {
       throw RelayException(resp.statusCode, text);
     }
@@ -87,12 +106,16 @@ class RelayClient {
   }
 
   Future<PullPage> pull(String deviceId, int cursor, {int limit = 500}) async {
-    final uri = Uri.parse(
-        '$baseUrl/v1/pull?device_id=$deviceId&cursor=$cursor&limit=$limit');
+    final uri = Uri.parse('$baseUrl/v1/pull').replace(queryParameters: {
+      'device_id':
+          deviceId, // кодирование за Uri: спецсимволы id не ломают запрос
+      'cursor': '$cursor',
+      'limit': '$limit',
+    });
     final req = await _http.getUrl(uri);
     req.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
     final resp = await req.close();
-    final text = await resp.transform(utf8.decoder).join();
+    final text = await _readBody(resp);
     if (resp.statusCode != HttpStatus.ok) {
       throw RelayException(resp.statusCode, text);
     }
