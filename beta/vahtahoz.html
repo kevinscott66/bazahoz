@@ -105,6 +105,12 @@
   #syncBar.busy{ overflow:hidden; }
   #syncBar.busy::after{ content:""; position:absolute; bottom:0; left:-35%; height:2px; width:35%; background:rgba(255,255,255,.85); border-radius:2px; animation:syncslide 1.1s ease-in-out infinite; }
   @keyframes syncslide{ to{ left:100%; } }
+  /* текст ошибок: читаемый красный на тёмном шите и на белом (светлая тема) */
+  .err-text{ color:#f87171; }
+  .light .err-text{ color:#dc2626; }
+  /* логин-гейт всегда на тёмном градиенте — в светлой теме текст/кнопки не должны наследовать тёмные цвета */
+  #loginGate{ color:#f1f5f9; }
+  .light #loginGate .btn-ghost{ background:rgba(255,255,255,.08); color:#f1f5f9; }
   /* косметика: тап-зона у раскрывающихся секций (details/summary) — палец попадает уверенно */
   details > summary{ padding:8px 0; min-height:32px; display:flex; align-items:center; }
 </style>
@@ -176,10 +182,10 @@
     <input id="lgPwd" class="input" type="password" autocomplete="current-password" placeholder="Пароль" style="margin-bottom:14px;text-align:center" />
     <button id="lgGo" class="btn btn-primary" style="width:100%;font-size:16px">Войти</button>
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
-    <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:40px" onclick="requestPasswordReset()">Забыли пароль?</button>
+    <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v132 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v133 · БЕТА</div>
   </div>
 </div>
 
@@ -2898,7 +2904,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v132 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v133 · тестовый канал</div>
   `;
 }
 
@@ -4116,7 +4122,11 @@ async function cloudInit(){
           if(await cloudDoRefresh()) s = loadCloudSess();
         }
         if(s && s.access_token) await cloudOnLogin({ access_token:s.access_token, refresh_token:s.refresh_token, user:s.user });
-      }catch(e){ console.warn("online-reload", e); }
+      }catch(e){
+        console.warn("online-reload", e);
+        // постоянный отказ токена (пароль сменили/аккаунт удалён) — иначе вечный тупик «ждём сеть» при живой сети
+        if(e && e.permanent) cloudSessionExpired("Вход устарел — войдите снова");
+      }
       return;
     }
     if(cloud.ready){
@@ -4165,7 +4175,7 @@ async function cloudInit(){
    1) «Забыли пароль?» → recover-письмо со ссылкой на приложение;
    2) ссылка открывает приложение с #type=recovery&access_token=… → экран нового пароля. */
 async function requestPasswordReset(){
-  const u = await promptSheet("Введите ваш логин — на привязанную почту придёт ссылка для сброса пароля.", "", { title:"Забыли пароль?" });
+  const u = await promptSheet("Введите ваш логин — на привязанную почту придёт ссылка для сброса пароля.", (document.getElementById("lgEmail")?.value||"").trim(), { title:"Забыли пароль?" });
   if(u===null) return;
   const login=(u||"").trim().toLowerCase();
   if(!login){ toast("Введите логин"); return; }
@@ -4186,22 +4196,33 @@ function checkRecoveryLink(){
     if(h.indexOf("type=recovery")<0 || h.indexOf("access_token=")<0) return false;
     const at = new URLSearchParams(h.replace(/^#/,"")).get("access_token");
     if(!at) return false;
+    // сразу вычищаем токен из адресной строки и записи истории (не оставляем recovery-токен в URL)
+    try{ history.replaceState(null, "", location.pathname + location.search); }catch(_){}
     window._recoveryMode = true;   // cloudInit не должен восстанавливать сессию/показывать гейт поверх экрана нового пароля
     openSetNewPassword(at);
     return true;
   }catch(_){ return false; }
+}
+// выход из режима сброса: вернуть гейт и запустить отложенный cloudInit (иначе online-листенеры не навешаны до перезагрузки)
+function exitRecoveryMode(){
+  window._recoveryMode = false;
+  showLoginGate();
+  try{ cloudInit(); }catch(_){}
 }
 function openSetNewPassword(token){
   hideLoginGate();
   openSheet(`
     <div class="font-bold text-xl mb-3">Новый пароль</div>
     <div class="text-sm opacity-70 mb-2">Придумайте новый пароль для входа (не короче 6 символов).</div>
-    <input class="input mb-2" id="npw" type="text" autocapitalize="none" autocorrect="off" placeholder="Новый пароль" />
+    <input class="input mb-2" id="npw" type="text" autocapitalize="none" autocorrect="off" autocomplete="new-password" placeholder="Новый пароль" />
     <button class="btn btn-primary w-full" id="npGo">Сохранить пароль</button>
-    <div id="npErr" style="color:#dc2626;font-size:13px;min-height:20px;margin-top:8px"></div>
+    <div id="npErr" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
   `);
+  _sheetOnClose = exitRecoveryMode;   // закрыли тапом по фону без смены пароля → вернуть гейт, не оставлять без входа
+  const npw=document.getElementById("npw");
+  npw.addEventListener("keydown", e=>{ if(e.key==="Enter") document.getElementById("npGo").click(); });
   document.getElementById("npGo").onclick = async ()=>{
-    const pw=(document.getElementById("npw").value||"");
+    const pw=(npw.value||"");
     const err=document.getElementById("npErr");
     if(pw.length<6){ err.textContent="Пароль не короче 6 символов"; return; }
     const btn=document.getElementById("npGo"); btn.disabled=true; btn.textContent="Сохранение…";
@@ -4211,9 +4232,9 @@ function openSetNewPassword(token){
         body: JSON.stringify({ password: pw })
       });
       if(!r.ok) throw new Error("expired");
-      try{ location.hash=""; }catch(_){}
+      _sheetOnClose = null;   // успех: закрытие шита не должно повторно дёргать exitRecoveryMode
       closeSheet(); toast("Пароль изменён — войдите с новым");
-      showLoginGate();
+      exitRecoveryMode();   // сброс _recoveryMode + гейт + отложенный cloudInit (online-листенеры)
     }catch(e){ err.textContent="Ссылка устарела. Запросите сброс заново"; if(document.getElementById("npGo")){ btn.disabled=false; btn.textContent="Сохранить пароль"; } }
   };
 }
@@ -4252,7 +4273,7 @@ async function cloudLogin(email, password){
   // может «холодно стартовать» ~20-30с после простоя; короткий таймаут рвал первый вход).
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), 35000);
-  // логин можно вводить без домена: «worker» → «worker@bazahoz.app»
+  // логин можно вводить без домена: «worker» → worker + LOGIN_DOMAIN
   let em2 = (email||"").trim();
   if(em2 && !em2.includes("@")) em2 += LOGIN_DOMAIN;
   let d;
@@ -4331,6 +4352,9 @@ async function cloudOnLogin(session, attempt){
     setTimeout(()=>{ cloudSyncTasks().catch(e=>console.warn("tasks sync",e)); cloudSubscribeTasks(); }, 80);
   }catch(e){
     console.warn("cloudOnLogin", e);
+    // Если ПОКА мы грузились cloudSessionExpired разлогинил (permanent-отказ токена) — cloud.session
+    // занулён. НЕ воскрешаем мёртвую сессию ретраем, НЕ прячем показанный гейт, НЕ ставим ready.
+    if(!cloud.session){ cloud._basesLoading=false; clearTimeout(cloud._basesRetryT); return; }
     uidv = uidv || (session.user && session.user.id) || "";   // фолбэк, если упали до присвоения uidv
     // Токен валиден → пользователь АУТЕНТИФИЦИРОВАН, даже если профиль/базы не загрузились
     // (медленная сеть / зависший запрос в standalone-PWA). НЕ показываем «Войти» — помечаем вход
@@ -4703,16 +4727,23 @@ async function cloudPushNow(){
       const jrows=[]; const curJSig={};
       for(const k of JOURNAL_KEYS) for(const op of (state.journals?.[k]||[])){ jrows.push({id:op.id,base_id:cid,kind:k,data:op}); curJSig[op.id]=_sigOf({kind:k,data:op}); }
       const prevJSig = loadSyncSig(cid,"jr");
+      // УСЕЧЕНИЕ по квоте (slice 500) НЕ удаляет из облака — архив полный (нет надгробия).
+      // ЯВНОЕ удаление пользователя (deleteOp → tombJr) удаляет из облака — иначе pull воскрешал бы запись.
+      // Удаляем только надгробленные id, которые РЕАЛЬНО были в облаке (есть в prevJSig) — по одному разу.
+      // БЕЗ .catch у DELETE: сбой должен уйти в общий catch push-а (dirty останется, ретрай повторит) —
+      // иначе подпись сохранялась без удаления, и запись жила в облаке вечно.
+      const jrToDel = (Array.isArray(state.delJr)?state.delJr:[]).filter(id=> prevJSig[id]!==undefined);
       if(!(jrows.length===0 && Object.keys(prevJSig).length>0)){
         const jup = jrows.filter(r=> curJSig[r.id]!==prevJSig[r.id]);
-        // УСЕЧЕНИЕ по квоте (slice 500) НЕ удаляет из облака — архив полный (нет надгробия).
-        // ЯВНОЕ удаление пользователя (deleteOp → tombJr) удаляет из облака — иначе pull воскрешал бы запись.
-        // Удаляем только надгробленные id, которые РЕАЛЬНО были в облаке (есть в prevJSig) — по одному разу
-        // (после saveSyncSig(curJSig) их нет в подписи → повторно не удаляем).
         if(jup.length) await cloudRestUpsert("journal_entries", jup, tok);
-        const jrToDel = (Array.isArray(state.delJr)?state.delJr:[]).filter(id=> prevJSig[id]!==undefined);
-        if(jrToDel.length) await cloudRestDelete("journal_entries", jrToDel, tok).catch(e=>console.warn("jr del", e));
+        if(jrToDel.length) await cloudRestDelete("journal_entries", jrToDel, tok);
         saveSyncSig(cid,"jr",curJSig);
+      } else if(jrToDel.length){
+        // wipe-защита пропустила выгрузку (журнал локально «опустел»), но ЯВНЫЕ надгробия всё равно
+        // доставляем: пользователь удалил последние записи — они должны уйти и из облака.
+        await cloudRestDelete("journal_entries", jrToDel, tok);
+        const trimmed = { ...prevJSig }; jrToDel.forEach(id=>{ delete trimmed[id]; });
+        saveSyncSig(cid,"jr",trimmed);
       }
     }
     // ЗАДАЧИ НЕ ВЫГРУЖАЕМ — они общие-локальные (одно расписание на все базы устройства).
