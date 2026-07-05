@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:uuid/uuid.dart';
@@ -9,6 +7,9 @@ import '../data/sample_repository.dart';
 import '../models/sample.dart';
 import '../theme/sample_type.dart';
 import '../theme/tokens.dart';
+import '../util/format.dart';
+import '../util/save_queue.dart';
+import '../widgets/confirm_dialog.dart';
 
 /// Привязка пробы к родителю (точка наблюдения или интервал керна).
 class ParentBinding {
@@ -26,11 +27,6 @@ class ParentBinding {
   final double? depthFrom;
   final double? depthTo;
 }
-
-/// Итог одного сохранения: сохранено / ввод невалиден / запись провалилась.
-/// Разделены, чтобы выход по «назад» мог уйти при невалидном вводе (сохранять
-/// нечего), но НЕ уходил молча при реальном сбое записи валидных данных.
-enum _SaveResult { saved, invalid, failed }
 
 /// Экран регистрации пробы и печати бирки (ТЗ 6.5).
 /// Автосохранение после каждого действия: проба пишется в базу сразу при
@@ -72,13 +68,16 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
 
   SampleType _type = SampleType.core;
   int _version = 1;
+  // Защита от двойного pop: «Готово» и системный back могут сработать почти
+  // одновременно, оба дождутся _saveNow и вызовут pop() — второй pop снял бы
+  // лишний экран под формой. Кто первым выставил флаг, тот и закрывает.
+  bool _exiting = false;
   bool _persistedOnce = false;
   bool _gloveMode = false;
-  Timer? _debounce;
-  // Сериализация сохранений: конкурентные вызовы (автосейв при открытии +
-  // «Готово»/«назад») выполняются по очереди, чтобы isNew не прочитался дважды
-  // как true и не случилось двух INSERT одной записи.
-  Future<_SaveResult> _saveChain = Future.value(_SaveResult.saved);
+  // Дебаунс + сериализация сохранений (SaveQueue): конкурентные вызовы
+  // (автосейв при открытии + «Готово»/«назад») выполняются по очереди,
+  // чтобы isNew не прочитался дважды и не случилось двух INSERT одной записи.
+  final _queue = SaveQueue();
   String _saveState = 'сохранение…';
   bool _saveIsError = false;
 
@@ -102,8 +101,9 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
       _saveState = 'сохранено · не отправлено';
       return;
     }
-    _id = _newUuidLike();
-    _createdAt = _nowIso();
+    // id пробы создаётся один раз при входе на экран (UUID, офлайн).
+    _id = const Uuid().v4();
+    _createdAt = nowIso();
     _numberCtrl.text = widget.initialNumber;
     // Для керна интервал отбора подтягивается из родительского интервала.
     if (widget.binding.depthFrom != null) {
@@ -118,7 +118,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
 
   @override
   void dispose() {
-    _debounce?.cancel();
+    _queue.dispose();
     _numberCtrl.dispose();
     _fromCtrl.dispose();
     _toCtrl.dispose();
@@ -145,17 +145,17 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
       barcode: number.isEmpty ? null : number, // штрихкод из номера
       // Поля, не осмысленные для типа, не персистятся, даже если контроллер
       // хранит старый ввод после переключения типа.
-      depthFrom: _type.hasDepthInterval ? _parse(_fromCtrl.text) : null,
-      depthTo: _type.hasDepthInterval ? _parse(_toCtrl.text) : null,
-      lengthM: _type.hasLength ? _parse(_lengthCtrl.text) : null,
-      mass: _parse(_massCtrl.text),
+      depthFrom: _type.hasDepthInterval ? parseDouble(_fromCtrl.text) : null,
+      depthTo: _type.hasDepthInterval ? parseDouble(_toCtrl.text) : null,
+      lengthM: _type.hasLength ? parseDouble(_lengthCtrl.text) : null,
+      mass: parseDouble(_massCtrl.text),
       // Правка полей не откатывает жизненный цикл: статус существующей пробы
       // сохраняется (переходы статуса — отдельное действие, не этот экран).
       status: widget.existing?.status ?? SampleStatus.collected,
       note: _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim(),
       authorId: widget.authorId,
       createdAt: _createdAt,
-      modifiedAt: _nowIso(),
+      modifiedAt: nowIso(),
       version: version,
       syncStatus: SyncStatus.pending,
     );
@@ -163,49 +163,44 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
 
   void _scheduleSave() {
     _setSave('сохранение…');
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 400), _saveNow);
+    _queue.schedule(_doSave);
   }
 
-  /// Ставит сохранение в очередь за предыдущим — без гонок за _persistedOnce.
-  Future<_SaveResult> _saveNow() {
-    _debounce?.cancel();
-    _saveChain = _saveChain.then((_) => _doSave());
-    return _saveChain;
-  }
+  Future<SaveResult> _saveNow() => _queue.flush(_doSave);
 
   /// Одно сохранение. Никогда не бросает: невалидность/ошибка — это видимое
-  /// состояние, а не необработанное исключение в фоновом Timer.
-  Future<_SaveResult> _doSave() async {
+  /// состояние, а не необработанное исключение в фоновом таймере.
+  Future<SaveResult> _doSave() async {
     final number = _numberCtrl.text.trim();
-    final from = _parse(_fromCtrl.text);
-    final to = _parse(_toCtrl.text);
+    final from = parseDouble(_fromCtrl.text);
+    final to = parseDouble(_toCtrl.text);
     // Обязательные поля и противоречия ловим при вводе (ТЗ §0, правило 3),
     // не доводя до CHECK-исключения СУБД.
     if (number.isEmpty) {
       _setSave('Номер пробы обязателен', error: true);
-      return _SaveResult.invalid;
+      return SaveResult.invalid;
     }
     // Валидируем интервал только когда поля видимы для типа: после смены
     // типа старый ввод в скрытых полях не должен блокировать сохранение
     // (он и не персистится — см. _current).
     if (_type.hasDepthInterval && from != null && to != null && to < from) {
       _setSave('«До» не может быть меньше «От»', error: true);
-      return _SaveResult.invalid;
+      return SaveResult.invalid;
     }
     final isNew = !_persistedOnce;
     final nextVersion = isNew ? 1 : _version + 1;
     try {
-      await widget.repository.save(_current(version: nextVersion), isNew: isNew);
+      await widget.repository
+          .save(_current(version: nextVersion), isNew: isNew);
       _persistedOnce = true;
       _version = nextVersion;
       _setSave('сохранено · не отправлено');
-      return _SaveResult.saved;
+      return SaveResult.saved;
     } catch (e) {
-      // Реальный сбой записи (диск/блокировка WAL). Ошибка видима (не проглочена)
-      // и не роняет Timer; вызывающий не должен молча закрывать экран.
+      // Реальный сбой записи (диск/блокировка WAL). Ошибка видима (не проглочена);
+      // вызывающий не должен молча закрывать экран.
       _setSave('ошибка сохранения', error: true);
-      return _SaveResult.failed;
+      return SaveResult.failed;
     }
   }
 
@@ -231,68 +226,71 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
         // не закрываем молча — показываем ошибку (ТЗ §0, правило 2).
         final navigator = Navigator.of(context); // до async-разрыва
         final r = await _saveNow();
-        if (r == _SaveResult.failed) {
+        if (r == SaveResult.failed) {
           _snack('Не удалось сохранить — проверьте память устройства');
           return;
         }
-        if (mounted) navigator.pop();
+        if (!mounted || _exiting) return;
+        _exiting = true;
+        navigator.pop();
       },
       child: Scaffold(
-      appBar: AppBar(
-        backgroundColor: GfColors.bg,
-        title: const Text('Регистрация пробы', style: GfText.screenTitle),
-        actions: [
-          IconButton(
-            tooltip: _gloveMode ? 'Перчатки: вкл' : 'Перчатки: выкл',
-            icon: Icon(_gloveMode ? Icons.back_hand : Icons.back_hand_outlined,
-                color: _gloveMode ? GfColors.accent : GfColors.textSecondary),
-            onPressed: () => setState(() => _gloveMode = !_gloveMode),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(GfSpace.x16),
-          children: [
-            _binding(),
-            const SizedBox(height: GfSpace.x24),
-            _label('ТИП ПРОБЫ'),
-            const SizedBox(height: GfSpace.x12),
-            _typeTiles(),
-            const SizedBox(height: GfSpace.x24),
-            _label('НОМЕР'),
-            const SizedBox(height: GfSpace.x8),
-            _numberField(),
-            const SizedBox(height: GfSpace.x24),
-            // Атрибуты зависят от типа пробы: «От/До» у штуфа или шлиха
-            // бессмысленны и путают (ревизия geo-consultant).
-            if (_type.hasDepthInterval) ...[
-              _label('ИНТЕРВАЛ ОТБОРА (м)'),
-              const SizedBox(height: GfSpace.x8),
-              _depthFields(),
-              const SizedBox(height: GfSpace.x16),
-            ],
-            if (_type.hasLength) ...[
-              _numTextField(_lengthCtrl, 'Длина, м'),
-              const SizedBox(height: GfSpace.x16),
-            ],
-            _massField(),
-            const SizedBox(height: GfSpace.x24),
-            _label('БИРКА'),
-            const SizedBox(height: GfSpace.x12),
-            _barcodeRow(),
-            const SizedBox(height: GfSpace.x24),
-            _label('ПРИМЕЧАНИЕ'),
-            const SizedBox(height: GfSpace.x8),
-            _noteField(),
-            const SizedBox(height: GfSpace.x24),
-            _saveIndicator(),
-            const SizedBox(height: GfSpace.x8),
-            _deleteButton(),
+        appBar: AppBar(
+          backgroundColor: GfColors.bg,
+          title: const Text('Регистрация пробы', style: GfText.screenTitle),
+          actions: [
+            IconButton(
+              tooltip: _gloveMode ? 'Перчатки: вкл' : 'Перчатки: выкл',
+              icon: Icon(
+                  _gloveMode ? Icons.back_hand : Icons.back_hand_outlined,
+                  color: _gloveMode ? GfColors.accent : GfColors.textSecondary),
+              onPressed: () => setState(() => _gloveMode = !_gloveMode),
+            ),
           ],
         ),
-      ),
-      bottomNavigationBar: _doneBar(),
+        body: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.all(GfSpace.x16),
+            children: [
+              _binding(),
+              const SizedBox(height: GfSpace.x24),
+              _label('ТИП ПРОБЫ'),
+              const SizedBox(height: GfSpace.x12),
+              _typeTiles(),
+              const SizedBox(height: GfSpace.x24),
+              _label('НОМЕР'),
+              const SizedBox(height: GfSpace.x8),
+              _numberField(),
+              const SizedBox(height: GfSpace.x24),
+              // Атрибуты зависят от типа пробы: «От/До» у штуфа или шлиха
+              // бессмысленны и путают (ревизия geo-consultant).
+              if (_type.hasDepthInterval) ...[
+                _label('ИНТЕРВАЛ ОТБОРА (м)'),
+                const SizedBox(height: GfSpace.x8),
+                _depthFields(),
+                const SizedBox(height: GfSpace.x16),
+              ],
+              if (_type.hasLength) ...[
+                _numTextField(_lengthCtrl, 'Длина, м'),
+                const SizedBox(height: GfSpace.x16),
+              ],
+              _massField(),
+              const SizedBox(height: GfSpace.x24),
+              _label('БИРКА'),
+              const SizedBox(height: GfSpace.x12),
+              _barcodeRow(),
+              const SizedBox(height: GfSpace.x24),
+              _label('ПРИМЕЧАНИЕ'),
+              const SizedBox(height: GfSpace.x8),
+              _noteField(),
+              const SizedBox(height: GfSpace.x24),
+              _saveIndicator(),
+              const SizedBox(height: GfSpace.x8),
+              _deleteButton(),
+            ],
+          ),
+        ),
+        bottomNavigationBar: _doneBar(),
       ),
     );
   }
@@ -337,7 +335,8 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
             padding: const EdgeInsets.symmetric(
                 horizontal: GfSpace.x16, vertical: GfSpace.x12),
             decoration: BoxDecoration(
-              color: selected ? t.color.withValues(alpha: 0.20) : GfColors.surface,
+              color:
+                  selected ? t.color.withValues(alpha: 0.20) : GfColors.surface,
               borderRadius: BorderRadius.circular(GfRadius.r12),
               border: Border.all(
                 color: selected ? t.color : GfColors.outline,
@@ -408,31 +407,18 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
     );
   }
 
-  InputDecoration _fieldDecoration({required String hint}) {
-    OutlineInputBorder border(Color c) => OutlineInputBorder(
-          borderRadius: BorderRadius.circular(GfRadius.r12),
-          borderSide: BorderSide(color: c),
-        );
-    return InputDecoration(
-      hintText: hint,
-      hintStyle: GfText.hint,
-      filled: true,
-      fillColor: GfColors.surface,
-      contentPadding: const EdgeInsets.symmetric(
-          horizontal: GfSpace.x16, vertical: GfSpace.x16),
-      enabledBorder: border(GfColors.outline),
-      focusedBorder: border(GfColors.accent),
-    );
-  }
+  InputDecoration _fieldDecoration({required String hint}) =>
+      gfInputDecoration(hint: hint);
 
   Widget _barcodeRow() {
     return Row(
       children: [
-        Expanded(child: _secondaryButton('Печать бирки', Icons.print, _onPrint)),
+        Expanded(
+            child: _secondaryButton('Печать бирки', Icons.print, _onPrint)),
         const SizedBox(width: GfSpace.x12),
         Expanded(
-            child: _secondaryButton(
-                'Показать код', Icons.qr_code_2, _onShowCode)),
+            child:
+                _secondaryButton('Показать код', Icons.qr_code_2, _onShowCode)),
       ],
     );
   }
@@ -444,12 +430,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
         onPressed: onTap,
         icon: Icon(icon, size: 20),
         label: Text(text, overflow: TextOverflow.ellipsis),
-        style: OutlinedButton.styleFrom(
-          foregroundColor: GfColors.textPrimary,
-          side: const BorderSide(color: GfColors.outline),
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(GfRadius.r12)),
-        ),
+        style: gfOutlinedStyle(),
       ),
     );
   }
@@ -491,16 +472,13 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
             final r = await _saveNow();
             // Закрываем только при успешном сохранении. Невалидный ввод (пустой
             // номер / «До < От») и сбой записи — остаёмся, даём исправить/повторить.
-            if (r == _SaveResult.saved && mounted) Navigator.of(context).pop(_id);
+            if (r == SaveResult.saved && mounted && !_exiting) {
+              _exiting = true;
+              Navigator.of(context).pop(_id);
+            }
           },
-          style: FilledButton.styleFrom(
-            backgroundColor: GfColors.accent,
-            foregroundColor: GfColors.onAccent,
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(GfRadius.r12)),
-          ),
-          child: const Text('Готово',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          style: gfFilledStyle(),
+          child: const Text('Готово', style: GfText.button),
         ),
       ),
     );
@@ -522,7 +500,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _labelWidget(number),
+            _tagPreview(number),
             const SizedBox(height: GfSpace.x12),
             const Text('Нет принтера — сфотографировать/наклеить код от руки',
                 style: GfText.hint, textAlign: TextAlign.center),
@@ -545,7 +523,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
   }
 
   /// Настоящий рендер бирки (QR + номер + цвет типа). То, что уйдёт на принтер.
-  Widget _labelWidget(String number) {
+  Widget _tagPreview(String number) {
     return Container(
       width: 260,
       padding: const EdgeInsets.all(GfSpace.x16),
@@ -558,11 +536,15 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
         children: [
           Row(
             children: [
-              Container(width: 14, height: 14,
-                  decoration: BoxDecoration(color: _type.color, shape: BoxShape.circle)),
+              Container(
+                  width: 14,
+                  height: 14,
+                  decoration: BoxDecoration(
+                      color: _type.color, shape: BoxShape.circle)),
               const SizedBox(width: GfSpace.x8),
               Text(_type.label,
-                  style: const TextStyle(color: Colors.black87, fontWeight: FontWeight.w600)),
+                  style: const TextStyle(
+                      color: Colors.black87, fontWeight: FontWeight.w600)),
             ],
           ),
           const SizedBox(height: GfSpace.x12),
@@ -585,26 +567,14 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
   }
 
   Future<void> _onDelete() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: GfColors.surfaceHi,
-        title: const Text('Удалить пробу?'),
-        content: Text(_gloveMode
-            ? 'Подтвердите удаление (режим перчаток).'
-            : 'Пробу можно будет восстановить в камералке до синхронизации.'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Отмена')),
-          TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              style: TextButton.styleFrom(foregroundColor: GfColors.error),
-              child: const Text('Удалить')),
-        ],
-      ),
+    final confirmed = await confirmDelete(
+      context,
+      title: 'Удалить пробу?',
+      message: _gloveMode
+          ? 'Подтвердите удаление (режим перчаток).'
+          : 'Пробу можно будет восстановить в камералке до синхронизации.',
     );
-    if (confirmed != true) return;
+    if (!confirmed) return;
     if (_persistedOnce) {
       try {
         await widget.repository.softDelete(_current(version: _version));
@@ -617,27 +587,18 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
         return;
       }
     }
-    if (mounted) Navigator.of(context).pop();
+    if (!mounted || _exiting) return;
+    _exiting = true;
+    Navigator.of(context).pop();
   }
 
   void _snack(String m) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(m)));
+    if (!mounted) return;
+    context.snack(m);
   }
 
   // --- helpers ----------------------------------------------------------------
 
-  static double? _parse(String s) {
-    final t = s.trim().replaceAll(',', '.');
-    if (t.isEmpty) return null;
-    return double.tryParse(t);
-  }
-
   static String _fmt(double v) =>
       v == v.roundToDouble() ? v.toStringAsFixed(1) : v.toString();
-
-  static String _nowIso() => DateTime.now().toUtc().toIso8601String();
-
-  /// id пробы создаётся один раз при входе на экран (UUID, офлайн).
-  static String _newUuidLike() => const Uuid().v4();
 }

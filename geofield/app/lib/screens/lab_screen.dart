@@ -10,6 +10,7 @@ import '../lab/lab_service.dart';
 import '../models/sample.dart';
 import '../theme/sample_type.dart';
 import '../theme/tokens.dart';
+import '../widgets/sample_row.dart';
 
 /// Лаборатория (этап 3, ТЗ §6.5/§6.9): ведомость отправки проб и приём
 /// результатов с автопривязкой по штрихкоду. Пробы группируются по статусу
@@ -33,7 +34,8 @@ class LabScreen extends StatefulWidget {
 }
 
 class _LabScreenState extends State<LabScreen> {
-  List<Sample> _pending = const []; // отобрана/упакована — кандидаты в ведомость
+  List<Sample> _pending =
+      const []; // отобрана/упакована — кандидаты в ведомость
   List<Sample> _sent = const [];
   List<Sample> _done = const [];
   bool _loading = true;
@@ -89,17 +91,10 @@ class _LabScreenState extends State<LabScreen> {
             child: SizedBox(
               height: GfTouch.min,
               child: FilledButton(
-                onPressed:
-                    ((_pending.isEmpty && _sent.isEmpty) || _busy)
-                        ? null
-                        : _onDispatch,
-                style: FilledButton.styleFrom(
-                  backgroundColor: GfColors.accent,
-                  foregroundColor: GfColors.onAccent,
-                  disabledBackgroundColor: GfColors.surfaceHi,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(GfRadius.r12)),
-                ),
+                onPressed: ((_pending.isEmpty && _sent.isEmpty) || _busy)
+                    ? null
+                    : _onDispatch,
+                style: gfFilledStyle(),
                 child: Text(
                   _pending.isNotEmpty
                       ? 'Ведомость (${_pending.length})'
@@ -117,13 +112,8 @@ class _LabScreenState extends State<LabScreen> {
             child: SizedBox(
               height: GfTouch.min,
               child: OutlinedButton(
-                onPressed: _onImport,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: GfColors.textPrimary,
-                  side: const BorderSide(color: GfColors.outline),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(GfRadius.r12)),
-                ),
+                onPressed: _busy ? null : _onImport,
+                style: gfOutlinedStyle(),
                 child: const Text('Импорт результатов'),
               ),
             ),
@@ -142,27 +132,7 @@ class _LabScreenState extends State<LabScreen> {
         if (items.isEmpty)
           const Text('—', style: GfText.hint)
         else
-          for (final s in items)
-            Padding(
-              padding: const EdgeInsets.only(bottom: GfSpace.x8),
-              child: Row(children: [
-                Container(
-                  width: 12,
-                  height: 12,
-                  decoration: BoxDecoration(
-                      color: SampleType.fromCode(s.sampleType).color,
-                      shape: BoxShape.circle),
-                ),
-                const SizedBox(width: GfSpace.x8),
-                Text(s.sampleNumber,
-                    style: GfText.number.copyWith(fontSize: 16)),
-                const SizedBox(width: GfSpace.x8),
-                Expanded(
-                  child: Text(SampleType.fromCode(s.sampleType).label,
-                      style: GfText.hint),
-                ),
-              ]),
-            ),
+          for (final s in items) SampleRow(s),
       ],
     );
   }
@@ -177,13 +147,12 @@ class _LabScreenState extends State<LabScreen> {
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: GfColors.surfaceHi,
-        title: Text(reprint
-            ? 'Повторная ведомость?'
-            : 'Сформировать ведомость?'),
+        title:
+            Text(reprint ? 'Повторная ведомость?' : 'Сформировать ведомость?'),
         content: Text(reprint
-            ? 'Ведомость по $count уже отправленным пробам сохранится '
+            ? 'Ведомость по уже отправленным пробам ($count) сохранится '
                 'CSV-файлом; статусы не изменятся.'
-            : '$count проб будут помечены отправленными в '
+            : 'Пробы из очереди ($count) будут помечены отправленными в '
                 'лабораторию; ведомость сохранится CSV-файлом.'),
         actions: [
           TextButton(
@@ -241,8 +210,7 @@ class _LabScreenState extends State<LabScreen> {
           controller: pathCtrl,
           style: GfText.body,
           decoration: const InputDecoration(
-              hintText: 'Путь к CSV-файлу лаборатории',
-              hintStyle: GfText.hint),
+              hintText: 'Путь к CSV-файлу лаборатории', hintStyle: GfText.hint),
         ),
         actions: [
           TextButton(
@@ -257,7 +225,8 @@ class _LabScreenState extends State<LabScreen> {
     // Контроллер диалога нельзя освобождать до конца анимации закрытия.
     WidgetsBinding.instance.addPostFrameCallback((_) => pathCtrl.dispose());
     if (path == null || path.isEmpty) return;
-
+    if (_busy) return; // ведомость/другой импорт ещё идёт — не пересекаем
+    setState(() => _busy = true);
     try {
       final text = File(path).readAsStringSync();
       final outcome = await widget.lab.importResults(widget.projectId, text);
@@ -275,6 +244,8 @@ class _LabScreenState extends State<LabScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Файл не прочитан: ${e.message}')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
     await _reload();
   }

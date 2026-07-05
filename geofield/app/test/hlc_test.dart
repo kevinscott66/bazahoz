@@ -18,8 +18,7 @@ void main() {
       expect(cmp(const Hlc(9, Hlc.maxCounter, 'z'), const Hlc(10, 0, 'a')),
           isNegative);
       // Счётчик при равных миллисекундах.
-      expect(
-          cmp(const Hlc(5000, 3, 'a'), const Hlc(5000, 4, 'a')), isNegative);
+      expect(cmp(const Hlc(5000, 3, 'a'), const Hlc(5000, 4, 'a')), isNegative);
       // Ничья (m,c) — детерминированно по device_id.
       expect(cmp(const Hlc(5000, 3, 'dev-a'), const Hlc(5000, 3, 'dev-b')),
           isNegative);

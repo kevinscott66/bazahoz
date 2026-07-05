@@ -47,7 +47,8 @@ void main() {
     expect(find.text('Удалить точку'), findsOneWidget);
   });
 
-  testWidgets('координаты: половина пары и выход за диапазон — invalid, не пишутся',
+  testWidgets(
+      'координаты: половина пары и выход за диапазон — invalid, не пишутся',
       (tester) async {
     final h = await pumpPoint(tester);
     await tester.enterText(find.widgetWithText(TextField, 'Широта'), '62.5');
@@ -60,8 +61,7 @@ void main() {
     final row = (await h.db.query('observation_points')).single;
     expect(row['lat'], isNull, reason: 'противоречие не персистится');
 
-    await tester.enterText(
-        find.widgetWithText(TextField, 'Долгота'), '148.15');
+    await tester.enterText(find.widgetWithText(TextField, 'Долгота'), '148.15');
     await settleSave(tester);
     final row2 = (await h.db.query('observation_points')).single;
     expect(row2['lat'], 62.5);
@@ -80,13 +80,12 @@ void main() {
     await tester.pumpAndSettle();
     // Порода — автоподсказка из справочника.
     await tester.enterText(
-        find.widgetWithText(TextField,
-            'Порода (справочник; новое — «на проверку»)'),
+        find.widgetWithText(
+            TextField, 'Порода (справочник; новое — «на проверку»)'),
         'Гранит');
     // Координаты.
     await tester.enterText(find.widgetWithText(TextField, 'Широта'), '62.1');
-    await tester.enterText(
-        find.widgetWithText(TextField, 'Долгота'), '149.9');
+    await tester.enterText(find.widgetWithText(TextField, 'Долгота'), '149.9');
     await settleSave(tester);
 
     final row = (await h.db.query('observation_points')).single;
@@ -100,8 +99,8 @@ void main() {
   testWidgets('новая порода уходит в справочник «на проверку»', (tester) async {
     final h = await pumpPoint(tester);
     await tester.enterText(
-        find.widgetWithText(TextField,
-            'Порода (справочник; новое — «на проверку»)'),
+        find.widgetWithText(
+            TextField, 'Порода (справочник; новое — «на проверку»)'),
         'Новопородит');
     await settleSave(tester);
     final dict = await h.db.query('dictionaries',
@@ -119,8 +118,7 @@ void main() {
     await tester.tap(find.text('Видимое золото'));
     await settleSave(tester);
     final row = (await h.db.query('observation_points')).single;
-    expect(row['minerals'],
-        '[{"code":"native_gold"},{"code":"pyrite"}]');
+    expect(row['minerals'], '[{"code":"native_gold"},{"code":"pyrite"}]');
     // Снятие чипа убирает код.
     await tester.tap(find.text('Пирит'));
     await settleSave(tester);

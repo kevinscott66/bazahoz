@@ -121,4 +121,3 @@ Future<void> seedDemo(Database db) async {
   }
   await batch.commit(noResult: true);
 }
-

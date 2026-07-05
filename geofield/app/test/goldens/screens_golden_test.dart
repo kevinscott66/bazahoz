@@ -136,8 +136,7 @@ void main() {
       ),
     )));
     await settleSave(tester);
-    await tester.enterText(
-        find.widgetWithText(TextField, 'Масса, кг'), '2,4');
+    await tester.enterText(find.widgetWithText(TextField, 'Масса, кг'), '2,4');
     await settleSave(tester);
     await expectLater(
         find.byType(MaterialApp), matchesGoldenFile('sample_capture.png'));
@@ -152,8 +151,8 @@ void main() {
       projectId: demoProjectId,
       authorId: demoAuthorId,
       initialNumber: 'SUZ-00034',
-      binding: const ParentBinding(
-          type: 'point', id: 'p1', label: 'Точка № Т-012'),
+      binding:
+          const ParentBinding(type: 'point', id: 'p1', label: 'Точка № Т-012'),
     )));
     await settleSave(tester);
     await tester.ensureVisible(find.text('Показать код'));
@@ -181,9 +180,9 @@ void main() {
           modifiedAt: now,
         ),
         isNew: true);
-    Future<void> kv(String k, String v) => h.db.insert(
-        'sync_state', {'key': k, 'value': v},
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    Future<void> kv(String k, String v) =>
+        h.db.insert('sync_state', {'key': k, 'value': v},
+            conflictAlgorithm: ConflictAlgorithm.replace);
     await kv('relay_url', 'https://relay.susuman.example');
     await kv('relay_token', 'secret');
     await kv(
@@ -197,11 +196,10 @@ void main() {
           'conflicts': 0,
           'completed': true,
         }));
-    await tester.pumpWidget(h.wrap(SyncScreen(
-        db: h.db, deviceId: demoDeviceId, clock: h.clock)));
+    await tester.pumpWidget(
+        h.wrap(SyncScreen(db: h.db, deviceId: demoDeviceId, clock: h.clock)));
     await tester.pumpAndSettle();
-    await expectLater(
-        find.byType(MaterialApp), matchesGoldenFile('sync.png'));
+    await expectLater(find.byType(MaterialApp), matchesGoldenFile('sync.png'));
   }, skip: !enabled);
 
   testWidgets('лаборатория: три статуса жизненного цикла', (tester) async {
@@ -233,7 +231,6 @@ void main() {
       projectId: demoProjectId,
     )));
     await tester.pumpAndSettle();
-    await expectLater(
-        find.byType(MaterialApp), matchesGoldenFile('lab.png'));
+    await expectLater(find.byType(MaterialApp), matchesGoldenFile('lab.png'));
   }, skip: !enabled);
 }

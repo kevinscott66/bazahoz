@@ -60,7 +60,7 @@ void main() {
     await tester.pumpWidget(h.wrap(SyncScreen(
         key: UniqueKey(), db: h.db, deviceId: demoDeviceId, clock: h.clock)));
     await tester.pumpAndSettle();
-    expect(find.textContaining('Уйдёт: 1 записей'), findsOneWidget);
+    expect(find.textContaining('Уйдёт: 1 запись'), findsOneWidget);
     expect(find.textContaining('КБ (до сжатия)'), findsOneWidget);
   });
 
@@ -95,8 +95,8 @@ void main() {
     expect(find.textContaining('ПОСЛЕДНИЙ СЕАНС'), findsOneWidget);
     expect(find.textContaining('обрыв'), findsWidgets);
     // Мутация не потеряна и не помечена отправленной.
-    final log = (await h.db.query('change_log',
-        where: "entity_id = 's-x'")).single;
+    final log =
+        (await h.db.query('change_log', where: "entity_id = 's-x'")).single;
     expect(log['synced'], 0);
   });
 }

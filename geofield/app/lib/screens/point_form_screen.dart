@@ -7,10 +7,13 @@ import '../data/point_repository.dart';
 import '../data/sample_repository.dart';
 import '../models/observation_point.dart';
 import '../models/sample.dart';
-import '../theme/sample_type.dart';
 import '../theme/tokens.dart';
+import '../util/format.dart';
 import '../util/sample_number.dart';
 import '../util/save_queue.dart';
+import '../widgets/confirm_dialog.dart';
+import '../widgets/field_picker.dart';
+import '../widgets/sample_row.dart';
 import 'sample_capture_screen.dart';
 
 /// Точка наблюдения — форма ввода (ТЗ §6.3).
@@ -73,6 +76,10 @@ class _PointFormScreenState extends State<PointFormScreen> {
   List<Sample> _boundSamples = const [];
 
   final _queue = SaveQueue();
+  // Защита от двойного pop: «Готово» и системный back могут сработать почти
+  // одновременно, оба дождутся _saveNow и вызовут pop() — второй pop снял бы
+  // лишний экран под формой. Кто первым выставил флаг, тот и закрывает.
+  bool _exiting = false;
   bool _persistedOnce = false;
   int _version = 1;
   String _saveState = 'сохранение…';
@@ -102,7 +109,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
       _selectedMinerals.addAll(decodeMineralCodes(ex.minerals));
     } else {
       _id = const Uuid().v4();
-      _createdAt = _nowIso();
+      _createdAt = nowIso();
       _observedAt = _createdAt;
       _numberCtrl.text = widget.initialNumber!;
     }
@@ -119,25 +126,32 @@ class _PointFormScreenState extends State<PointFormScreen> {
     // Запросы независимы — параллельно, а не 6 последовательных round-trip
     // на каждый тап «+ Точка» (perf-audit: отзывчивость главного жеста).
     final d = widget.dictionaries;
-    final results = await Future.wait<Object?>([
-      d.list(widget.projectId, 'object_type'),
-      d.list(widget.projectId, 'rock'),
-      d.list(widget.projectId, 'alteration'),
-      d.list(widget.projectId, 'mineral'),
-      if (rockCode != null) d.labelForCode(widget.projectId, 'rock', rockCode),
-      if (alterationCode != null)
-        d.labelForCode(widget.projectId, 'alteration', alterationCode),
+    final typesF = d.list(widget.projectId, 'object_type');
+    final rocksF = d.list(widget.projectId, 'rock');
+    final alterationsF = d.list(widget.projectId, 'alteration');
+    final mineralsF = d.list(widget.projectId, 'mineral');
+    final rockLabelF = rockCode == null
+        ? Future<String?>.value()
+        : d.labelForCode(widget.projectId, 'rock', rockCode);
+    final alterationLabelF = alterationCode == null
+        ? Future<String?>.value()
+        : d.labelForCode(widget.projectId, 'alteration', alterationCode);
+    await Future.wait<Object?>([
+      typesF,
+      rocksF,
+      alterationsF,
+      mineralsF,
+      rockLabelF,
+      alterationLabelF
     ]);
-    final types = results[0]! as List<DictEntry>;
-    final rocks = results[1]! as List<DictEntry>;
-    final alterations = results[2]! as List<DictEntry>;
-    final minerals = results[3]! as List<DictEntry>;
-    var i = 4;
-    final rockLabel =
-        rockCode == null ? '' : (results[i++] as String? ?? rockCode);
+    final types = await typesF;
+    final rocks = await rocksF;
+    final alterations = await alterationsF;
+    final minerals = await mineralsF;
+    final rockLabel = rockCode == null ? '' : (await rockLabelF ?? rockCode);
     final alterationLabel = alterationCode == null
         ? ''
-        : (results[i] as String? ?? alterationCode);
+        : (await alterationLabelF ?? alterationCode);
     if (!mounted) return;
     setState(() {
       _objectTypes = types;
@@ -148,7 +162,6 @@ class _PointFormScreenState extends State<PointFormScreen> {
       if (alterationLabel.isNotEmpty) _alterationCtrl.text = alterationLabel;
     });
   }
-
 
   Future<void> _reloadChildren() async {
     final ms = await widget.points.measurementsFor(_id);
@@ -188,9 +201,9 @@ class _PointFormScreenState extends State<PointFormScreen> {
 
   Future<SaveResult> _doSave() async {
     final number = _numberCtrl.text.trim();
-    final lat = _parse(_latCtrl.text);
-    final lon = _parse(_lonCtrl.text);
-    final elev = _parse(_elevCtrl.text);
+    final lat = parseDouble(_latCtrl.text);
+    final lon = parseDouble(_lonCtrl.text);
+    final elev = parseDouble(_elevCtrl.text);
 
     // Противоречия — invalid, не пишем (ТЗ §0, правило 3).
     if (number.isEmpty) {
@@ -262,7 +275,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
         isDraft: draft,
         authorId: widget.authorId,
         createdAt: _createdAt,
-        modifiedAt: _nowIso(),
+        modifiedAt: nowIso(),
         version: nextVersion,
       );
       await widget.points.save(point, isNew: isNew);
@@ -299,7 +312,9 @@ class _PointFormScreenState extends State<PointFormScreen> {
           _snack('Не удалось сохранить — проверьте память устройства');
           return;
         }
-        if (mounted) navigator.pop();
+        if (!mounted || _exiting) return;
+        _exiting = true;
+        navigator.pop();
       },
       child: Scaffold(
         appBar: AppBar(
@@ -314,12 +329,11 @@ class _PointFormScreenState extends State<PointFormScreen> {
                     padding: const EdgeInsets.symmetric(
                         horizontal: GfSpace.x8, vertical: GfSpace.x4),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF4A4222),
+                      color: GfColors.draftBg,
                       borderRadius: BorderRadius.circular(GfRadius.r8),
                     ),
                     child: const Text('черновик',
-                        style: TextStyle(
-                            fontSize: 12, color: Color(0xFFE0C766))),
+                        style: TextStyle(fontSize: 12, color: GfColors.draft)),
                   ),
                 ),
               ),
@@ -383,22 +397,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
         Row(children: [
           Expanded(child: _numField(_elevCtrl, 'Высота, м')),
           const SizedBox(width: GfSpace.x12),
-          Expanded(
-            child: SizedBox(
-              height: GfTouch.min,
-              child: OutlinedButton.icon(
-                onPressed: _onGps,
-                icon: const Icon(Icons.gps_fixed, size: 20),
-                label: const Text('С приёмника'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: GfColors.textPrimary,
-                  side: const BorderSide(color: GfColors.outline),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(GfRadius.r12)),
-                ),
-              ),
-            ),
-          ),
+          Expanded(child: _outlined('С приёмника', Icons.gps_fixed, _onGps)),
         ]),
       ],
     );
@@ -471,14 +470,10 @@ class _PointFormScreenState extends State<PointFormScreen> {
             });
             _scheduleSave();
           },
-          selectedColor: GfColors.accent.withValues(alpha: 0.25),
+          selectedColor: gfChipSelectedColor(),
           backgroundColor: GfColors.surface,
-          side: BorderSide(
-              color: selected ? GfColors.accent : GfColors.outline),
-          labelStyle: GfText.body.copyWith(
-              fontSize: 14,
-              color:
-                  selected ? GfColors.textPrimary : GfColors.textSecondary),
+          side: gfChipSide(selected),
+          labelStyle: gfChipLabel(selected),
         );
       }).toList(),
     );
@@ -548,11 +543,9 @@ class _PointFormScreenState extends State<PointFormScreen> {
             ]),
           ),
         Row(children: [
-          Expanded(
-              child: _outlined('+ Замер', Icons.add, _onAddMeasurement)),
+          Expanded(child: _outlined('+ Замер', Icons.add, _onAddMeasurement)),
           const SizedBox(width: GfSpace.x12),
-          Expanded(
-              child: _outlined('С датчика', Icons.explore, _onSensor)),
+          Expanded(child: _outlined('С датчика', Icons.explore, _onSensor)),
         ]),
       ],
     );
@@ -562,23 +555,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (final s in _boundSamples)
-          Padding(
-            padding: const EdgeInsets.only(bottom: GfSpace.x8),
-            child: Row(children: [
-              Container(
-                width: 12,
-                height: 12,
-                decoration: BoxDecoration(
-                    color: SampleType.fromCode(s.sampleType).color,
-                    shape: BoxShape.circle),
-              ),
-              const SizedBox(width: GfSpace.x8),
-              Text(s.sampleNumber, style: GfText.number.copyWith(fontSize: 16)),
-              const SizedBox(width: GfSpace.x8),
-              Text(SampleType.fromCode(s.sampleType).label, style: GfText.hint),
-            ]),
-          ),
+        for (final s in _boundSamples) SampleRow(s),
         _outlined('+ Проба', Icons.add, _onAddSample),
       ],
     );
@@ -591,12 +568,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
         onPressed: onTap,
         icon: Icon(icon, size: 20),
         label: Text(text, overflow: TextOverflow.ellipsis),
-        style: OutlinedButton.styleFrom(
-          foregroundColor: GfColors.textPrimary,
-          side: const BorderSide(color: GfColors.outline),
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(GfRadius.r12)),
-        ),
+        style: gfOutlinedStyle(),
       ),
     );
   }
@@ -638,18 +610,13 @@ class _PointFormScreenState extends State<PointFormScreen> {
             final r = await _saveNow();
             // Черновик — тоже валидное состояние: «Готово» сворачивает форму
             // (ТЗ §6.3 — запись уже сохранена). Блокируем только invalid/failed.
-            if (r == SaveResult.saved && mounted) {
+            if (r == SaveResult.saved && mounted && !_exiting) {
+              _exiting = true;
               Navigator.of(context).pop(_id);
             }
           },
-          style: FilledButton.styleFrom(
-            backgroundColor: GfColors.accent,
-            foregroundColor: GfColors.onAccent,
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(GfRadius.r12)),
-          ),
-          child: const Text('Готово',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          style: gfFilledStyle(),
+          child: const Text('Готово', style: GfText.button),
         ),
       ),
     );
@@ -678,11 +645,16 @@ class _PointFormScreenState extends State<PointFormScreen> {
       builder: (_) => const _MeasurementDialog(),
     );
     if (result == null) return;
-    final az = _parse(result.az);
-    final ang = _parse(result.ang);
+    final az = parseDouble(result.az);
+    final ang = parseDouble(result.ang);
     final measureType = result.type;
     // Противоречие ловим при вводе (ТЗ §0, пр.3) — до CHECK в базе.
-    if (az == null || ang == null || az < 0 || az >= 360 || ang < 0 || ang > 90) {
+    if (az == null ||
+        ang == null ||
+        az < 0 ||
+        az >= 360 ||
+        ang < 0 ||
+        ang > 90) {
       _snack('Азимут 0–359, угол 0–90 — проверьте значения');
       return;
     }
@@ -693,7 +665,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
       return;
     }
     try {
-      final now = _nowIso();
+      final now = nowIso();
       await widget.points.addMeasurement(StructuralMeasurement(
         id: const Uuid().v4(),
         parentType: 'point',
@@ -756,25 +728,12 @@ class _PointFormScreenState extends State<PointFormScreen> {
     }
     if (!mounted) return; // выше был await — экран могли закрыть
     final navigator = Navigator.of(context); // до следующего async-разрыва
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: GfColors.surfaceHi,
-        title: const Text('Удалить точку?'),
-        content:
-            const Text('Точку можно восстановить в камералке до синхронизации.'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Отмена')),
-          TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              style: TextButton.styleFrom(foregroundColor: GfColors.error),
-              child: const Text('Удалить')),
-        ],
-      ),
+    final confirmed = await confirmDelete(
+      context,
+      title: 'Удалить точку?',
+      message: 'Точку можно восстановить в камералке до синхронизации.',
     );
-    if (confirmed != true) return;
+    if (!confirmed) return;
     if (_persistedOnce) {
       try {
         final ex = await widget.points.byId(_id);
@@ -786,7 +745,9 @@ class _PointFormScreenState extends State<PointFormScreen> {
         return;
       }
     }
-    if (mounted) navigator.pop();
+    if (!mounted || _exiting) return;
+    _exiting = true;
+    navigator.pop();
   }
 
   // --- helpers ------------------------------------------------------------------
@@ -807,34 +768,12 @@ class _PointFormScreenState extends State<PointFormScreen> {
         decoration: _dec(hint),
       );
 
-  InputDecoration _dec(String hint) {
-    OutlineInputBorder b(Color c) => OutlineInputBorder(
-          borderRadius: BorderRadius.circular(GfRadius.r12),
-          borderSide: BorderSide(color: c),
-        );
-    return InputDecoration(
-      hintText: hint,
-      labelText: hint,
-      labelStyle: GfText.hint,
-      hintStyle: GfText.hint,
-      filled: true,
-      fillColor: GfColors.surface,
-      contentPadding: const EdgeInsets.symmetric(
-          horizontal: GfSpace.x16, vertical: GfSpace.x16),
-      enabledBorder: b(GfColors.outline),
-      focusedBorder: b(GfColors.accent),
-    );
-  }
+  InputDecoration _dec(String hint) =>
+      gfInputDecoration(hint: hint, label: hint);
 
   void _snack(String m) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
-  }
-
-  static double? _parse(String s) {
-    final t = s.trim().replaceAll(',', '.');
-    if (t.isEmpty) return null;
-    return double.tryParse(t);
+    context.snack(m);
   }
 
   static String? _emptyNull(String s) {
@@ -843,8 +782,6 @@ class _PointFormScreenState extends State<PointFormScreen> {
   }
 
   static String _fmtNum(double? v) => v == null ? '—' : v.toStringAsFixed(0);
-
-  static String _nowIso() => DateTime.now().toUtc().toIso8601String();
 }
 
 /// Диалог структурного замера. Отдельный StatefulWidget: контроллеры живут
@@ -871,24 +808,8 @@ class _MeasurementDialogState extends State<_MeasurementDialog> {
     super.dispose();
   }
 
-  InputDecoration _dec(String hint) {
-    OutlineInputBorder b(Color c) => OutlineInputBorder(
-          borderRadius: BorderRadius.circular(GfRadius.r12),
-          borderSide: BorderSide(color: c),
-        );
-    return InputDecoration(
-      hintText: hint,
-      labelText: hint,
-      labelStyle: GfText.hint,
-      hintStyle: GfText.hint,
-      filled: true,
-      fillColor: GfColors.surface,
-      contentPadding: const EdgeInsets.symmetric(
-          horizontal: GfSpace.x16, vertical: GfSpace.x16),
-      enabledBorder: b(GfColors.outline),
-      focusedBorder: b(GfColors.accent),
-    );
-  }
+  InputDecoration _dec(String hint) =>
+      gfInputDecoration(hint: hint, label: hint);
 
   @override
   Widget build(BuildContext context) {
@@ -899,9 +820,7 @@ class _MeasurementDialogState extends State<_MeasurementDialog> {
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           FieldPicker(
             label: 'Тип замера',
-            options: [
-              for (final e in measureTypes.entries) (e.key, e.value)
-            ],
+            options: [for (final e in measureTypes.entries) (e.key, e.value)],
             selected: _type,
             onSelected: (v) => setState(() => _type = v),
           ),
@@ -930,91 +849,6 @@ class _MeasurementDialogState extends State<_MeasurementDialog> {
                 context, (type: _type, az: _azCtrl.text, ang: _angCtrl.text)),
             child: const Text('Добавить')),
       ],
-    );
-  }
-}
-
-
-/// Поле-пикер: выглядит как текстовое поле, по тапу — шторка с крупными
-/// строками (56px, ТЗ §4.5). Замена дропдауну: мелкое меню неудобно
-/// в перчатках, а длинные подписи в нём переполняют строку.
-class FieldPicker extends StatelessWidget {
-  const FieldPicker({
-    super.key,
-    required this.label,
-    required this.options, // (code, label)
-    required this.selected,
-    required this.onSelected,
-  });
-
-  final String label;
-  final List<(String, String)> options;
-  final String? selected;
-  final ValueChanged<String> onSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    final current =
-        options.where((o) => o.$1 == selected).map((o) => o.$2).firstOrNull;
-    return InkWell(
-      borderRadius: BorderRadius.circular(GfRadius.r12),
-      onTap: () async {
-        final code = await showModalBottomSheet<String>(
-          context: context,
-          backgroundColor: GfColors.surfaceHi,
-          builder: (_) => SafeArea(
-            child: ListView(
-              shrinkWrap: true,
-              padding: const EdgeInsets.symmetric(vertical: GfSpace.x8),
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                      GfSpace.x16, GfSpace.x8, GfSpace.x16, GfSpace.x8),
-                  child: Text(label.toUpperCase(), style: GfText.sectionLabel),
-                ),
-                for (final (code, text) in options)
-                  InkWell(
-                    onTap: () => Navigator.pop(context, code),
-                    child: Container(
-                      constraints:
-                          const BoxConstraints(minHeight: GfTouch.min),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: GfSpace.x16),
-                      alignment: Alignment.centerLeft,
-                      child: Row(children: [
-                        Expanded(child: Text(text, style: GfText.body)),
-                        if (code == selected)
-                          const Icon(Icons.check,
-                              size: 20, color: GfColors.accent),
-                      ]),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        );
-        if (code != null) onSelected(code);
-      },
-      child: InputDecorator(
-        decoration: InputDecoration(
-          labelText: label,
-          labelStyle: GfText.hint,
-          filled: true,
-          fillColor: GfColors.surface,
-          contentPadding: const EdgeInsets.symmetric(
-              horizontal: GfSpace.x16, vertical: GfSpace.x16),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(GfRadius.r12),
-            borderSide: const BorderSide(color: GfColors.outline),
-          ),
-          suffixIcon: const Icon(Icons.expand_more,
-              color: GfColors.textSecondary),
-        ),
-        isEmpty: current == null,
-        child: current == null
-            ? null
-            : Text(current, style: GfText.body),
-      ),
     );
   }
 }

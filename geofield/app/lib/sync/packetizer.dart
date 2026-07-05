@@ -15,7 +15,8 @@ List<List<Map<String, Object?>>> splitIntoPackets(
   required int maxBytes,
 }) {
   if (maxBytes <= 0) {
-    throw ArgumentError.value(maxBytes, 'maxBytes', 'должен быть положительным');
+    throw ArgumentError.value(
+        maxBytes, 'maxBytes', 'должен быть положительным');
   }
   final packets = <List<Map<String, Object?>>>[];
   var current = <Map<String, Object?>>[];

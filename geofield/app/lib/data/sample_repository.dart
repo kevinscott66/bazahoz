@@ -1,10 +1,8 @@
-import 'dart:convert';
-
 import 'package:sqflite/sqflite.dart';
-import 'package:uuid/uuid.dart';
 
 import '../models/sample.dart';
 import '../sync/hlc.dart';
+import '../util/format.dart';
 import 'change_payload.dart';
 
 /// Доступ к пробам. Каждая мутация пишется атомарно: строка `samples` +
@@ -18,7 +16,6 @@ class SampleRepository {
   final String deviceId;
   final String authorId;
   final HlcClock clock;
-  final Uuid _uuid = const Uuid();
 
   /// Следующий сквозной номер пробы в проекте (для sample_numbering).
   /// Считаем ВСЕ строки, включая мягко удалённые (deleted=1): иначе номер и
@@ -61,16 +58,6 @@ class SampleRepository {
     return rows.map(Sample.fromMap).toList();
   }
 
-  Future<List<Sample>> listByProject(String projectId) async {
-    final rows = await _db.query(
-      'samples',
-      where: 'project_id = ? AND deleted = 0',
-      whereArgs: [projectId],
-      orderBy: 'created_at DESC',
-    );
-    return rows.map(Sample.fromMap).toList();
-  }
-
   /// Upsert пробы + мутация в журнал изменений, в одной транзакции.
   /// [isNew] — вставка (op=insert) или правка (op=update).
   Future<void> save(Sample sample, {required bool isNew}) async {
@@ -85,21 +72,17 @@ class SampleRepository {
         final old = await txn.query('samples',
             where: 'id = ?', whereArgs: [sample.id], limit: 1);
         if (old.isNotEmpty) payload = changedFields(old.first, map);
-        await txn.update('samples', map,
-            where: 'id = ?', whereArgs: [sample.id]);
+        await txn
+            .update('samples', map, where: 'id = ?', whereArgs: [sample.id]);
       }
-      final ts = (await clock.tick(txn)).encode();
-      await upsertRowClock(txn, 'samples', sample.id, ts);
-      await txn.insert('change_log', {
-        'change_id': _uuid.v4(),
-        'entity_table': 'samples',
-        'entity_id': sample.id,
-        'op': isNew ? 'insert' : 'update',
-        'payload': jsonEncode(payload),
-        'author_id': authorId,
-        'device_id': deviceId,
-        'logical_ts': ts,
-      });
+      await logChange(txn,
+          clock: clock,
+          table: 'samples',
+          entityId: sample.id,
+          op: isNew ? 'insert' : 'update',
+          payload: payload,
+          authorId: authorId,
+          deviceId: deviceId);
     });
   }
 
@@ -142,23 +125,19 @@ class SampleRepository {
       }
       final delta = <String, Object?>{
         'status': to.db,
-        'modified_at': DateTime.now().toUtc().toIso8601String(),
+        'modified_at': nowIso(),
         'version': fresh.version + 1,
       };
       await txn.update('samples', {...delta, 'sync_status': 'pending'},
           where: 'id = ?', whereArgs: [sample.id]);
-      final ts = (await clock.tick(txn)).encode();
-      await upsertRowClock(txn, 'samples', sample.id, ts);
-      await txn.insert('change_log', {
-        'change_id': _uuid.v4(),
-        'entity_table': 'samples',
-        'entity_id': sample.id,
-        'op': 'update',
-        'payload': jsonEncode(delta),
-        'author_id': authorId,
-        'device_id': deviceId,
-        'logical_ts': ts,
-      });
+      await logChange(txn,
+          clock: clock,
+          table: 'samples',
+          entityId: sample.id,
+          op: 'update',
+          payload: delta,
+          authorId: authorId,
+          deviceId: deviceId);
       return true;
     });
   }
@@ -195,24 +174,20 @@ class SampleRepository {
         {
           'deleted': 1,
           'version': sample.version + 1,
-          'modified_at': DateTime.now().toUtc().toIso8601String(),
+          'modified_at': nowIso(),
           'sync_status': SyncStatus.pending.db,
         },
         where: 'id = ?',
         whereArgs: [sample.id],
       );
-      final ts = (await clock.tick(txn)).encode();
-      await upsertRowClock(txn, 'samples', sample.id, ts);
-      await txn.insert('change_log', {
-        'change_id': _uuid.v4(),
-        'entity_table': 'samples',
-        'entity_id': sample.id,
-        'op': 'delete',
-        'payload': '{}',
-        'author_id': authorId,
-        'device_id': deviceId,
-        'logical_ts': ts,
-      });
+      await logChange(txn,
+          clock: clock,
+          table: 'samples',
+          entityId: sample.id,
+          op: 'delete',
+          payload: const {},
+          authorId: authorId,
+          deviceId: deviceId);
     });
   }
 }

@@ -13,8 +13,8 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 /// Живой стенд: реальная SQLite (in-memory, ffi) с демо-сидом + репозитории.
 class TestHarness {
-  TestHarness._(this.db, this.clock, this.points, this.samples, this.dicts,
-      this.lab);
+  TestHarness._(
+      this.db, this.clock, this.points, this.samples, this.dicts, this.lab);
 
   final Database db;
   final HlcClock clock;
@@ -93,8 +93,8 @@ void tallPhone(WidgetTester tester) {
 /// TextField по фактическому значению контроллера: find.widgetWithText
 /// ловит и label, и hint (у полей точки они совпадают со значением) и
 /// возвращает один TextField трижды.
-Finder textFieldValued(String value) => find.byWidgetPredicate(
-    (w) => w is TextField && w.controller?.text == value);
+Finder textFieldValued(String value) => find
+    .byWidgetPredicate((w) => w is TextField && w.controller?.text == value);
 
 /// Дать реальному вводу-выводу (файлы, сокеты) завершиться под FakeAsync.
 Future<void> realIo(WidgetTester tester,

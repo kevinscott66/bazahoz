@@ -7,6 +7,7 @@ import '../sync/hlc.dart';
 import '../sync/relay_client.dart';
 import '../sync/sync_engine.dart';
 import '../theme/tokens.dart';
+import '../util/format.dart';
 
 /// Синхронизация — отдельный осознанный экран (ТЗ §6.8): связь — событие.
 /// Большая кнопка, «что уйдёт», прогресс по пакетам с паузой, лог сеанса,
@@ -68,8 +69,7 @@ class _SyncScreenState extends State<SyncScreen> {
     final sessionJson = await _kv('last_session');
     if (sessionJson != null) {
       try {
-        _lastSession =
-            (jsonDecode(sessionJson) as Map).cast<String, Object?>();
+        _lastSession = (jsonDecode(sessionJson) as Map).cast<String, Object?>();
       } catch (_) {
         _lastSession = null; // битый лог сеанса не роняет экран
       }
@@ -93,6 +93,16 @@ class _SyncScreenState extends State<SyncScreen> {
 
   Future<void> _onSync() async {
     if (!_configured || _busy) return;
+    final url = _urlCtrl.text.trim();
+    final uri = Uri.tryParse(url);
+    final isLocal =
+        uri != null && (uri.host == 'localhost' || uri.host.startsWith('127.'));
+    if (uri == null || (uri.scheme != 'https' && !isLocal)) {
+      // Bearer-токен по открытому каналу — перехват на спутнике/Wi-Fi;
+      // http допустим только для localhost-тестов.
+      context.snack('Нужен https (http допустим только для localhost)');
+      return;
+    }
     await _setKv('relay_url', _urlCtrl.text.trim());
     await _setKv('relay_token', _tokenCtrl.text.trim());
 
@@ -123,14 +133,11 @@ class _SyncScreenState extends State<SyncScreen> {
           : result.error == null
               ? 'Пауза — продолжится с места остановки'
               : 'Обрыв: ${result.error} — возобновится со следующего сеанса';
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      context.snack(msg);
     } catch (e) {
       // Последний рубеж (включая Error-типы — баги): пользователь видит сбой,
       // состояние синхрона согласовано (ack по пакетам, курсор в транзакции).
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Сбой сеанса: $e')));
-      }
+      if (mounted) context.snack('Сбой сеанса: $e');
     } finally {
       client.close();
       if (mounted) {
@@ -189,27 +196,15 @@ class _SyncScreenState extends State<SyncScreen> {
           child: _busy
               ? OutlinedButton(
                   onPressed: () => _running?.pause(),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: GfColors.textPrimary,
-                    side: const BorderSide(color: GfColors.outline),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(GfRadius.r12)),
-                  ),
+                  style: gfOutlinedStyle(),
                   child: const Text('Пауза (после текущего пакета)'),
                 )
               : FilledButton(
                   onPressed: _configured ? _onSync : null,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: GfColors.accent,
-                    foregroundColor: GfColors.onAccent,
-                    disabledBackgroundColor: GfColors.surfaceHi,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(GfRadius.r12)),
-                  ),
+                  style: gfFilledStyle(),
                   child: Text(
                     _configured ? 'Синхронизировать' : 'Relay не настроен',
-                    style: const TextStyle(
-                        fontSize: 18, fontWeight: FontWeight.w700),
+                    style: GfText.button,
                   ),
                 ),
         ),
@@ -221,20 +216,16 @@ class _SyncScreenState extends State<SyncScreen> {
     final kb = (_pendingBytes / 1024).ceil();
     return Container(
       padding: const EdgeInsets.all(GfSpace.x16),
-      decoration: BoxDecoration(
-        color: GfColors.surface,
-        borderRadius: BorderRadius.circular(GfRadius.r12),
-        border: Border.all(color: GfColors.outline),
-      ),
+      decoration: gfCard(),
       child: Row(children: [
-        const Icon(Icons.cloud_upload_outlined,
-            color: GfColors.textSecondary),
+        const Icon(Icons.cloud_upload_outlined, color: GfColors.textSecondary),
         const SizedBox(width: GfSpace.x12),
         Expanded(
           child: Text(
             _pendingCount == 0
                 ? 'Всё отправлено'
-                : 'Уйдёт: $_pendingCount записей · ~$kb КБ (до сжатия)',
+                : 'Уйдёт: ${plural(_pendingCount, 'запись', 'записи', 'записей')}'
+                    ' · ~$kb КБ (до сжатия)',
             style: GfText.body,
           ),
         ),
@@ -251,11 +242,7 @@ class _SyncScreenState extends State<SyncScreen> {
     };
     return Container(
       padding: const EdgeInsets.all(GfSpace.x16),
-      decoration: BoxDecoration(
-        color: GfColors.surface,
-        borderRadius: BorderRadius.circular(GfRadius.r12),
-        border: Border.all(color: GfColors.accent),
-      ),
+      decoration: gfCard(borderColor: GfColors.accent),
       child: Column(children: [
         LinearProgressIndicator(
           value: p.phase == 'push' && p.packetsTotal > 0
@@ -272,20 +259,17 @@ class _SyncScreenState extends State<SyncScreen> {
 
   Widget _sessionCard(Map<String, Object?> s) {
     final completed = s['completed'] == true;
+    final packets = (s['pushed_packets'] as num?)?.toInt() ?? 0;
     return Container(
       padding: const EdgeInsets.all(GfSpace.x16),
-      decoration: BoxDecoration(
-        color: GfColors.surface,
-        borderRadius: BorderRadius.circular(GfRadius.r12),
-        border: Border.all(color: GfColors.outline),
-      ),
+      decoration: gfCard(),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('ПОСЛЕДНИЙ СЕАНС', style: GfText.sectionLabel),
         const SizedBox(height: GfSpace.x8),
         Text(
           '${s['at'] ?? '—'}\n'
           'отправлено: ${s['pushed_changes'] ?? 0} '
-          '(${s['pushed_packets'] ?? 0} пакетов, '
+          '(${plural(packets, 'пакет', 'пакета', 'пакетов')}, '
           '${(((s['bytes_sent'] as num?) ?? 0) / 1024).ceil()} КБ) · '
           'принято: ${s['pulled_applied'] ?? 0} · '
           'конфликтов: ${s['conflicts'] ?? 0}\n'
@@ -296,20 +280,5 @@ class _SyncScreenState extends State<SyncScreen> {
     );
   }
 
-  InputDecoration _dec(String hint) {
-    OutlineInputBorder b(Color c) => OutlineInputBorder(
-          borderRadius: BorderRadius.circular(GfRadius.r12),
-          borderSide: BorderSide(color: c),
-        );
-    return InputDecoration(
-      hintText: hint,
-      hintStyle: GfText.hint,
-      filled: true,
-      fillColor: GfColors.surface,
-      contentPadding: const EdgeInsets.symmetric(
-          horizontal: GfSpace.x16, vertical: GfSpace.x16),
-      enabledBorder: b(GfColors.outline),
-      focusedBorder: b(GfColors.accent),
-    );
-  }
+  InputDecoration _dec(String hint) => gfInputDecoration(hint: hint);
 }

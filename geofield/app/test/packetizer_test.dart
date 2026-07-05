@@ -24,8 +24,8 @@ void main() {
       final packets = splitIntoPackets(changes, maxBytes: one * 3);
       // Каждый пакет ≤ лимита и порядок сквозной.
       final flat = packets.expand((p) => p).toList();
-      expect(flat.map((c) => c['change_id']),
-          changes.map((c) => c['change_id']));
+      expect(
+          flat.map((c) => c['change_id']), changes.map((c) => c['change_id']));
       for (final p in packets) {
         final bytes = p.fold<int>(0, (s, c) => s + sizeOf(c));
         expect(bytes, lessThanOrEqualTo(one * 3));

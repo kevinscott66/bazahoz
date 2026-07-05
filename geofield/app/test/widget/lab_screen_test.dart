@@ -66,7 +66,8 @@ void main() {
 
     await tester.tap(find.text('Ведомость (2)'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('2 проб будут помечены'), findsOneWidget);
+    expect(find.textContaining('Пробы из очереди (2) будут помечены'),
+        findsOneWidget);
     await tester.tap(find.text('Сформировать'));
     // Синхронная запись файла + перезагрузка списков.
     await realIo(tester);
@@ -109,8 +110,7 @@ void main() {
     await tester.tap(find.text('Импорт результатов'));
     await tester.pumpAndSettle();
     await tester.enterText(
-        find.widgetWithText(TextField, 'Путь к CSV-файлу лаборатории'),
-        f.path);
+        find.widgetWithText(TextField, 'Путь к CSV-файлу лаборатории'), f.path);
     await tester.tap(find.text('Импортировать'));
     await realIo(tester);
     await tester.pumpAndSettle();

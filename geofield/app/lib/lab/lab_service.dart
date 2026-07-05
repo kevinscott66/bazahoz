@@ -1,12 +1,12 @@
-import 'dart:convert';
-
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
+import '../data/change_payload.dart';
 import '../data/sample_repository.dart';
 import '../models/sample.dart';
 import '../sync/hlc.dart';
 import '../util/csv_export.dart';
+import '../util/format.dart';
 import 'results_import.dart';
 
 /// Итог применения файла результатов (ТЗ §6.9: результаты сами ложатся на
@@ -82,9 +82,15 @@ class LabService {
     var n = 0;
     for (final s in samples) {
       if (s.status == SampleStatus.resultReceived) continue; // конечный статус
-      final advanced = await _samples.advanceStatus(s, SampleStatus.sent,
-          allowSkipPacked: true);
-      if (advanced) n++;
+      try {
+        final advanced = await _samples.advanceStatus(s, SampleStatus.sent,
+            allowSkipPacked: true);
+        if (advanced) n++;
+      } on ArgumentError {
+        // Список на экране мог устареть: конкурентный импорт результатов уже
+        // закрыл пробу (result_received) — это не сбой партии, просто не переход.
+        continue;
+      }
     }
     return n;
   }
@@ -108,7 +114,8 @@ class LabService {
       }
       if (matches.length > 1) {
         issues.add('строка ${row.line}: штрихкод «${row.barcode}» '
-            'неоднозначен (${matches.length} пробы) — на разбор');
+            'неоднозначен (${plural(matches.length, 'проба', 'пробы', 'проб')})'
+            ' — на разбор');
         continue;
       }
       final sample = matches.single;
@@ -116,8 +123,8 @@ class LabService {
       final existing = await _db.query('sample_results',
           where: 'sample_id = ? AND element = ? AND deleted = 0',
           whereArgs: [sample.id, row.element]);
-      final exactDup = existing.any((r) =>
-          r['value'] == row.value && (r['unit'] as String?) == row.unit);
+      final exactDup = existing.any(
+          (r) => r['value'] == row.value && (r['unit'] as String?) == row.unit);
       if (exactDup) {
         issues.add('строка ${row.line}: результат ${row.element} по '
             '«${row.barcode}» уже принят — пропущен (повторный импорт?)');
@@ -151,7 +158,7 @@ class LabService {
   }
 
   Future<void> _insertResult(String sampleId, LabResultRow row) async {
-    final now = DateTime.now().toUtc().toIso8601String();
+    final now = nowIso();
     final map = <String, Object?>{
       'id': _uuid.v4(),
       'sample_id': sampleId,
@@ -166,20 +173,15 @@ class LabService {
     // Тот же инвариант, что у всех мутаций: строка + change_log + row_clock
     // атомарно (§8.5) — результаты тоже синхронизируются между устройствами.
     await _db.transaction((txn) async {
-      final ts = (await clock.tick(txn)).encode();
-      await upsertRowClock(txn, 'sample_results', map['id'] as String, ts);
       await txn.insert('sample_results', map);
-      await txn.insert('change_log', {
-        'change_id': _uuid.v4(),
-        'entity_table': 'sample_results',
-        'entity_id': map['id'],
-        'op': 'insert',
-        'payload': jsonEncode(map),
-        'author_id': authorId,
-        'device_id': deviceId,
-        'logical_ts': ts,
-      });
+      await logChange(txn,
+          clock: clock,
+          table: 'sample_results',
+          entityId: map['id'] as String,
+          op: 'insert',
+          payload: map,
+          authorId: authorId,
+          deviceId: deviceId);
     });
   }
-
 }

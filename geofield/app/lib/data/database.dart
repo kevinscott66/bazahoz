@@ -21,8 +21,8 @@ class AppDatabase {
       sqfliteFfiInit();
       databaseFactory = databaseFactoryFfi;
     }
-    final dbPath = path ??
-        p.join(await databaseFactory.getDatabasesPath(), 'geofield.db');
+    final dbPath =
+        path ?? p.join(await databaseFactory.getDatabasesPath(), 'geofield.db');
 
     final database = await databaseFactory.openDatabase(
       dbPath,
@@ -193,8 +193,8 @@ class AppDatabase {
         deleted      INTEGER NOT NULL DEFAULT 0
       )
     ''');
-    await d
-        .execute('CREATE INDEX idx_results_sample ON sample_results(sample_id)');
+    await d.execute(
+        'CREATE INDEX idx_results_sample ON sample_results(sample_id)');
 
     await d.execute('''
       CREATE TABLE change_log (
@@ -264,7 +264,8 @@ class AppDatabase {
     await d.execute('CREATE INDEX idx_samples_project ON samples(project_id)');
     await d.execute('CREATE INDEX idx_changelog_entity '
         'ON change_log(entity_table, entity_id)');
-    await d.execute('CREATE INDEX idx_samples_number ON samples(sample_number)');
+    await d
+        .execute('CREATE INDEX idx_samples_number ON samples(sample_number)');
     await d.execute('CREATE INDEX idx_samples_barcode ON samples(barcode)');
     await d.execute(
         'CREATE INDEX idx_samples_parent ON samples(parent_type, parent_id)');

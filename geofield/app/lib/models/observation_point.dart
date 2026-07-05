@@ -5,8 +5,9 @@ import 'sample.dart' show SyncStatus;
 /// Формат поля minerals — JSON-массив объектов по контракту схемы
 /// `[{code, intensity}]`; интенсивность пока не заполняется (бэклог,
 /// UNFINISHED.md) — объектная форма выбрана, чтобы добавить её без миграции.
-String encodeMineralCodes(Iterable<String> codes) =>
-    jsonEncode([for (final c in codes.toList()..sort()) {'code': c}]);
+String encodeMineralCodes(Iterable<String> codes) => jsonEncode([
+      for (final c in codes.toList()..sort()) {'code': c}
+    ]);
 
 /// Терпимый декодер: понимает и объекты `{"code":…}`, и плоские строки
 /// (ранние записи прототипа).

@@ -107,8 +107,8 @@ class HlcClock {
 /// HLC последнего писателя строки (для LWW при PULL) — локальная
 /// вспомогательная таблица row_clocks. Обновляется в той же транзакции,
 /// что и мутация/применение.
-Future<void> upsertRowClock(DatabaseExecutor txn, String table,
-    String entityId, String hlcTs) {
+Future<void> upsertRowClock(
+    DatabaseExecutor txn, String table, String entityId, String hlcTs) {
   return txn.insert(
     'row_clocks',
     {'entity_table': table, 'entity_id': entityId, 'hlc_ts': hlcTs},

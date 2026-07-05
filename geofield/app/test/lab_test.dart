@@ -11,8 +11,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 void main() {
   group('parseLabResults — гибкий маппинг форматов', () {
     test('русские заголовки, ; и запятая-десятичная', () {
-      final r = parseLabResults(
-          'Штрихкод;Элемент;Содержание;Ед. изм.;Метод\n'
+      final r = parseLabResults('Штрихкод;Элемент;Содержание;Ед. изм.;Метод\n'
           'SUZ-00001;Au;1,25;г/т;ПробирныЙ\n'
           'SUZ-00002;Ag;12,0;г/т;ААС\n');
       expect(r.issues, isEmpty);
@@ -24,8 +23,7 @@ void main() {
     });
 
     test('английские заголовки, запятая-разделитель, BOM', () {
-      final r = parseLabResults(
-          '\u{FEFF}Sample,Element,Result,Units\n'
+      final r = parseLabResults('\u{FEFF}Sample,Element,Result,Units\n'
           'SUZ-00001,Au,0.85,g/t\n');
       expect(r.issues, isEmpty);
       expect(r.rows.single.value, 0.85);
@@ -49,13 +47,11 @@ void main() {
     });
 
     test('кавычки и разделитель внутри ячейки', () {
-      final r = parseLabResults(
-          'barcode;element;value\n"S-1;x";Au;1.0\n');
+      final r = parseLabResults('barcode;element;value\n"S-1;x";Au;1.0\n');
       expect(r.rows.single.barcode, 'S-1;x');
     });
 
-    test('колонка «Номер» не перехватывает штрихкод (приоритет синонимов)',
-        () {
+    test('колонка «Номер» не перехватывает штрихкод (приоритет синонимов)', () {
       final r = parseLabResults('Номер;Штрихкод;Элемент;Содержание\n'
           '1;SUZ-00007;Au;0.5\n');
       expect(r.rows.single.barcode, 'SUZ-00007',
@@ -112,8 +108,8 @@ void main() {
 
     test('ведомость: CSV со всеми пробами, статусы уходят в sent', () async {
       final a = await addSample('s1', 'SUZ-00001');
-      final b = await addSample('s2', 'SUZ-00002',
-          status: SampleStatus.collected);
+      final b =
+          await addSample('s2', 'SUZ-00002', status: SampleStatus.collected);
       final csv = lab.buildDispatchCsv([a, b], typeLabel: (c) => c);
       expect(csv.split('\n').where((l) => l.isNotEmpty), hasLength(3));
       expect(csv, contains('SUZ-00001'));
@@ -139,7 +135,8 @@ void main() {
       await lab.markDispatched([a]);
       final sent = (await samples.byBarcode(demoProjectId, 'SUZ-00001')).single;
 
-      final outcome = await lab.importResults(demoProjectId,
+      final outcome = await lab.importResults(
+          demoProjectId,
           'Штрихкод;Элемент;Содержание;Ед\n'
           'SUZ-00001;Au;2,4;г/т\n'
           'SUZ-00001;Ag;15;г/т\n');
@@ -150,8 +147,7 @@ void main() {
       final results = await db.query('sample_results');
       expect(results, hasLength(2));
       expect(results.map((r) => r['sample_id']), everyElement(sent.id));
-      final row =
-          (await db.query('samples', where: "id = 's1'")).single;
+      final row = (await db.query('samples', where: "id = 's1'")).single;
       expect(row['status'], 'result_received');
     });
 
@@ -160,7 +156,8 @@ void main() {
       await addSample('s2', 'SUZ-00002');
       await addSample('s3', 'SUZ-00002'); // дубль штрихкода
 
-      final outcome = await lab.importResults(demoProjectId,
+      final outcome = await lab.importResults(
+          demoProjectId,
           'barcode;element;value\n'
           'SUZ-00001;Au;1.0\n'
           'SUZ-00002;Au;2.0\n'
@@ -185,7 +182,8 @@ void main() {
       expect(await lab.markDispatched([again]), 0);
     });
 
-    test('двойной вызов со stale-объектами: один переход, версия растёт один раз',
+    test(
+        'двойной вызов со stale-объектами: один переход, версия растёт один раз',
         () async {
       final a = await addSample('s1', 'SUZ-00001');
       // Оба вызова с ОДНИМ устаревшим снапшотом (двойной тап).
@@ -223,8 +221,8 @@ void main() {
       expect(await db.query('sample_results'), hasLength(1));
 
       // Пере-анализ с другим значением — вставляется, но подсвечен.
-      final third = await lab.importResults(demoProjectId,
-          'barcode;element;value;unit\nSUZ-00001;Au;2.6;г/т\n');
+      final third = await lab.importResults(
+          demoProjectId, 'barcode;element;value;unit\nSUZ-00001;Au;2.6;г/т\n');
       expect(third.applied, 1);
       expect(third.issues.single, contains('на разбор'));
       expect(await db.query('sample_results'), hasLength(2));

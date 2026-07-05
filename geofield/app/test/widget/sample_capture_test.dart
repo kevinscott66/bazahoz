@@ -19,8 +19,8 @@ void main() {
       authorId: demoAuthorId,
       initialNumber: existing?.sampleNumber ?? 'SUZ-00001',
       existing: existing,
-      binding: const ParentBinding(
-          type: 'point', id: 'pt-1', label: 'Точка № 1'),
+      binding:
+          const ParentBinding(type: 'point', id: 'pt-1', label: 'Точка № 1'),
     )));
     await settleSave(tester);
     return h;
@@ -42,7 +42,8 @@ void main() {
     expect(find.text('Привязано к: Точка № 1'), findsOneWidget);
   });
 
-  testWidgets('поля зависят от типа: керн — От/До, борозда — длина, штуф — ничего',
+  testWidgets(
+      'поля зависят от типа: керн — От/До, борозда — длина, штуф — ничего',
       (tester) async {
     final h = await pumpSample(tester);
     // Керн (по умолчанию): интервал видим.
@@ -63,7 +64,8 @@ void main() {
     expect(row['sample_type'], 'grab');
   });
 
-  testWidgets('«До < От» блокирует, исправление сохраняет; смена типа снимает блок',
+  testWidgets(
+      '«До < От» блокирует, исправление сохраняет; смена типа снимает блок',
       (tester) async {
     final h = await pumpSample(tester);
     await tester.enterText(find.widgetWithText(TextField, 'От'), '10');
@@ -95,8 +97,7 @@ void main() {
 
   testWidgets('пустой номер: ошибка, «Готово» не закрывает', (tester) async {
     await pumpSample(tester);
-    await tester.enterText(
-        find.widgetWithText(TextField, 'SUZ-00001'), '');
+    await tester.enterText(find.widgetWithText(TextField, 'SUZ-00001'), '');
     await settleSave(tester);
     expect(find.text('Номер пробы обязателен'), findsOneWidget);
     await tester.tap(find.text('Готово'));
@@ -119,7 +120,8 @@ void main() {
     await tester.ensureVisible(find.text('Печать бирки'));
     await tester.tap(find.text('Печать бирки'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('Принтер этикеток не подключён'), findsOneWidget);
+    expect(
+        find.textContaining('Принтер этикеток не подключён'), findsOneWidget);
   });
 
   testWidgets('удаление: подтверждение, deleted=1 и delete-мутация в логе',
@@ -159,11 +161,11 @@ void main() {
     // не делает insert — записи нужна база).
     await h.samples.save(existing, isNew: true);
 
-    await tester.enterText(
-        find.widgetWithText(TextField, 'Масса, кг'), '2,5');
+    await tester.enterText(find.widgetWithText(TextField, 'Масса, кг'), '2,5');
     await settleSave(tester);
     final row = (await h.db.query('samples', where: "id = 's-ed'")).single;
-    expect(row['status'], 'packed', reason: 'правка не откатывает жизненный цикл');
+    expect(row['status'], 'packed',
+        reason: 'правка не откатывает жизненный цикл');
     expect(row['parent_type'], isNull, reason: 'свободная не перепривязана');
     expect(row['mass'], 2.5, reason: 'запятая как десятичный разделитель');
     expect((row['version'] as int) > 3, isTrue);

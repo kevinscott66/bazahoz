@@ -114,12 +114,10 @@ void main() {
     expect(resA1.pushedChanges, 1);
 
     // Подтверждения на A: change_log помечен, сущность confirmed.
-    final logA = await a.db.db
-        .query('change_log', where: 'synced = 0');
+    final logA = await a.db.db.query('change_log', where: 'synced = 0');
     expect(logA, isEmpty, reason: 'на A остались неотправленные мутации');
-    final rowA = (await a.db.db
-            .query('samples', where: "id = 'sample-1'"))
-        .single;
+    final rowA =
+        (await a.db.db.query('samples', where: "id = 'sample-1'")).single;
     expect(rowA['sync_status'], 'confirmed');
 
     // --- B принимает -------------------------------------------------------------
@@ -128,9 +126,8 @@ void main() {
     expect(resB1.pulledApplied, 1);
     expect(resB1.conflicts, 0);
 
-    final rowB = (await b.db.db
-            .query('samples', where: "id = 'sample-1'"))
-        .single;
+    final rowB =
+        (await b.db.db.query('samples', where: "id = 'sample-1'")).single;
     expect(rowB['note'], 'первичное описание');
     expect(rowB['sync_status'], 'confirmed',
         reason: 'принятая с relay запись не «своя неотправленная»');
@@ -154,13 +151,12 @@ void main() {
     final resA2 = await a.engine.run();
     expect(resA2.completed, isTrue, reason: 'сеанс A2: ${resA2.error}');
     expect(resA2.pulledApplied, 1);
-    expect(resA2.conflicts, 0, reason: 'на A не было pending-правок — LWW без конфликта');
+    expect(resA2.conflicts, 0,
+        reason: 'на A не было pending-правок — LWW без конфликта');
 
-    final rowA2 = (await a.db.db
-            .query('samples', where: "id = 'sample-1'"))
-        .single;
-    expect(rowA2['note'], 'уточнено на B',
-        reason: 'правка B не доехала до A');
+    final rowA2 =
+        (await a.db.db.query('samples', where: "id = 'sample-1'")).single;
+    expect(rowA2['note'], 'уточнено на B', reason: 'правка B не доехала до A');
     // Старая версия A — в истории, не стёрта (§5.3).
     final histA = await a.db.db.query('record_history',
         where: "entity_table = 'samples' AND entity_id = 'sample-1'");

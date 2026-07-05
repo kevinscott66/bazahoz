@@ -22,7 +22,8 @@ void main() {
     expect(find.text('Не отправлено'), findsOneWidget);
   });
 
-  testWidgets('FAB открывает форму точки с автономером; возврат обновляет журнал',
+  testWidgets(
+      'FAB открывает форму точки с автономером; возврат обновляет журнал',
       (tester) async {
     tallPhone(tester);
     final h = await TestHarness.create();
@@ -45,8 +46,8 @@ void main() {
     // Назад — журнал перезагрузился и показывает точку.
     await tester.tap(find.text('Готово'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('1 точек · 0 проб · 1 черновиков'),
-        findsOneWidget);
+    expect(
+        find.textContaining('1 точка · 0 проб · 1 черновик'), findsOneWidget);
     expect(find.text('Точка Т-001'), findsOneWidget);
   });
 

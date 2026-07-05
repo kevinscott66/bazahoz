@@ -1,11 +1,9 @@
-import 'dart:convert';
-
 import 'package:sqflite/sqflite.dart';
-import 'package:uuid/uuid.dart';
 
 import '../models/observation_point.dart';
 import '../models/sample.dart';
 import '../sync/hlc.dart';
+import '../util/format.dart';
 import 'change_payload.dart';
 
 /// Доступ к точкам наблюдения и структурным замерам. Тот же инвариант, что и
@@ -19,7 +17,6 @@ class PointRepository {
   final String deviceId;
   final String authorId;
   final HlcClock clock;
-  final Uuid _uuid = const Uuid();
 
   /// Доступ к базе для экранов, работающих поверх нескольких таблиц
   /// (синхронизация, диагностика).
@@ -41,15 +38,14 @@ class PointRepository {
     await _db.transaction((txn) async {
       if (isNew) {
         await txn.insert('observation_points', map);
-        await _log(txn, 'observation_points', point.id, 'insert',
-            insertPayload(map));
+        await _log(
+            txn, 'observation_points', point.id, 'insert', insertPayload(map));
       } else {
         // Дельта до update, в той же транзакции (payload update = только
         // изменённые поля, sync-protocol.md §1).
         final old = await txn.query('observation_points',
             where: 'id = ?', whereArgs: [point.id], limit: 1);
-        final delta =
-            old.isEmpty ? map : changedFields(old.first, map);
+        final delta = old.isEmpty ? map : changedFields(old.first, map);
         await txn.update('observation_points', map,
             where: 'id = ?', whereArgs: [point.id]);
         await _log(txn, 'observation_points', point.id, 'update', delta);
@@ -64,7 +60,7 @@ class PointRepository {
         {
           'deleted': 1,
           'version': point.version + 1,
-          'modified_at': DateTime.now().toUtc().toIso8601String(),
+          'modified_at': nowIso(),
           'sync_status': SyncStatus.pending.db,
         },
         where: 'id = ?',
@@ -98,8 +94,8 @@ class PointRepository {
       await txn.insert('structural_measurements', map);
       // insertPayload — как у точек/проб: если модель замера обзаведётся
       // локальными мета-полями, они не утекут на провод.
-      await _log(txn, 'structural_measurements', m.id, 'insert',
-          insertPayload(map));
+      await _log(
+          txn, 'structural_measurements', m.id, 'insert', insertPayload(map));
     });
   }
 
@@ -140,20 +136,13 @@ class PointRepository {
   }
 
   Future<void> _log(DatabaseExecutor txn, String table, String entityId,
-      String op, Map<String, Object?> payload) async {
-    // HLC-метка и часы последнего писателя строки — в той же транзакции,
-    // что и мутация (протокол §4): падение не рассинхронизирует их.
-    final ts = (await clock.tick(txn)).encode();
-    await upsertRowClock(txn, table, entityId, ts);
-    await txn.insert('change_log', {
-      'change_id': _uuid.v4(),
-      'entity_table': table,
-      'entity_id': entityId,
-      'op': op,
-      'payload': jsonEncode(payload),
-      'author_id': authorId,
-      'device_id': deviceId,
-      'logical_ts': ts,
-    });
-  }
+          String op, Map<String, Object?> payload) =>
+      logChange(txn,
+          clock: clock,
+          table: table,
+          entityId: entityId,
+          op: op,
+          payload: payload,
+          authorId: authorId,
+          deviceId: deviceId);
 }

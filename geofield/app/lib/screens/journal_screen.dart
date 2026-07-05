@@ -14,6 +14,7 @@ import '../sync/hlc.dart';
 import '../theme/sample_type.dart';
 import '../theme/tokens.dart';
 import '../util/csv_export.dart';
+import '../util/format.dart';
 import 'point_form_screen.dart';
 import 'sample_capture_screen.dart';
 import 'lab_screen.dart';
@@ -100,10 +101,9 @@ class _JournalScreenState extends State<JournalScreen> {
     final points = _points.where(_pointVisible).toList();
     final samples = _samples.where(_sampleVisible).toList();
     final drafts = _points.where((p) => p.isDraft).length;
-    final unsent = _points
-            .where((p) => p.syncStatus != SyncStatus.confirmed)
-            .length +
-        _samples.where((s) => s.syncStatus != SyncStatus.confirmed).length;
+    final unsent =
+        _points.where((p) => p.syncStatus != SyncStatus.confirmed).length +
+            _samples.where((s) => s.syncStatus != SyncStatus.confirmed).length;
 
     return Scaffold(
       appBar: AppBar(
@@ -157,8 +157,10 @@ class _JournalScreenState extends State<JournalScreen> {
                     child: Align(
                       alignment: Alignment.centerLeft,
                       child: Text(
-                        '${_points.length} точек · ${_samples.length} проб · '
-                        '$drafts черновиков · $unsent не отправлено',
+                        '${plural(_points.length, 'точка', 'точки', 'точек')} · '
+                        '${plural(_samples.length, 'проба', 'пробы', 'проб')} · '
+                        '${plural(drafts, 'черновик', 'черновика', 'черновиков')} · '
+                        '$unsent не отправлено',
                         style: GfText.hint,
                       ),
                     ),
@@ -182,8 +184,8 @@ class _JournalScreenState extends State<JournalScreen> {
                         // видимые карточки, многодневный журнал не жрёт память
                         // и кадры на открытии.
                         : ListView.builder(
-                            padding: const EdgeInsets.fromLTRB(GfSpace.x16, 0,
-                                GfSpace.x16, GfSpace.x24 * 3),
+                            padding: const EdgeInsets.fromLTRB(
+                                GfSpace.x16, 0, GfSpace.x16, GfSpace.x24 * 3),
                             itemCount: points.length + samples.length,
                             itemBuilder: (_, i) => i < points.length
                                 ? _pointCard(points[i])
@@ -201,8 +203,7 @@ class _JournalScreenState extends State<JournalScreen> {
           foregroundColor: GfColors.onAccent,
           shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(GfRadius.r16)),
-          label: const Text('+ Точка',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          label: const Text('+ Точка', style: GfText.button),
         ),
       ),
     );
@@ -214,13 +215,10 @@ class _JournalScreenState extends State<JournalScreen> {
       label: Text(label),
       selected: selected,
       onSelected: (_) => setState(() => _filter = f),
-      selectedColor: GfColors.accent.withValues(alpha: 0.25),
+      selectedColor: gfChipSelectedColor(),
       backgroundColor: GfColors.surface,
-      side: BorderSide(
-          color: selected ? GfColors.accent : GfColors.outline),
-      labelStyle: GfText.body.copyWith(
-          fontSize: 14,
-          color: selected ? GfColors.textPrimary : GfColors.textSecondary),
+      side: gfChipSide(selected),
+      labelStyle: gfChipLabel(selected),
     );
   }
 
@@ -232,12 +230,8 @@ class _JournalScreenState extends State<JournalScreen> {
         onTap: () => _openPoint(pt),
         child: Container(
           padding: const EdgeInsets.all(GfSpace.x12),
-          decoration: BoxDecoration(
-            color: GfColors.surface,
-            borderRadius: BorderRadius.circular(GfRadius.r12),
-            border: Border.all(
-                color: pt.isDraft ? const Color(0xFFE0C766) : GfColors.outline),
-          ),
+          decoration: gfCard(
+              borderColor: pt.isDraft ? GfColors.draft : GfColors.outline),
           child: Row(children: [
             const Icon(Icons.place_outlined,
                 size: 22, color: GfColors.textSecondary),
@@ -247,8 +241,7 @@ class _JournalScreenState extends State<JournalScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('Точка ${pt.number}',
-                      style: GfText.body
-                          .copyWith(fontWeight: FontWeight.w600)),
+                      style: GfText.body.copyWith(fontWeight: FontWeight.w600)),
                   Text(
                     pt.isDraft
                         ? 'черновик'
@@ -276,26 +269,19 @@ class _JournalScreenState extends State<JournalScreen> {
         onTap: () => _openSample(s),
         child: Container(
           padding: const EdgeInsets.all(GfSpace.x12),
-          decoration: BoxDecoration(
-            color: GfColors.surface,
-            borderRadius: BorderRadius.circular(GfRadius.r12),
-            border: Border.all(color: GfColors.outline),
-          ),
+          decoration: gfCard(),
           child: Row(children: [
             Container(
               width: 14,
               height: 14,
-              decoration:
-                  BoxDecoration(color: t.color, shape: BoxShape.circle),
+              decoration: BoxDecoration(color: t.color, shape: BoxShape.circle),
             ),
             const SizedBox(width: GfSpace.x12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(s.sampleNumber,
-                      style:
-                          GfText.number.copyWith(fontSize: 16)),
+                  Text(s.sampleNumber, style: GfText.numberSmall),
                   Text('${t.label} · ${s.status.label}', style: GfText.hint),
                 ],
               ),
@@ -310,9 +296,9 @@ class _JournalScreenState extends State<JournalScreen> {
   Widget _syncDot(SyncStatus s) {
     final color = switch (s) {
       SyncStatus.pending => GfColors.textFaint,
-      SyncStatus.queued => const Color(0xFFE0C766),
-      SyncStatus.sent => const Color(0xFF6E8CA0),
-      SyncStatus.confirmed => const Color(0xFF4FB286),
+      SyncStatus.queued => GfColors.syncQueued,
+      SyncStatus.sent => GfColors.syncSent,
+      SyncStatus.confirmed => GfColors.syncConfirmed,
     };
     return Tooltip(
       message: s.label,
@@ -329,7 +315,7 @@ class _JournalScreenState extends State<JournalScreen> {
   Future<void> _onAddPoint() async {
     final seq = await widget.points.nextSeq(widget.routeId);
     if (!mounted) return;
-    await Navigator.of(context).push(MaterialPageRoute<String>(
+    await Navigator.of(context).push(MaterialPageRoute<void>(
       builder: (_) => PointFormScreen(
         points: widget.points,
         samples: widget.samples,
@@ -345,7 +331,7 @@ class _JournalScreenState extends State<JournalScreen> {
   }
 
   Future<void> _openPoint(ObservationPoint pt) async {
-    await Navigator.of(context).push(MaterialPageRoute<String>(
+    await Navigator.of(context).push(MaterialPageRoute<void>(
       builder: (_) => PointFormScreen(
         points: widget.points,
         samples: widget.samples,
@@ -368,7 +354,7 @@ class _JournalScreenState extends State<JournalScreen> {
       if (pt != null) label = 'Точка № ${pt.number}';
     }
     if (!mounted) return;
-    await Navigator.of(context).push(MaterialPageRoute<String>(
+    await Navigator.of(context).push(MaterialPageRoute<void>(
       builder: (_) => SampleCaptureScreen(
         repository: widget.samples,
         projectId: widget.projectId,
@@ -402,9 +388,8 @@ class _JournalScreenState extends State<JournalScreen> {
           await widget.points.measurementsForRoute(widget.routeId);
       final pointById = {for (final pt in _points) pt.id: pt};
 
-      String mineralsText(String? json) => decodeMineralCodes(json)
-          .map((c) => mineralLabels[c] ?? c)
-          .join(', ');
+      String mineralsText(String? json) =>
+          decodeMineralCodes(json).map((c) => mineralLabels[c] ?? c).join(', ');
 
       final pointsCsv = toCsv(pointCsvHeader, [
         for (final pt in _points)
@@ -472,20 +457,16 @@ class _JournalScreenState extends State<JournalScreen> {
       Directory(dir).createSync(recursive: true);
       final pFile = File(p.join(dir, 'geofield_points.csv'))
         ..writeAsStringSync(pointsCsv);
-      File(p.join(dir, 'geofield_samples.csv'))
-          .writeAsStringSync(samplesCsv);
+      File(p.join(dir, 'geofield_samples.csv')).writeAsStringSync(samplesCsv);
       File(p.join(dir, 'geofield_structures.csv'))
           .writeAsStringSync(structuresCsv);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(
-            'Выгружено 3 файла в ${p.dirname(pFile.path)}: точки, пробы, замеры'),
-        duration: const Duration(seconds: 6),
-      ));
+      context.snack(
+          'Выгружено 3 файла в ${p.dirname(pFile.path)}: точки, пробы, замеры',
+          duration: const Duration(seconds: 6));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Выгрузка не удалась — проверьте память устройства')));
+      context.snack('Выгрузка не удалась — проверьте память устройства');
     }
   }
 }
