@@ -112,7 +112,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
     if (widget.binding.depthTo != null) {
       _toCtrl.text = _fmt(widget.binding.depthTo!);
     }
-    // Немедленно сохранить черновик — один тап «＋ Проба» уже создал запись.
+    // Немедленно сохранить черновик — один тап «+ Проба» уже создал запись.
     WidgetsBinding.instance.addPostFrameCallback((_) => _saveNow());
   }
 

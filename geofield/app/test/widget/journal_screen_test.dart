@@ -14,9 +14,9 @@ void main() {
     await tester.pumpWidget(h.journal());
     await tester.pumpAndSettle();
 
-    expect(find.text('Пока пусто — начните с «＋ Точка»'), findsOneWidget);
+    expect(find.text('Пока пусто — начните с «+ Точка»'), findsOneWidget);
     expect(find.textContaining('0 точек · 0 проб'), findsOneWidget);
-    expect(find.text('＋ Точка'), findsOneWidget);
+    expect(find.text('+ Точка'), findsOneWidget);
     expect(find.text('Все'), findsOneWidget);
     expect(find.text('Черновики'), findsOneWidget);
     expect(find.text('Не отправлено'), findsOneWidget);
@@ -30,7 +30,7 @@ void main() {
     await tester.pumpWidget(h.journal());
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('＋ Точка'));
+    await tester.tap(find.text('+ Точка'));
     await tester.pumpAndSettle();
     expect(find.byType(PointFormScreen), findsOneWidget);
     expect(textFieldValued('Т-001'), findsOneWidget); // автономер
@@ -56,7 +56,7 @@ void main() {
     // Черновик руками в базе + подтверждённая точка.
     await tester.pumpWidget(h.journal());
     await tester.pumpAndSettle();
-    await tester.tap(find.text('＋ Точка'));
+    await tester.tap(find.text('+ Точка'));
     await tester.pumpAndSettle();
     await settleSave(tester);
     await tester.tap(find.text('Готово'));
@@ -64,7 +64,7 @@ void main() {
     // Пометить как подтверждённую (как после успешного синка).
     await h.db.update('observation_points', {'sync_status': 'confirmed'});
 
-    await tester.tap(find.text('＋ Точка'));
+    await tester.tap(find.text('+ Точка'));
     await tester.pumpAndSettle();
     await settleSave(tester);
     await tester.tap(find.text('Готово'));
@@ -88,7 +88,7 @@ void main() {
     addTearDown(h.close);
     await tester.pumpWidget(h.journal());
     await tester.pumpAndSettle();
-    await tester.tap(find.text('＋ Точка'));
+    await tester.tap(find.text('+ Точка'));
     await tester.pumpAndSettle();
     await tester.enterText(textFieldValued('Т-001'), 'Т-777');
     await settleSave(tester);

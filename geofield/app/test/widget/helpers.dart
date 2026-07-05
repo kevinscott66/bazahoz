@@ -52,6 +52,7 @@ class TestHarness {
   }
 
   Widget journal() => MaterialApp(
+        debugShowCheckedModeBanner: false,
         theme: buildGeoFieldTheme(),
         home: JournalScreen(
           points: points,
@@ -67,8 +68,10 @@ class TestHarness {
         ),
       );
 
-  Widget wrap(Widget screen) =>
-      MaterialApp(theme: buildGeoFieldTheme(), home: screen);
+  Widget wrap(Widget screen) => MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: buildGeoFieldTheme(),
+      home: screen);
 
   Future<void> close() => db.close();
 }

@@ -132,8 +132,8 @@ void main() {
       'структурный замер: диапазоны валидируются, тип обязателен и сохраняется',
       (tester) async {
     final h = await pumpPoint(tester);
-    await tester.ensureVisible(find.text('＋ Замер'));
-    await tester.tap(find.text('＋ Замер'));
+    await tester.ensureVisible(find.text('+ Замер'));
+    await tester.tap(find.text('+ Замер'));
     await tester.pumpAndSettle();
     // Тип по умолчанию «Слоистость» — меняем на «Жила».
     await tester.tap(find.text('Слоистость'));
@@ -150,7 +150,7 @@ void main() {
     expect(await h.db.query('structural_measurements'), isEmpty);
 
     // Валидные значения проходят и попадают в список и в базу.
-    await tester.tap(find.text('＋ Замер'));
+    await tester.tap(find.text('+ Замер'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Слоистость'));
     await tester.pumpAndSettle();
@@ -184,11 +184,11 @@ void main() {
     expect(find.textContaining('Датчики не подключены'), findsOneWidget);
   });
 
-  testWidgets('«＋ Проба» открывает экран пробы с привязкой и автономером',
+  testWidgets('«+ Проба» открывает экран пробы с привязкой и автономером',
       (tester) async {
     await pumpPoint(tester);
-    await tester.ensureVisible(find.text('＋ Проба'));
-    await tester.tap(find.text('＋ Проба'));
+    await tester.ensureVisible(find.text('+ Проба'));
+    await tester.tap(find.text('+ Проба'));
     await tester.pumpAndSettle();
     expect(find.byType(SampleCaptureScreen), findsOneWidget);
     expect(find.text('Привязано к: Точка № Т-001'), findsOneWidget);

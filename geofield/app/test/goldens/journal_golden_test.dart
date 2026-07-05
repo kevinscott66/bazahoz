@@ -15,17 +15,17 @@ import '../widget/helpers.dart';
 void main() {
   final enabled = Platform.environment.containsKey('GOLDEN');
 
-  /// Реальные шрифты вместо тестовых квадратов Ahem.
-  Future<void> loadFonts() async {
-    final sdkFonts = () {
-      final flutterBin = Platform.environment['PATH']!
-          .split(':')
-          .firstWhere((p) => p.contains('flutter/bin'));
-      return '$flutterBin/cache/artifacts/material_fonts';
-    }();
-    Future<ByteData> read(String file) async {
-      final bytes = await File('$sdkFonts/$file').readAsBytes();
-      return ByteData.view(bytes.buffer);
+  // Шрифты грузятся в setUpAll — ВНЕ FakeAsync-зоны testWidgets (async
+  // file-I/O внутри неё зависает), и чтение синхронное по той же причине.
+  setUpAll(() async {
+    if (!enabled) return;
+    final flutterBin = Platform.environment['PATH']!
+        .split(':')
+        .firstWhere((p) => p.contains('flutter/bin'));
+    final sdkFonts = '$flutterBin/cache/artifacts/material_fonts';
+    Future<ByteData> read(String file) {
+      final bytes = File('$sdkFonts/$file').readAsBytesSync();
+      return Future.value(ByteData.view(bytes.buffer));
     }
 
     // Дефолтная гарнитура текста.
@@ -40,10 +40,9 @@ void main() {
     final icons = FontLoader('MaterialIcons')
       ..addFont(read('MaterialIcons-Regular.otf'));
     await icons.load();
-  }
+  });
 
   testWidgets('журнал: наполненный экран → PNG', (tester) async {
-    await loadFonts();
     // Телефонный вьюпорт (логика ~390x844 @3x).
     tester.view.physicalSize = const Size(1170, 2532);
     tester.view.devicePixelRatio = 3.0;

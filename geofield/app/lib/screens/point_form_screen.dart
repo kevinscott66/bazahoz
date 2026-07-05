@@ -117,7 +117,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
 
   Future<void> _loadRefs({String? rockCode, String? alterationCode}) async {
     // Запросы независимы — параллельно, а не 6 последовательных round-trip
-    // на каждый тап «＋ Точка» (perf-audit: отзывчивость главного жеста).
+    // на каждый тап «+ Точка» (perf-audit: отзывчивость главного жеста).
     final d = widget.dictionaries;
     final results = await Future.wait<Object?>([
       d.list(widget.projectId, 'object_type'),
@@ -552,7 +552,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
           ),
         Row(children: [
           Expanded(
-              child: _outlined('＋ Замер', Icons.add, _onAddMeasurement)),
+              child: _outlined('+ Замер', Icons.add, _onAddMeasurement)),
           const SizedBox(width: GfSpace.x12),
           Expanded(
               child: _outlined('С датчика', Icons.explore, _onSensor)),
@@ -582,7 +582,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
               Text(SampleType.fromCode(s.sampleType).label, style: GfText.hint),
             ]),
           ),
-        _outlined('＋ Проба', Icons.add, _onAddSample),
+        _outlined('+ Проба', Icons.add, _onAddSample),
       ],
     );
   }

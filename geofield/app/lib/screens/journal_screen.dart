@@ -23,7 +23,7 @@ import 'sync_screen.dart';
 enum _Filter { all, drafts, unsent }
 
 /// Журнал маршрута — что собрано за день (ТЗ §6.7): карточки точек и проб со
-/// статусами, фильтры, сводка, «＋ Точка», выгрузка CSV.
+/// статусами, фильтры, сводка, «+ Точка», выгрузка CSV.
 class JournalScreen extends StatefulWidget {
   const JournalScreen({
     super.key,
@@ -176,7 +176,7 @@ class _JournalScreenState extends State<JournalScreen> {
                   Expanded(
                     child: (points.isEmpty && samples.isEmpty)
                         ? const Center(
-                            child: Text('Пока пусто — начните с «＋ Точка»',
+                            child: Text('Пока пусто — начните с «+ Точка»',
                                 style: GfText.hint))
                         // .builder — виртуализация (ТЗ §10.5): строятся только
                         // видимые карточки, многодневный журнал не жрёт память
@@ -201,7 +201,7 @@ class _JournalScreenState extends State<JournalScreen> {
           foregroundColor: GfColors.onAccent,
           shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(GfRadius.r16)),
-          label: const Text('＋ Точка',
+          label: const Text('+ Точка',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
         ),
       ),
