@@ -1,6 +1,7 @@
 import 'dart:io' show Platform;
 
 import 'package:path/path.dart' as p;
+import 'package:sqflite/sqflite.dart' show databaseFactorySqflitePlugin;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 /// Открытие локальной базы. Подмножество миграции
@@ -20,6 +21,11 @@ class AppDatabase {
     if (_isDesktop) {
       sqfliteFfiInit();
       databaseFactory = databaseFactoryFfi;
+    } else {
+      // iOS/Android: фабрика плагина sqflite ЯВНО. Глобальный databaseFactory
+      // (sqflite_common) сам по себе не инициализирован — без присвоения
+      // первый openDatabase на устройстве падает StateError.
+      databaseFactory = databaseFactorySqflitePlugin;
     }
     final dbPath =
         path ?? p.join(await databaseFactory.getDatabasesPath(), 'geofield.db');
