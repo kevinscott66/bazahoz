@@ -179,7 +179,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:40px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v131 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v132 · БЕТА</div>
   </div>
 </div>
 
@@ -2898,7 +2898,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v131 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v132 · тестовый канал</div>
   `;
 }
 
@@ -4137,7 +4137,13 @@ async function cloudInit(){
       cloud.session = s;   // cloudDoRefresh берёт refresh-токен из cloud.session и идёт под single-flight (без двойной ротации цепочки)
       try{
         if(await cloudDoRefresh()) s = loadCloudSess();   // внутри свой 15с-таймаут; единый путь ротации
-      }catch(e){ if(cloudOnline()){ s = null; if(e && e.permanent) clearCloudSess(); } }   // онлайн+постоянный сбой (удалён/отозван) → стираем мёртвую сессию, покажем вход; оффлайн → храним, подтянем при сети
+      }catch(e){
+        // Экран входа — ТОЛЬКО при ПОСТОЯННОМ отказе (токен отозван/аккаунт удалён/пароль сменили).
+        // Временный сбой (холодный старт дольше 15с, моргнувшая сеть) сессию НЕ стирает: входим со
+        // старым токеном — реактивный 401-рефреш в cloudRest продлит позже. Иначе после одной
+        // авторизации людям снова выскакивал логин/пароль без их выхода.
+        if(e && e.permanent && cloudOnline()){ s = null; clearCloudSess(); }
+      }
     }
     if(s && s.access_token && s.user && s.user.id){
       hideLoginGate();
