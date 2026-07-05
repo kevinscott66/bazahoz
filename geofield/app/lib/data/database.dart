@@ -36,12 +36,14 @@ class AppDatabase {
         version: 1,
         onConfigure: (d) async {
           await d.execute('PRAGMA foreign_keys = ON');
-          // journal_mode ВОЗВРАЩАЕТ строку («wal») — на iOS/Android execute()
-          // таких утверждений не принимает и роняет openDatabase (на десктопном
-          // FFI работало, поэтому в тестах не всплывало). Только rawQuery.
+          // journal_mode и busy_timeout ВОЗВРАЩАЮТ строку результата («wal»,
+          // новый таймаут) — на iOS/Android execute() таких утверждений не
+          // принимает и роняет openDatabase (на десктопном FFI работало,
+          // поэтому в тестах не всплывало; подтверждено фото _BootError с
+          // устройства). Прагмы с результатом — только через rawQuery.
           await d.rawQuery('PRAGMA journal_mode = WAL');
           await d.execute('PRAGMA synchronous = NORMAL');
-          await d.execute('PRAGMA busy_timeout = 5000');
+          await d.rawQuery('PRAGMA busy_timeout = 5000');
         },
         onCreate: (d, _) => migrate001(d),
       ),
