@@ -12,10 +12,72 @@ import 'theme/tokens.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final app = await AppDatabase.open();
-  await seedDemo(app.db);
-  final clock = await HlcClock.load(app.db, demoDeviceId);
-  runApp(GeoFieldApp(database: app, clock: clock));
+  // Первый кадр — сразу, до открытия базы: иначе сбой/задержка инициализации
+  // выглядит как вечный белый экран без единого слова (ТЗ §0 — ошибки видимы).
+  runApp(const _Booting());
+  try {
+    final app = await AppDatabase.open();
+    await seedDemo(app.db);
+    final clock = await HlcClock.load(app.db, demoDeviceId);
+    runApp(GeoFieldApp(database: app, clock: clock));
+  } catch (e, st) {
+    runApp(_BootError(error: e, stack: st));
+  }
+}
+
+/// Кадр запуска, пока открывается база (доли секунды).
+class _Booting extends StatelessWidget {
+  const _Booting();
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: buildGeoFieldTheme(),
+      home: const Scaffold(
+        body: Center(child: CircularProgressIndicator(color: GfColors.accent)),
+      ),
+    );
+  }
+}
+
+/// Хранилище не поднялось — честная диагностика на экране вместо белого
+/// экрана: в поле нет консоли, текст ошибки — единственный след.
+class _BootError extends StatelessWidget {
+  const _BootError({required this.error, required this.stack});
+
+  final Object error;
+  final StackTrace stack;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: buildGeoFieldTheme(),
+      home: Scaffold(
+        body: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.all(GfSpace.x24),
+            children: [
+              const Icon(Icons.error_outline, size: 48, color: GfColors.error),
+              const SizedBox(height: GfSpace.x16),
+              const Text('Хранилище не открылось', style: GfText.screenTitle),
+              const SizedBox(height: GfSpace.x8),
+              const Text(
+                'Данные не тронуты. Сфотографируйте этот экран и передайте '
+                'разработчику.',
+                style: GfText.body,
+              ),
+              const SizedBox(height: GfSpace.x16),
+              Text('$error', style: GfText.hint),
+              const SizedBox(height: GfSpace.x8),
+              Text('$stack', style: GfText.hint),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class GeoFieldApp extends StatelessWidget {
