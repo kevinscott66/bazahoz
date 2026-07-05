@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v137 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v138 · БЕТА</div>
   </div>
 </div>
 
@@ -2844,6 +2844,12 @@ function renderMore(){
       <div class="text-xs opacity-70 mt-2">Добавляйте работников, выдавайте логин и роль, оформляйте пересменку. Раздел виден только тем, кто управляет базой.</div>
     </div>`:""}
 
+    ${canManageOrgRoles()?`<div class="card">
+      <div class="font-bold mb-2">🗺 Роли по регионам</div>
+      <button class="btn btn-ghost w-full" onclick="openOrgRolesSheet()">Начальники партий, директора, бухгалтерия</button>
+      <div class="text-xs opacity-70 mt-2">Назначайте начальника партии на регион, директоров и бухгалтерию — на все базы. Только роли ниже вашей.</div>
+    </div>`:""}
+
     ${canEditStock()?`<div class="card">
       <div class="font-bold mb-2">📍 Места и категории</div>
       <div class="grid grid-cols-2 gap-2">
@@ -2905,7 +2911,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v137 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v138 · тестовый канал</div>
   `;
 }
 
@@ -3852,6 +3858,18 @@ function assignableRoles(keepRole){
   const mine = myRank();
   return MEMBER_ROLES.filter(r => r.rank < mine || r.key === keepRole);
 }
+// территориальные/глобальные роли (живут в org_roles). scope: 'party' → нужна партия; 'global' → все базы.
+const ORG_ROLES = [
+  { key:"party_chief",      label:"Начальник партии", rank:3, scope:"party"  },
+  { key:"director",         label:"Директор",          rank:4, scope:"global" },
+  { key:"general_director", label:"Ген. директор",     rank:5, scope:"global" },
+  { key:"accounting",       label:"Бухгалтерия",       rank:1, scope:"global" },
+];
+// глобальный управляющий (может назначать директоров/бухгалтерию/нач.партий): владелец или директор+.
+function isGlobalManager(){ return !!(cloud.profile && cloud.profile.is_admin) || (cloud.orgRoles||[]).some(o=>o.active!==false && (o.role==="director"||o.role==="general_director") && o.can_manage); }
+function assignableOrgRoles(){ const mine=myRank(); return ORG_ROLES.filter(r=>r.rank<mine); }
+// раздел «Роли по регионам» доступен тем, кто может выдать хотя бы одну орг-роль (строго ниже своего ранга).
+function canManageOrgRoles(){ return isGlobalManager() && assignableOrgRoles().length>0; }
 function canManageBase(){
   const cid=activeCloudId(); if(!cid) return false;
   if(cloud.profile && cloud.profile.is_admin) return true;
@@ -4098,6 +4116,89 @@ function openResetPwd(uid){
     try{ await cloudCallFn("reset_password", { base_id:activeCloudId(), user_id:uid, password:pwd }); toast("Пароль изменён"); await openMembersSheet(); }
     catch(e){ toast("Не удалось. "+(e.message||"Проверьте интернет и повторите")); if(document.getElementById("rpGo")){ btn.disabled=false; btn.textContent="Сменить"; } }
   };
+}
+
+/* ===== Территориальные/глобальные роли (нач. партии по региону, директор/бухгалтерия глобально) ===== */
+const orgRoleLabel = (k)=> (ORG_ROLES.find(r=>r.key===k)||{}).label || ROLE_LABELS[k] || k;
+let _orgCache = { members:[], parties:[] };
+async function openOrgRolesSheet(){
+  openSheet(`<div class="font-bold text-xl mb-3">🗺 Роли по регионам</div><div class="opacity-70 text-sm">Загрузка…</div>`);
+  try{
+    const d = await cloudCallFn("list_org_members", {});
+    _orgCache = { members: d.members||[], parties: d.parties||[] };
+  }catch(e){ openSheet(`<div class="font-bold text-xl mb-3">🗺 Роли по регионам</div><div class="err-text text-sm">Не удалось загрузить: ${esc(e.message||"нет связи")}</div><button class="btn btn-ghost w-full mt-3" data-close>Закрыть</button>`); return; }
+  const mine = myRank();
+  const rows = _orgCache.members.slice().sort((a,b)=> (rankOf(b.role)-rankOf(a.role)) || String(a.username).localeCompare(b.username));
+  const list = rows.length ? rows.map(m=>{
+    const can = rankOf(m.role) < mine;   // снять можно только роль строго ниже своей
+    const where = m.party_name ? ` · ${esc(m.party_name)}` : " · глобально";
+    return `<div class="card flex items-center justify-between gap-2">
+      <div class="min-w-0"><div class="font-semibold truncate">${esc(m.username)}</div>
+        <div class="text-xs opacity-70 truncate">${esc(orgRoleLabel(m.role))}${where}${m.active===false?" · выкл":""}</div></div>
+      ${can?`<button class="btn btn-ghost px-2" onclick="orgRoleRemove('${m.user_id}','${m.role}',${m.party_id?`'${m.party_id}'`:"null"})">Снять</button>`:""}
+    </div>`;
+  }).join("") : `<div class="opacity-70 text-sm">Пока никого нет.</div>`;
+  openSheet(`<div class="font-bold text-xl mb-3">🗺 Роли по регионам</div>
+    <div class="space-y-2 max-h-80 overflow-y-auto pr-1">${list}</div>
+    <button class="btn btn-primary w-full mt-3" onclick="openAddOrgMember()">＋ Назначить роль (новый аккаунт)</button>
+    <div class="text-xs opacity-60 mt-2">Начальник партии — на выбранный регион; директор, ген. директор и бухгалтерия — на все базы. Назначать можно только роли ниже вашей.</div>
+    <button class="btn btn-ghost w-full mt-3" data-close>Закрыть</button>`);
+}
+function openAddOrgMember(){
+  const roles = assignableOrgRoles();
+  if(!roles.length){ toast("Нет ролей, которые вы можете назначить"); return; }
+  const parties = _orgCache.parties||[];
+  const roleOpts = roles.map(r=>`<option value="${r.key}">${esc(r.label)}</option>`).join("");
+  const partyOpts = parties.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  openSheet(`<div class="font-bold text-xl mb-3">＋ Назначить роль</div>
+    <div class="space-y-3">
+      <div><div class="text-sm opacity-70 mb-1">Логин (3–32: англ. буквы, цифры, _)</div>
+        <input class="input" id="omu" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="напр. petrov" /></div>
+      <div><div class="text-sm opacity-70 mb-1">Пароль (не короче 6 символов)</div>
+        <input class="input" id="omp" type="text" autocapitalize="none" autocorrect="off" placeholder="придумайте пароль" /></div>
+      <div><div class="text-sm opacity-70 mb-1">Роль</div>
+        <select class="input" id="omr" onchange="_omToggleParty()">${roleOpts}</select></div>
+      <div id="omPartyWrap"><div class="text-sm opacity-70 mb-1">Регион (партия)</div>
+        ${parties.length?`<select class="input" id="omParty">${partyOpts}</select>`:`<div class="err-text text-sm">Нет партий. Создайте регион (пока — через владельца).</div>`}</div>
+    </div>
+    <div class="flex gap-2 mt-3">
+      <button class="btn btn-ghost flex-1" data-close>Отмена</button>
+      <button class="btn btn-success flex-1" id="omGo">Создать</button>
+    </div>
+    <div class="text-xs opacity-60 mt-2">Логин будет: <span id="omHint">…${LOGIN_DOMAIN}</span>. Передайте работнику логин и пароль.</div>`);
+  const u=document.getElementById("omu");
+  u.addEventListener("input",()=>{ document.getElementById("omHint").textContent=((u.value.trim().toLowerCase())||"…")+LOGIN_DOMAIN; });
+  document.getElementById("omGo").onclick=()=>doAddOrgMember();
+  _omToggleParty();
+}
+function _omToggleParty(){
+  const sel=document.getElementById("omr"); if(!sel) return;
+  const r=ORG_ROLES.find(x=>x.key===sel.value);
+  const wrap=document.getElementById("omPartyWrap");
+  if(wrap) wrap.style.display = (r && r.scope==="party") ? "" : "none";
+}
+async function doAddOrgMember(){
+  const username=(document.getElementById("omu").value||"").trim().toLowerCase();
+  const password=document.getElementById("omp").value||"";
+  const role=document.getElementById("omr").value;
+  const r=ORG_ROLES.find(x=>x.key===role);
+  if(!r){ toast("Выберите роль"); return; }
+  if(!/^[a-z0-9_]{3,32}$/.test(username)){ toast("Логин: 3–32 символа — англ. буквы, цифры, _"); return; }
+  if(password.length<6){ toast("Пароль не короче 6 символов"); return; }
+  let party_id=null;
+  if(r.scope==="party"){ const ps=document.getElementById("omParty"); party_id=ps?ps.value:""; if(!party_id){ toast("Выберите регион"); return; } }
+  const btn=document.getElementById("omGo"); btn.disabled=true; btn.textContent="Создание…";
+  try{
+    const d=await cloudCallFn("create_org_member", { base_id:activeCloudId()||"00000000-0000-0000-0000-000000000000", username, password, role, party_id });
+    toast("Назначен: "+(d.username||username)); await openOrgRolesSheet();
+  }catch(e){ toast("Не удалось. "+(e.message||"Проверьте интернет и повторите")); if(document.getElementById("omGo")){ btn.disabled=false; btn.textContent="Создать"; } }
+}
+async function orgRoleRemove(uid, role, partyId){
+  if(!confirm("Снять роль "+orgRoleLabel(role)+"?")) return;
+  try{
+    await cloudCallFn("set_org_role", { base_id:activeCloudId()||"00000000-0000-0000-0000-000000000000", user_id:uid, role, party_id:partyId||null, remove:true });
+    toast("Роль снята"); await openOrgRolesSheet();
+  }catch(e){ toast("Не удалось. "+(e.message||"Проверьте интернет и повторите")); }
 }
 const cloudDirtyKey = (cid)=>`vahtahoz_dirty_${cid}`;
 // удалить все sync-маркеры базы (dirty + снимки подписей) — при удалении/замене базы, чтобы не копить мусор
