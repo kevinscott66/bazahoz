@@ -15,6 +15,7 @@ void main() {
     addTearDown(h.close);
     await tester.pumpWidget(h.wrap(SampleCaptureScreen(
       repository: h.samples,
+      photos: h.photos,
       projectId: demoProjectId,
       authorId: demoAuthorId,
       initialNumber: existing?.sampleNumber ?? 'SUZ-00001',

@@ -100,6 +100,8 @@ const _applyTables = {
   'samples',
   'sample_results',
   'dictionaries',
+  // Метаданные фото; файлы по спутнику не идут (defer_until_office, ТЗ §6.6).
+  'photos',
 };
 
 /// Движок дельта-синхронизации (sync-protocol.md §3, §5).

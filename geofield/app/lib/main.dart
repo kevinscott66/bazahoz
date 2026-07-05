@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'data/database.dart';
 import 'data/demo_seed.dart';
 import 'data/dictionary_repository.dart';
+import 'data/photo_repository.dart';
 import 'data/point_repository.dart';
 import 'data/sample_repository.dart';
 import 'lab/lab_service.dart';
@@ -94,6 +95,8 @@ class GeoFieldApp extends StatelessWidget {
         deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
     final dictionaries = DictionaryRepository(database.db,
         deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
+    final photos = PhotoRepository(database.db,
+        deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
     final lab = LabService(database.db, samples,
         deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
 
@@ -105,6 +108,7 @@ class GeoFieldApp extends StatelessWidget {
         points: points,
         samples: samples,
         dictionaries: dictionaries,
+        photos: photos,
         projectId: demoProjectId,
         routeId: demoRouteId,
         authorId: demoAuthorId,

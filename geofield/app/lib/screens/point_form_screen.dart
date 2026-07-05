@@ -3,16 +3,19 @@ import 'package:uuid/uuid.dart';
 
 import '../config/features.dart';
 import '../data/dictionary_repository.dart';
+import '../data/photo_repository.dart';
 import '../data/point_repository.dart';
 import '../data/sample_repository.dart';
 import '../models/observation_point.dart';
 import '../models/sample.dart';
 import '../theme/tokens.dart';
 import '../util/format.dart';
+import '../util/gps.dart';
 import '../util/sample_number.dart';
 import '../util/save_queue.dart';
 import '../widgets/confirm_dialog.dart';
 import '../widgets/field_picker.dart';
+import '../widgets/photo_strip.dart';
 import '../widgets/sample_row.dart';
 import 'sample_capture_screen.dart';
 
@@ -26,24 +29,34 @@ class PointFormScreen extends StatefulWidget {
     required this.points,
     required this.samples,
     required this.dictionaries,
+    required this.photos,
     required this.projectId,
     required this.routeId,
     required this.authorId,
     required this.sampleNumbering,
     this.initialNumber,
     this.existing,
+    this.gps = acquireGpsFix,
+    this.photoPicker,
   }) : assert(existing != null || initialNumber != null,
             'нужен либо existing, либо initialNumber');
 
   final PointRepository points;
   final SampleRepository samples;
   final DictionaryRepository dictionaries;
+  final PhotoRepository photos;
   final String projectId;
   final String routeId;
   final String authorId;
   final String sampleNumbering;
   final String? initialNumber;
   final ObservationPoint? existing;
+
+  /// Источник координат — подменяется в тестах (без платформенных каналов).
+  final GpsProvider gps;
+
+  /// Источник снимков — подменяется в тестах; null — камера/галерея.
+  final PhotoPicker? photoPicker;
 
   @override
   State<PointFormScreen> createState() => _PointFormScreenState();
@@ -67,6 +80,9 @@ class _PointFormScreenState extends State<PointFormScreen> {
   final _noteCtrl = TextEditingController();
 
   String? _objectType;
+  String? _coordSource; // 'gps' | 'manual' — как сняты текущие координаты
+  double? _gpsAccuracy;
+  bool _gpsBusy = false;
   final Set<String> _selectedMinerals = {};
   List<DictEntry> _objectTypes = const [];
   List<DictEntry> _rocks = const [];
@@ -100,6 +116,8 @@ class _PointFormScreenState extends State<PointFormScreen> {
       if (ex.lat != null) _latCtrl.text = ex.lat.toString();
       if (ex.lon != null) _lonCtrl.text = ex.lon.toString();
       if (ex.elevation != null) _elevCtrl.text = ex.elevation.toString();
+      _coordSource = ex.coordSource;
+      _gpsAccuracy = ex.gpsAccuracyM;
       _objectType = ex.objectType;
       _colorCtrl.text = ex.colorCode ?? '';
       _grainCtrl.text = ex.grain ?? '';
@@ -261,7 +279,9 @@ class _PointFormScreenState extends State<PointFormScreen> {
         lat: lat,
         lon: lon,
         elevation: elev,
-        coordSource: lat == null ? null : 'manual',
+        coordSource: lat == null ? null : (_coordSource ?? 'manual'),
+        gpsAccuracyM:
+            lat == null || _coordSource != 'gps' ? null : _gpsAccuracy,
         observedAt: _observedAt,
         objectType: _objectType,
         rockCode: rockCode,
@@ -351,6 +371,18 @@ class _PointFormScreenState extends State<PointFormScreen> {
               const SizedBox(height: GfSpace.x24),
               _section('ПРОБЫ', _samplesBlock()),
               const SizedBox(height: GfSpace.x24),
+              _section(
+                'ФОТО',
+                PhotoStrip(
+                  photos: widget.photos,
+                  parentType: 'point',
+                  parentId: _id,
+                  ensureParent: () async =>
+                      (await _saveNow()) == SaveResult.saved,
+                  picker: widget.photoPicker,
+                ),
+              ),
+              const SizedBox(height: GfSpace.x24),
               _saveIndicator(),
               const SizedBox(height: GfSpace.x8),
               _deleteButton(),
@@ -389,18 +421,45 @@ class _PointFormScreenState extends State<PointFormScreen> {
         const Text('КООРДИНАТЫ (WGS-84)', style: GfText.sectionLabel),
         const SizedBox(height: GfSpace.x8),
         Row(children: [
-          Expanded(child: _numField(_latCtrl, 'Широта')),
+          Expanded(
+              child: _numField(_latCtrl, 'Широта', onEdited: _onCoordsEdited)),
           const SizedBox(width: GfSpace.x12),
-          Expanded(child: _numField(_lonCtrl, 'Долгота')),
+          Expanded(
+              child: _numField(_lonCtrl, 'Долгота', onEdited: _onCoordsEdited)),
         ]),
         const SizedBox(height: GfSpace.x12),
         Row(children: [
           Expanded(child: _numField(_elevCtrl, 'Высота, м')),
           const SizedBox(width: GfSpace.x12),
-          Expanded(child: _outlined('С приёмника', Icons.gps_fixed, _onGps)),
+          Expanded(
+            child: _outlined(
+              _gpsBusy ? 'Приём…' : 'С приёмника',
+              Icons.gps_fixed,
+              _onGps,
+            ),
+          ),
         ]),
+        if (_coordSource == 'gps') ...[
+          const SizedBox(height: GfSpace.x8),
+          Text(
+            _gpsAccuracy == null
+                ? 'Источник: GPS-приёмник'
+                : 'Источник: GPS-приёмник · точность ±${_gpsAccuracy!.toStringAsFixed(0)} м',
+            style: GfText.hint,
+          ),
+        ],
       ],
     );
+  }
+
+  /// Ручная правка широты/долготы: координата больше не «с приёмника».
+  void _onCoordsEdited() {
+    if (_coordSource != 'manual') {
+      setState(() {
+        _coordSource = 'manual';
+        _gpsAccuracy = null;
+      });
+    }
   }
 
   Widget _descriptionBlock() {
@@ -624,11 +683,32 @@ class _PointFormScreenState extends State<PointFormScreen> {
 
   // --- действия -----------------------------------------------------------------
 
-  void _onGps() {
-    // Флаг выключен: честное сообщение, ручной ввод — основной путь.
+  Future<void> _onGps() async {
     if (!AppFeatures.gpsCapture) {
       _snack('GPS-приёмник не подключён в этой сборке — введите вручную');
       return;
+    }
+    if (_gpsBusy) return;
+    setState(() => _gpsBusy = true);
+    try {
+      final fix = await widget.gps();
+      if (!mounted) return;
+      // 6 знаков ≈ 0.1 м — точнее любого полевого приёмника.
+      _latCtrl.text = fix.lat.toStringAsFixed(6);
+      _lonCtrl.text = fix.lon.toStringAsFixed(6);
+      if (fix.elevation != null) {
+        _elevCtrl.text = fix.elevation!.toStringAsFixed(0);
+      }
+      setState(() {
+        _coordSource = 'gps';
+        _gpsAccuracy = fix.accuracy;
+      });
+      _scheduleSave();
+    } on Exception catch (e) {
+      // GpsException несёт понятную причину (службы/разрешение/таймаут).
+      _snack('$e');
+    } finally {
+      if (mounted) setState(() => _gpsBusy = false);
     }
   }
 
@@ -698,6 +778,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
     await Navigator.of(context).push(MaterialPageRoute<String>(
       builder: (_) => SampleCaptureScreen(
         repository: widget.samples,
+        photos: widget.photos,
         projectId: widget.projectId,
         authorId: widget.authorId,
         initialNumber: number,
@@ -752,12 +833,17 @@ class _PointFormScreenState extends State<PointFormScreen> {
 
   // --- helpers ------------------------------------------------------------------
 
-  Widget _numField(TextEditingController c, String hint) => TextField(
+  Widget _numField(TextEditingController c, String hint,
+          {VoidCallback? onEdited}) =>
+      TextField(
         controller: c,
         style: GfText.number,
         keyboardType:
             const TextInputType.numberWithOptions(decimal: true, signed: true),
-        onChanged: (_) => _scheduleSave(),
+        onChanged: (_) {
+          onEdited?.call();
+          _scheduleSave();
+        },
         decoration: _dec(hint),
       );
 

@@ -107,6 +107,7 @@ void main() {
       points: h.points,
       samples: h.samples,
       dictionaries: h.dicts,
+      photos: h.photos,
       projectId: demoProjectId,
       routeId: demoRouteId,
       authorId: demoAuthorId,
@@ -124,6 +125,7 @@ void main() {
     addTearDown(h.close);
     await tester.pumpWidget(h.wrap(SampleCaptureScreen(
       repository: h.samples,
+      photos: h.photos,
       projectId: demoProjectId,
       authorId: demoAuthorId,
       initialNumber: 'SUZ-00034',
@@ -148,6 +150,7 @@ void main() {
     addTearDown(h.close);
     await tester.pumpWidget(h.wrap(SampleCaptureScreen(
       repository: h.samples,
+      photos: h.photos,
       projectId: demoProjectId,
       authorId: demoAuthorId,
       initialNumber: 'SUZ-00034',

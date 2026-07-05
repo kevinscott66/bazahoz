@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:geofield/data/database.dart';
 import 'package:geofield/data/demo_seed.dart';
 import 'package:geofield/data/dictionary_repository.dart';
+import 'package:geofield/data/photo_repository.dart';
 import 'package:geofield/data/point_repository.dart';
 import 'package:geofield/data/sample_repository.dart';
 import 'package:geofield/lab/lab_service.dart';
@@ -13,14 +14,15 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 /// Живой стенд: реальная SQLite (in-memory, ffi) с демо-сидом + репозитории.
 class TestHarness {
-  TestHarness._(
-      this.db, this.clock, this.points, this.samples, this.dicts, this.lab);
+  TestHarness._(this.db, this.clock, this.points, this.samples, this.dicts,
+      this.photos, this.lab);
 
   final Database db;
   final HlcClock clock;
   final PointRepository points;
   final SampleRepository samples;
   final DictionaryRepository dicts;
+  final PhotoRepository photos;
   final LabService lab;
 
   static Future<TestHarness> create() async {
@@ -33,9 +35,12 @@ class TestHarness {
     final db = await databaseFactory.openDatabase(
       inMemoryDatabasePath,
       options: OpenDatabaseOptions(
-        version: 1,
+        version: 2,
         onConfigure: (d) => d.execute('PRAGMA foreign_keys = ON'),
-        onCreate: (d, _) => AppDatabase.migrate001(d),
+        onCreate: (d, _) async {
+          await AppDatabase.migrate001(d);
+          await AppDatabase.migrate002(d);
+        },
       ),
     );
     await seedDemo(db);
@@ -46,9 +51,11 @@ class TestHarness {
         deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
     final dicts = DictionaryRepository(db,
         deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
+    final photos = PhotoRepository(db,
+        deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
     final lab = LabService(db, samples,
         deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
-    return TestHarness._(db, clock, points, samples, dicts, lab);
+    return TestHarness._(db, clock, points, samples, dicts, photos, lab);
   }
 
   Widget journal() => MaterialApp(
@@ -58,6 +65,7 @@ class TestHarness {
           points: points,
           samples: samples,
           dictionaries: dicts,
+          photos: photos,
           projectId: demoProjectId,
           routeId: demoRouteId,
           authorId: demoAuthorId,

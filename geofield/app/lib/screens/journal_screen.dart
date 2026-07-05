@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart' show getDatabasesPath;
 
 import '../data/dictionary_repository.dart';
+import '../data/photo_repository.dart';
 import '../data/point_repository.dart';
 import '../data/sample_repository.dart';
 import '../lab/lab_service.dart';
@@ -31,6 +32,7 @@ class JournalScreen extends StatefulWidget {
     required this.points,
     required this.samples,
     required this.dictionaries,
+    required this.photos,
     required this.projectId,
     required this.routeId,
     required this.authorId,
@@ -43,6 +45,7 @@ class JournalScreen extends StatefulWidget {
   final PointRepository points;
   final SampleRepository samples;
   final DictionaryRepository dictionaries;
+  final PhotoRepository photos;
   final String projectId;
   final String routeId;
   final String authorId;
@@ -320,6 +323,7 @@ class _JournalScreenState extends State<JournalScreen> {
         points: widget.points,
         samples: widget.samples,
         dictionaries: widget.dictionaries,
+        photos: widget.photos,
         projectId: widget.projectId,
         routeId: widget.routeId,
         authorId: widget.authorId,
@@ -336,6 +340,7 @@ class _JournalScreenState extends State<JournalScreen> {
         points: widget.points,
         samples: widget.samples,
         dictionaries: widget.dictionaries,
+        photos: widget.photos,
         projectId: widget.projectId,
         routeId: widget.routeId,
         authorId: widget.authorId,
@@ -357,6 +362,7 @@ class _JournalScreenState extends State<JournalScreen> {
     await Navigator.of(context).push(MaterialPageRoute<void>(
       builder: (_) => SampleCaptureScreen(
         repository: widget.samples,
+        photos: widget.photos,
         projectId: widget.projectId,
         authorId: widget.authorId,
         initialNumber: s.sampleNumber,

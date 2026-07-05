@@ -1,14 +1,20 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geofield/data/demo_seed.dart';
 import 'package:geofield/models/sample.dart';
 import 'package:geofield/screens/point_form_screen.dart';
 import 'package:geofield/screens/sample_capture_screen.dart';
+import 'package:geofield/util/gps.dart';
+import 'package:geofield/widgets/photo_strip.dart';
+import 'package:path/path.dart' as p;
 
 import 'helpers.dart';
 
 void main() {
-  Future<TestHarness> pumpPoint(WidgetTester tester) async {
+  Future<TestHarness> pumpPoint(WidgetTester tester,
+      {GpsProvider? gps, PhotoPicker? picker}) async {
     tallPhone(tester);
     final h = await TestHarness.create();
     addTearDown(h.close);
@@ -16,11 +22,14 @@ void main() {
       points: h.points,
       samples: h.samples,
       dictionaries: h.dicts,
+      photos: h.photos,
       projectId: demoProjectId,
       routeId: demoRouteId,
       authorId: demoAuthorId,
       sampleNumbering: demoNumbering,
       initialNumber: 'Т-001',
+      gps: gps ?? acquireGpsFix,
+      photoPicker: picker,
     )));
     await settleSave(tester);
     return h;
@@ -40,6 +49,7 @@ void main() {
       'МИНЕРАЛИЗАЦИЯ',
       'СТРУКТУРА',
       'ПРОБЫ',
+      'ФОТО',
     ]) {
       expect(find.text(section), findsOneWidget, reason: section);
     }
@@ -167,17 +177,12 @@ void main() {
     expect(find.textContaining('Жила: аз. пад. 120°'), findsOneWidget);
   });
 
-  testWidgets('кнопки GPS и датчика честно сообщают о недоступности',
-      (tester) async {
+  testWidgets('кнопка датчика честно сообщает о недоступности', (tester) async {
+    // GPS теперь настоящий (см. тесты «С приёмника» ниже) — за флагом
+    // остаётся только компас для структурных замеров.
     await pumpPoint(tester);
-    await tester.ensureVisible(find.text('С приёмника'));
-    await tester.tap(find.text('С приёмника'));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('GPS-приёмник не подключён'), findsOneWidget);
-
     await tester.ensureVisible(find.text('С датчика'));
     await tester.tap(find.text('С датчика'));
-    await tester.pump(const Duration(seconds: 4)); // прежний снек уходит
     await tester.pumpAndSettle();
     expect(find.textContaining('Датчики не подключены'), findsOneWidget);
   });
@@ -229,5 +234,65 @@ void main() {
     await tester.tap(find.text('Удалить'));
     await tester.pumpAndSettle();
     expect((await h.db.query('observation_points')).single['deleted'], 1);
+  });
+
+  testWidgets(
+      '«С приёмника»: координаты с точностью, источник gps; '
+      'ручная правка возвращает manual', (tester) async {
+    final h = await pumpPoint(tester,
+        gps: () async =>
+            (lat: 62.123456, lon: 148.654321, elevation: 812.0, accuracy: 4.0));
+    await tester.ensureVisible(find.text('С приёмника'));
+    await tester.tap(find.text('С приёмника'));
+    await settleSave(tester);
+
+    expect(find.textContaining('точность ±4 м'), findsOneWidget);
+    final row = (await h.db.query('observation_points')).single;
+    expect(row['lat'], 62.123456);
+    expect(row['lon'], 148.654321);
+    expect(row['coord_source'], 'gps');
+    expect(row['gps_accuracy_m'], 4.0);
+
+    // Поправил широту рукой — источник честно деградирует до manual.
+    await tester.enterText(textFieldValued('62.123456'), '62.2');
+    await settleSave(tester);
+    final row2 = (await h.db.query('observation_points')).single;
+    expect(row2['coord_source'], 'manual');
+    expect(row2['gps_accuracy_m'], isNull);
+  });
+
+  testWidgets('GPS не дался (нет разрешения) — снек, координаты не тронуты',
+      (tester) async {
+    final h = await pumpPoint(tester,
+        gps: () async => throw GpsException('Нет разрешения на геолокацию'));
+    await tester.ensureVisible(find.text('С приёмника'));
+    await tester.tap(find.text('С приёмника'));
+    await settleSave(tester);
+    expect(find.textContaining('Нет разрешения'), findsOneWidget);
+    final row = (await h.db.query('observation_points')).single;
+    expect(row['lat'], isNull);
+  });
+
+  testWidgets('«+ Фото»: снимок копируется, строка и мутация в базе',
+      (tester) async {
+    final src = File(p.join(
+        Directory.systemTemp.createTempSync('geofield_pf').path, 'cam.jpg'))
+      ..writeAsBytesSync([0xFF, 0xD8, 0xFF, 0xD9]); // минимальный jpeg-маркер
+    final h = await pumpPoint(tester, picker: (_) async => src.path);
+
+    await tester.ensureVisible(find.text('+ Фото'));
+    await tester.tap(find.text('+ Фото'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Камера'));
+    await settleSave(tester);
+    await realIo(tester); // копия файла — настоящий I/O
+
+    final rows = await h.db.query('photos');
+    expect(rows, hasLength(1));
+    expect(rows.single['parent_type'], 'point');
+    expect(File(rows.single['file_path'] as String).existsSync(), isTrue);
+    final log = await h.db
+        .query('change_log', where: 'entity_table = ?', whereArgs: ['photos']);
+    expect(log, hasLength(1));
   });
 }

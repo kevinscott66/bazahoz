@@ -15,6 +15,8 @@ dependencies:
   sqflite_common_ffi: ^2.3.0  # SQLite на десктопе (Windows/macOS/Linux)
   path: ^1.9.0
   qr_flutter: ^4.1.0          # QR штрихкода пробы на экран
+  image_picker: ^1.1.2        # фото обнажений/проб: камера и галерея (ТЗ §6.6)
+  geolocator: ^13.0.1         # координаты точки с приёмника (ТЗ §6.2)
 
 dev_dependencies:
   flutter_test:

@@ -33,7 +33,7 @@ class AppDatabase {
     final database = await databaseFactory.openDatabase(
       dbPath,
       options: OpenDatabaseOptions(
-        version: 1,
+        version: 2,
         onConfigure: (d) async {
           await d.execute('PRAGMA foreign_keys = ON');
           // journal_mode и busy_timeout ВОЗВРАЩАЮТ строку результата («wal»,
@@ -45,7 +45,14 @@ class AppDatabase {
           await d.execute('PRAGMA synchronous = NORMAL');
           await d.rawQuery('PRAGMA busy_timeout = 5000');
         },
-        onCreate: (d, _) => migrate001(d),
+        onCreate: (d, _) async {
+          await migrate001(d);
+          await migrate002(d);
+        },
+        // На устройствах уже живут базы v1 — миграции докатываются по одной.
+        onUpgrade: (d, oldVersion, _) async {
+          if (oldVersion < 2) await migrate002(d);
+        },
       ),
     );
     return AppDatabase._(database);
@@ -282,5 +289,35 @@ class AppDatabase {
         'CREATE INDEX idx_samples_parent ON samples(parent_type, parent_id)');
     await d.execute(
         'CREATE INDEX idx_changelog_unsynced ON change_log(synced) WHERE synced = 0');
+  }
+
+  /// v2: фото (ТЗ §6.6). Один в один по колонкам с каноном
+  /// (core/schema/001_initial.sql, таблица photos). Файл фото хранится
+  /// локально; по спутнику уходят только метаданные (defer_until_office=1),
+  /// очередь выгрузки самих файлов — этап 2.
+  static Future<void> migrate002(Database d) async {
+    await d.execute('''
+      CREATE TABLE photos (
+        id                 TEXT    PRIMARY KEY NOT NULL,
+        parent_type        TEXT    NOT NULL,
+        parent_id          TEXT    NOT NULL,
+        file_path          TEXT    NOT NULL,
+        thumbnail_path     TEXT,
+        lat                REAL,
+        lon                REAL,
+        taken_at           TEXT,
+        defer_until_office INTEGER NOT NULL DEFAULT 1,
+        upload_status      TEXT    NOT NULL DEFAULT 'pending',
+        author_id          TEXT,
+        created_at         TEXT    NOT NULL,
+        modified_at        TEXT    NOT NULL,
+        version            INTEGER NOT NULL DEFAULT 1,
+        sync_status        TEXT    NOT NULL DEFAULT 'pending',
+        deleted            INTEGER NOT NULL DEFAULT 0,
+        CHECK (parent_type IN ('point', 'interval', 'sample', 'borehole'))
+      )
+    ''');
+    await d.execute(
+        'CREATE INDEX idx_photos_parent ON photos(parent_type, parent_id)');
   }
 }

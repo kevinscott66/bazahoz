@@ -3,6 +3,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:uuid/uuid.dart';
 
 import '../config/features.dart';
+import '../data/photo_repository.dart';
 import '../data/sample_repository.dart';
 import '../models/sample.dart';
 import '../theme/sample_type.dart';
@@ -10,6 +11,7 @@ import '../theme/tokens.dart';
 import '../util/format.dart';
 import '../util/save_queue.dart';
 import '../widgets/confirm_dialog.dart';
+import '../widgets/photo_strip.dart';
 
 /// Привязка пробы к родителю (точка наблюдения или интервал керна).
 class ParentBinding {
@@ -35,18 +37,24 @@ class SampleCaptureScreen extends StatefulWidget {
   const SampleCaptureScreen({
     super.key,
     required this.repository,
+    required this.photos,
     required this.projectId,
     required this.authorId,
     required this.initialNumber,
     required this.binding,
     this.existing,
+    this.photoPicker,
   });
 
   final SampleRepository repository;
+  final PhotoRepository photos;
   final String projectId;
   final String authorId;
   final String initialNumber;
   final ParentBinding binding;
+
+  /// Источник снимков — подменяется в тестах; null — камера/галерея.
+  final PhotoPicker? photoPicker;
 
   /// Существующая проба — режим редактирования (открытие из журнала, ТЗ §6.7).
   final Sample? existing;
@@ -283,6 +291,17 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
               _label('ПРИМЕЧАНИЕ'),
               const SizedBox(height: GfSpace.x8),
               _noteField(),
+              const SizedBox(height: GfSpace.x24),
+              _label('ФОТО'),
+              const SizedBox(height: GfSpace.x12),
+              PhotoStrip(
+                photos: widget.photos,
+                parentType: 'sample',
+                parentId: _id,
+                ensureParent: () async =>
+                    (await _saveNow()) == SaveResult.saved,
+                picker: widget.photoPicker,
+              ),
               const SizedBox(height: GfSpace.x24),
               _saveIndicator(),
               const SizedBox(height: GfSpace.x8),

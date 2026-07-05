@@ -26,6 +26,16 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Фото обнажений и проб привязываются к точке наблюдения и пробе.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Выбор ранее снятых фото для привязки к точке или пробе.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Координаты точки наблюдения снимаются с GPS-приёмника телефона.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
