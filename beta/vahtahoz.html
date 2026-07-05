@@ -179,7 +179,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:40px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v130 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v131 · БЕТА</div>
   </div>
 </div>
 
@@ -2898,7 +2898,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v130 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v131 · тестовый канал</div>
   `;
 }
 
@@ -4399,6 +4399,14 @@ async function cloudAutoLink(){
   }
   if(changed) saveProfiles(profiles);
   if(switchTo && !activeCloudId()){ switchProfile(switchTo, true); return true; }   // true = автопривязка, в обход роль-гарда
+  // ДЕАДЛОК ограниченной роли: активная — локальная «База 1» (создаётся по умолчанию), а привязанная к членству
+  // база уже есть в списке (создана прошлым входом) → switchTo пуст, переключения не было, а UI смены базы у
+  // ограниченных ролей скрыт → работник навсегда видит «База 1». У не-владельца активной должна быть ЕГО
+  // облачная база — переключаемся сами.
+  if(!activeCloudId() && !(cloud.profile && cloud.profile.is_admin)){
+    const linked = profiles.list.find(x=>x.cloudId && myBases.includes(x.cloudId));
+    if(linked && profiles.activeId!==linked.id){ switchProfile(linked.id, true); return true; }
+  }
   return false;
 }
 // ДОТЯГИВАЕМ привязку: если вход прошёл, но cloudAutoLink не отработал (упала загрузка баз на слабой сети),
