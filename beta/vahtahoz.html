@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v136 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v137 · БЕТА</div>
   </div>
 </div>
 
@@ -1136,11 +1136,11 @@ function renderDashboard(){
         <div class="text-2xl font-bold mt-1">${lowStock.length}</div>
         <div class="text-sm opacity-70">Низкий запас</div>
       </button>
-      <button class="card tap text-left" onclick="nav('kitchen')">
+      ${canSeeKitchen()?`<button class="card tap text-left" onclick="nav('kitchen')">
         <div class="text-3xl">🍳</div>
         <div class="text-2xl font-bold mt-1">${state.stock.filter(s=>s.type==="product" && inStock(s)).length}</div>
         <div class="text-sm opacity-70">Продуктов в наличии</div>
-      </button>
+      </button>`:""}
     </div>
 
     ${canEditTasks?`<button class="btn btn-primary w-full mt-2" onclick="openTaskEdit()">＋ Задача</button>`:""}
@@ -2905,7 +2905,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v136 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v137 · тестовый канал</div>
   `;
 }
 
@@ -4106,6 +4106,16 @@ function cloudOnline(){ return navigator.onLine!==false; }
 /* «ограниченный» пользователь — вошёл в облако и НЕ имеет права на задачи (начальник):
    ему показываем только складскую часть (журнал операций без задач). */
 function isRestrictedUser(){ const m = activeMember(); return !!(m && !m.can_view_tasks); }
+// Кухня нужна повару и управляющим (надзор). Скрываем у хозрабочего/механика/бухгалтерии.
+// Локальная/оффлайн база без облачных ролей — показываем (одиночный режим).
+function canSeeKitchen(){
+  if(cloud.profile && cloud.profile.is_admin) return true;
+  if(canManageBase()) return true;                        // нач.участка+/партийные/глоб. управляющие
+  const m = activeMember();
+  if(m && m.role==="cook") return true;                   // повар
+  const hasCloudRole = !!m || (cloud.orgRoles||[]).some(o=>o.active!==false);
+  return !hasCloudRole;                                    // есть облачная роль, но не повар/управляющий → скрыть
+}
 // блокировка управления базами: либо роль ограничена, либо роль ЕЩЁ НЕ ИЗВЕСТНА (есть сохранённая сессия,
 // но cloud.members не загрузились) → fail-safe: до выяснения роли не даём переключать/плодить базы,
 // иначе на холодном старте начальник успел бы переключиться на локальную базу в обход ограничений.
@@ -4965,6 +4975,11 @@ function cloudGateTasks(){
   const tb = document.querySelector('#navbar .nav-btn[data-nav="tasks"]');
   if(tb) tb.style.display = hideTasks ? "none" : "";
   if(hideTasks && currentView==="tasks") nav("dashboard");
+  // Кухня — только повар/управляющие
+  const hideKitchen = !canSeeKitchen();
+  const kb = document.querySelector('#navbar .nav-btn[data-nav="kitchen"]');
+  if(kb) kb.style.display = hideKitchen ? "none" : "";
+  if(hideKitchen && currentView==="kitchen") nav("dashboard");
 }
 // перечитать ТОЛЬКО свои членства (active/права) — чтобы возврат/снятие со смены подхватились без перезахода
 async function cloudRefreshMyMembership(){
