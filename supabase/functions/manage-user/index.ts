@@ -255,6 +255,24 @@ Deno.serve(async (req) => {
     return json({ ok: true });
   }
 
+  // ── список держателей территориальных/глобальных ролей в зоне вызывающего + список партий ──
+  // (прямой SELECT org_roles закрыт RLS: своё ИЛИ is_admin; здесь service_role отдаёт видимое по рангу/территории)
+  if (action === "list_org_members") {
+    const caps = await callerCaps(admin, callerId);
+    if (caps.rank < 4 && !caps.global) return json({ error: "forbidden" }, 403);
+    const { data: parties } = await admin.from("parties").select("id,name").order("name");
+    const { data: rows, error: re } = await admin.from("org_roles").select("user_id,role,party_id,active");
+    if (re) return json({ error: "Не удалось получить список" }, 400);
+    let visible = rows || [];
+    if (!caps.global) visible = visible.filter((r: any) => r.party_id && caps.parties.has(r.party_id)); // не-глобальный видит только свои партии
+    const ids = [...new Set(visible.map((r: any) => r.user_id))];
+    const { data: profs } = ids.length ? await admin.from("profiles").select("id,username").in("id", ids) : { data: [] };
+    const pmap: Record<string, string> = {}; (profs || []).forEach((p: any) => pmap[p.id] = p.username);
+    const partymap: Record<string, string> = {}; (parties || []).forEach((p: any) => partymap[p.id] = p.name);
+    const members = visible.map((r: any) => ({ ...r, username: pmap[r.user_id] || "—", party_name: r.party_id ? (partymap[r.party_id] || "—") : null }));
+    return json({ ok: true, members, parties: parties || [] });
+  }
+
   if (action === "reset_password") {
     const targetId = String(p.user_id || "");
     const password = String(p.password || "");
