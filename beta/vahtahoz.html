@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v133 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v134 · БЕТА</div>
   </div>
 </div>
 
@@ -2904,7 +2904,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v133 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v134 · тестовый канал</div>
   `;
 }
 
@@ -5050,10 +5050,16 @@ if("serviceWorker" in navigator && location.protocol!=="file:"){
   window.addEventListener("load", ()=>{
     navigator.serviceWorker.register("./sw.js", { scope: "./" }).catch(e=>console.warn("SW reg failed",e));
   });
-  // когда новый SW взял управление — перезагружаем страницу, чтобы подхватить свежие ассеты
+  // когда новый SW взял управление — перезагружаем страницу, чтобы подхватить свежие ассеты.
+  // ЖДЁМ завершение идущего продления токена: reload посреди ротации refresh-токена терял НОВЫЙ токен
+  // (ответ не долетал), после перезагрузки старый токен = «повторно использован» → разлогин при каждом обновлении версии.
   let _swReloaded = false;
   navigator.serviceWorker.addEventListener("controllerchange", ()=>{
-    if(_swReloaded) return; _swReloaded = true; location.reload();
+    if(_swReloaded) return; _swReloaded = true;
+    try{
+      if(cloud && cloud._refreshing){ cloud._refreshing.catch(()=>{}).finally(()=>setTimeout(()=>location.reload(),100)); return; }
+    }catch(_){}
+    location.reload();
   });
 }
 
