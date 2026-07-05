@@ -118,10 +118,16 @@ void main() {
       expect(n, 2);
       final rows = await db.query('samples', orderBy: 'sample_number');
       expect(rows.map((r) => r['status']), everyElement('sent'));
-      // Каждый переход — мутация в change_log (уйдёт синхронизацией).
+      // Переход статуса — мутация; она СКЛЕИВАЕТСЯ с неотправленным
+      // insert той же пробы: на провод уйдёт по одной строке на пробу
+      // с итоговым статусом.
       final log = await db.query('change_log',
-          where: "entity_table = 'samples' AND op = 'update'");
+          where: "entity_table = 'samples'");
       expect(log, hasLength(2));
+      for (final r in log) {
+        expect(r['op'], 'insert');
+        expect(r['payload'], contains('"status":"sent"'));
+      }
     });
 
     test('переход мимо цепочки статусов — ошибка', () async {
@@ -193,8 +199,9 @@ void main() {
       final row = (await db.query('samples', where: "id = 's1'")).single;
       expect(row['version'], 2, reason: 'ровно один инкремент версии');
       final log = await db.query('change_log',
-          where: "entity_table = 'samples' AND op = 'update'");
-      expect(log, hasLength(1), reason: 'одна мутация, не две');
+          where: "entity_table = 'samples'");
+      expect(log, hasLength(1), reason: 'одна склеенная мутация, не две');
+      expect(log.single['payload'], contains('"version":2'));
     });
 
     test('мягко удалённая проба не «оживает» переводом статуса', () async {

@@ -4,6 +4,8 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart' show databaseFactorySqflitePlugin;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'change_payload.dart' show compactChangeLog;
+
 /// Открытие локальной базы. Подмножество миграции
 /// geofield/core/schema/001_initial.sql, нужное прототипу (projects, routes,
 /// observation_points, structural_measurements, samples, dictionaries,
@@ -33,7 +35,7 @@ class AppDatabase {
     final database = await databaseFactory.openDatabase(
       dbPath,
       options: OpenDatabaseOptions(
-        version: 2,
+        version: 3,
         onConfigure: (d) async {
           await d.execute('PRAGMA foreign_keys = ON');
           // journal_mode и busy_timeout ВОЗВРАЩАЮТ строку результата («wal»,
@@ -49,9 +51,10 @@ class AppDatabase {
           await migrate001(d);
           await migrate002(d);
         },
-        // На устройствах уже живут базы v1 — миграции докатываются по одной.
+        // На устройствах уже живут базы v1/v2 — миграции докатываются по одной.
         onUpgrade: (d, oldVersion, _) async {
           if (oldVersion < 2) await migrate002(d);
+          if (oldVersion < 3) await migrate003(d);
         },
       ),
     );
@@ -320,4 +323,9 @@ class AppDatabase {
     await d.execute(
         'CREATE INDEX idx_photos_parent ON photos(parent_type, parent_id)');
   }
+
+  /// v3: компакция неотправленного change_log, накопленного до склейки
+  /// мутаций (каждая пауза автосейва писала отдельную строку — «Уйдёт: 19
+  /// записей» при одной точке). Данных не меняет — только их бухгалтерию.
+  static Future<void> migrate003(Database d) => compactChangeLog(d);
 }

@@ -85,10 +85,10 @@ void main() {
 
     await repo.softDelete(photo);
     expect(await repo.listByParent('point', 'pt-1'), isEmpty);
+    // Фото родилось и умерло неотправленным — insert+tombstone схлопнулись.
     final log2 = await db
         .query('change_log', where: 'entity_table = ?', whereArgs: ['photos']);
-    expect(log2, hasLength(2));
-    expect(log2.last['op'], 'delete');
+    expect(log2, isEmpty);
     expect(File(photo.filePath).existsSync(), isTrue,
         reason: 'файл не удаляется до синхронизации — восстановимо');
   });

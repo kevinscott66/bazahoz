@@ -135,10 +135,9 @@ void main() {
     await tester.pumpAndSettle();
     final row = (await h.db.query('samples')).single;
     expect(row['deleted'], 1);
-    final ops = (await h.db.query('change_log', columns: ['op']))
-        .map((r) => r['op'])
-        .toList();
-    expect(ops, containsAll(['insert', 'delete']));
+    // Проба родилась и умерла между сеансами — мир о ней не слышал:
+    // insert и tombstone схлопываются в ничто (склейка logChange).
+    expect(await h.db.query('change_log'), isEmpty);
   });
 
   testWidgets('режим редактирования: статус и привязка не сбрасываются правкой',
