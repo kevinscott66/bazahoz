@@ -221,11 +221,21 @@ Deno.serve(async (req) => {
 
   // ── выдать/снять территориальную/глобальную роль существующему пользователю ──
   if (action === "set_org_role") {
-    const targetId = String(p.user_id || "");
+    let targetId = String(p.user_id || "");
     const role = String(p.role || "");
     const partyId = String(p.party_id || "");
     const remove = !!p.remove;
-    if (!uuid(targetId)) return json({ error: "user_id" }, 400);
+    // назначение существующему по ЛОГИНУ: resolve username→id (profiles SELECT закрыт RLS → через service_role)
+    const username = String(p.username || "").trim().toLowerCase();
+    if (!targetId && username) {
+      if (!/^[a-z0-9_]{3,32}$/.test(username)) return json({ error: "Логин: 3-32 символа a-z 0-9 _" }, 400);
+      const { data: pr2, error: le } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
+      if (le) return json({ error: "Не удалось найти работника" }, 400);
+      if (!pr2) return json({ error: "Работник с таким логином не найден" }, 400);
+      targetId = pr2.id;
+    }
+    if (!uuid(targetId)) return json({ error: "Не указан работник" }, 400);
+    if (targetId === callerId) return json({ error: "Нельзя менять роль самому себе" }, 403);
     if (!PRESETS[role] || BASE_ROLES.has(role)) return json({ error: "Неизвестная роль" }, 400);
     if (PARTY_ROLES.has(role) && !uuid(partyId)) return json({ error: "Не указана партия" }, 400);
     const caps = await callerCaps(admin, callerId);

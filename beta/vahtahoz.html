@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v141 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v142 · БЕТА</div>
   </div>
 </div>
 
@@ -2917,7 +2917,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v141 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v142 · тестовый канал</div>
   `;
 }
 
@@ -4150,6 +4150,7 @@ async function openOrgRolesSheet(){
   openSheet(`<div class="font-bold text-xl mb-3">🗺 Роли по регионам</div>
     <div class="space-y-2 max-h-72 overflow-y-auto pr-1">${list}</div>
     <button class="btn btn-primary w-full mt-3" onclick="openAddOrgMember()">＋ Назначить роль (новый аккаунт)</button>
+    <button class="btn btn-ghost w-full mt-2" onclick="openAssignExisting()">Назначить существующему работнику</button>
     <div class="text-xs opacity-60 mt-2">Начальник партии — на выбранный регион; директор, ген. директор и бухгалтерия — на все базы. Назначать можно только роли ниже вашей.</div>
     <button class="btn btn-ghost w-full mt-3" data-close>Закрыть</button>`);
 }
@@ -4206,6 +4207,52 @@ async function doAddOrgMember(){
     const d=await cloudCallFn("create_org_member", { base_id:activeCloudId()||"00000000-0000-0000-0000-000000000000", username, password, role, party_id });
     toast("Назначен: "+(d.username||username)); await openOrgRolesSheet();
   }catch(e){ toast("Не удалось. "+(e.message||"Проверьте интернет и повторите")); if(document.getElementById("omGo")){ btn.disabled=false; btn.textContent="Создать"; } }
+}
+// назначить территориальную/глобальную роль УЖЕ СУЩЕСТВУЮЩЕМУ работнику (по логину)
+function openAssignExisting(){
+  const roles = assignableOrgRoles();
+  if(!roles.length){ toast("Нет ролей, которые вы можете назначить"); return; }
+  const parties=_orgCache.parties||[];
+  const roleOpts=roles.map(r=>`<option value="${r.key}">${esc(r.label)}</option>`).join("");
+  const partyOpts=parties.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  openSheet(`<div class="font-bold text-xl mb-3">Назначить роль существующему</div>
+    <div class="space-y-3">
+      <div><div class="text-sm opacity-70 mb-1">Логин работника (уже есть аккаунт)</div>
+        <input class="input" id="aeu" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="напр. petrov" /></div>
+      <div><div class="text-sm opacity-70 mb-1">Роль</div>
+        <select class="input" id="aer" onchange="_aeToggleParty()">${roleOpts}</select></div>
+      <div id="aePartyWrap"><div class="text-sm opacity-70 mb-1">Регион</div>
+        ${parties.length?`<select class="input" id="aeParty">${partyOpts}</select>`:`<div class="opacity-70 text-sm">Регионов пока нет — создать их может владелец.</div>`}</div>
+    </div>
+    <div class="flex gap-2 mt-3">
+      <button class="btn btn-ghost flex-1" data-close>Отмена</button>
+      <button class="btn btn-success flex-1" id="aeGo">Назначить</button>
+    </div>
+    <div class="text-xs opacity-60 mt-2">Роль добавится к аккаунту с этим логином. Существующие права работника сохраняются.</div>`);
+  document.getElementById("aeGo").onclick=()=>doAssignExisting();
+  _aeToggleParty();
+}
+function _aeToggleParty(){
+  const sel=document.getElementById("aer"); if(!sel) return;
+  const r=ORG_ROLES.find(x=>x.key===sel.value);
+  const needParty=!!(r && r.scope==="party");
+  const wrap=document.getElementById("aePartyWrap"); if(wrap) wrap.style.display = needParty ? "" : "none";
+  const go=document.getElementById("aeGo");
+  if(go){ const block=needParty && !((_orgCache.parties||[]).length); go.disabled=block; go.style.opacity=block?".5":""; go.title=block?"Сначала создайте регион":""; }
+}
+async function doAssignExisting(){
+  const username=(document.getElementById("aeu").value||"").trim().toLowerCase();
+  const role=document.getElementById("aer").value;
+  const r=ORG_ROLES.find(x=>x.key===role);
+  if(!r){ toast("Выберите роль"); return; }
+  if(!/^[a-z0-9_]{3,32}$/.test(username)){ toast("Логин: 3–32 символа — англ. буквы, цифры, _"); return; }
+  let party_id=null;
+  if(r.scope==="party"){ const ps=document.getElementById("aeParty"); party_id=ps?ps.value:""; if(!party_id){ toast("Выберите регион"); return; } }
+  const btn=document.getElementById("aeGo"); btn.disabled=true; btn.textContent="Назначение…";
+  try{
+    await cloudCallFn("set_org_role", { base_id:activeCloudId()||"00000000-0000-0000-0000-000000000000", username, role, party_id });
+    toast("Роль назначена: "+username); await openOrgRolesSheet();
+  }catch(e){ toast("Не удалось. "+(e.message||"Проверьте логин и интернет")); if(document.getElementById("aeGo")){ btn.disabled=false; btn.textContent="Назначить"; } }
 }
 async function orgRoleRemove(uid, role, partyId){
   const m=(_orgCache.members||[]).find(x=>x.user_id===uid && x.role===role && (x.party_id||null)===(partyId||null));
