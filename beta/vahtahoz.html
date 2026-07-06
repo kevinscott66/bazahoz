@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v144 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v145 · БЕТА</div>
   </div>
 </div>
 
@@ -454,9 +454,16 @@ async function deleteProfile(id){
   renderHeader(); openProfilesSheet();
   toast("База удалена");
 }
+// базы, которые ПОКАЗЫВАЕМ пользователю: при входе в облако прячем НЕпривязанные локальные базы
+// (фантомный дефолт «База 1» при установке), если есть хотя бы одна облачная — иначе участник одной базы
+// видел бы чужой/пустой локальный дефолт. Оффлайн (без облака) — показываем всё как есть.
+function visibleProfiles(){
+  if(cloud.ready && profiles.list.some(x=>x.cloudId)) return profiles.list.filter(x=>x.cloudId || x.id===profiles.activeId);
+  return profiles.list;
+}
 function openProfilesSheet(){
   if(roleBaseLocked()){ toast("Переключение и управление базами недоступно для вашей роли"); return; }   // начальник заперт на своей базе (+ защита от гонки роли)
-  const rows = profiles.list.map(p=>{
+  const rows = visibleProfiles().map(p=>{
     const isActive = p.id===profiles.activeId;
     return `<div class="flex items-center gap-2 text-sm py-2 border-b border-gray-800" data-profid="${esc(p.id)}">
       <span class="flex-1 truncate ${isActive?"font-bold":""}">${isActive?"✅ ":""}${esc(p.name)}</span>
@@ -1078,7 +1085,7 @@ function renderHeader(){
   const bc = document.getElementById("baseChip");
   if(bc){
     // показываем чип только когда баз больше одной и роль позволяет переключение (начальник/роль-неизвестна — скрыт)
-    if(profiles.list.length>1 && !roleBaseLocked()){ bc.textContent = `🏠 ${activeProfileName()}`; bc.style.display=""; }
+    if(visibleProfiles().length>1 && !roleBaseLocked()){ bc.textContent = `🏠 ${activeProfileName()}`; bc.style.display=""; }
     else { bc.style.display="none"; }
   }
   // статус-бар/чип облака скрываем, если активная база не связана с облаком или нет входа
@@ -2829,7 +2836,7 @@ function renderMore(){
       <div class="flex items-center justify-between gap-2">
         <div>
           <div class="font-bold">🏠 База: ${esc(activeProfileName())}</div>
-          <div class="text-xs opacity-70 mt-0.5">${restricted?"Ваша база":`Баз: ${profiles.list.length}`}</div>
+          <div class="text-xs opacity-70 mt-0.5">${restricted?"Ваша база":`Баз: ${visibleProfiles().length}`}</div>
         </div>
         ${restricted?"":`<button class="btn btn-primary" onclick="openProfilesSheet()">Сменить / базы</button>`}
       </div>
@@ -2917,7 +2924,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v144 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v145 · тестовый канал</div>
   `;
 }
 
@@ -4711,8 +4718,12 @@ async function cloudLogout(){
 }
 /* привязываем облачные базы к локальным (по имени) или создаём новые; для одной базы — переключаемся */
 async function cloudAutoLink(){
-  let myBases = cloud.members.map(m=>m.base_id);
-  if(cloud.profile && cloud.profile.is_admin){ for(const id in cloud.bases) if(!myBases.includes(id)) myBases.push(id); }
+  // видимые базы = cloud.bases (уже отфильтрован RLS ровно под роль: участник → своя база; нач.партии → базы
+  // своего региона; директор/бухгалтерия/владелец → все). Берём ИХ, а не cloud.members — иначе органичные роли
+  // (нач.партии/директор/бухгалтерия, у которых НЕТ base_members) не получали бы базы вовсе, а участник одной
+  // базы не получит чужие (их нет в его cloud.bases).
+  let myBases = Object.keys(cloud.bases||{});
+  cloud.members.forEach(m=>{ if(m.base_id && !myBases.includes(m.base_id)) myBases.push(m.base_id); });   // подстраховка
   let changed=false, switchTo=null;
   for(const cid of myBases){
     if(profiles.list.some(x=>x.cloudId===cid)) continue;
