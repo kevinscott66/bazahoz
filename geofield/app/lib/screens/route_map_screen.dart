@@ -107,17 +107,16 @@ List<double> gridLinesMeters(double min, double max, double step) {
   return [for (var k = first; k <= last; k++) k * step];
 }
 
-/// Короткая подпись СК-42 угла схемы: зона и X/Y (Гаусс-Крюгер) в километрах.
-/// Y — без цифры зоны (восток с ложным сдвигом 500 км, как пишут на топокартах).
-/// Это РЕАЛЬНЫЕ координаты угла (метровая точность датума) — честный георефер;
-/// метровая сетка внутри — НЕ клетки ГК (партия работает через границы зон,
-/// проекция схемы локальная ENU), поэтому абсолюта только по углам.
+/// Подпись СК-42 угла схемы: X/Y Гаусса-Крюгера в ЦЕЛЫХ метрах — тот же формат,
+/// что в форме точки (`_writeCoordFields`) и в выгрузке CSV (`[zone, x, y]`):
+/// X — северный, Y — восточный с префиксом зоны (Y сам несёт номер зоны в
+/// старших цифрах). Одна координатная запись на всё приложение, без ложной
+/// точности (метры, не «км с округлением», которое можно принять за координату
+/// точки). Это РЕАЛЬНЫЕ координаты угла охвата (метровый датум) — честный
+/// георефер; метровая сетка внутри — НЕ клетки ГК (схема в локальной ENU).
 String sk42CornerLabel(double lat, double lon) {
   final gk = wgs84ToSk42Gk(lat, lon);
-  final xkm = (gk.x / 1000).toStringAsFixed(1);
-  final yEast = gk.y - gk.zone * 1e6; // 500000 + восток
-  final ykm = (yEast / 1000).toStringAsFixed(1);
-  return 'з${gk.zone} X$xkm Y$ykm';
+  return 'X${gk.x.round()} Y${gk.y.round()}';
 }
 
 /// Многострочный блок георефера СК-42 для угла схемы: зона(ы) + координаты
@@ -136,11 +135,11 @@ String sk42Georef({
       : 'СК-42 Гаусса-Крюгера, зоны '
           '${(zones.toList()..sort()).first}–${(zones.toList()..sort()).last}';
   if (degenerate) {
-    return '$head\n${sk42CornerLabel(nwLat, nwLon)} км';
+    return '$head\n${sk42CornerLabel(nwLat, nwLon)} м';
   }
   return '$head\n'
       'СЗ ${sk42CornerLabel(nwLat, nwLon)}\n'
-      'ЮВ ${sk42CornerLabel(seLat, seLon)} км';
+      'ЮВ ${sk42CornerLabel(seLat, seLon)} м';
 }
 
 class _PlotArea extends StatelessWidget {

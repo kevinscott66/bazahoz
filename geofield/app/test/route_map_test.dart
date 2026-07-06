@@ -23,15 +23,15 @@ void main() {
   });
 
   group('sk42CornerLabel', () {
-    test('Сусуман (≈62.78N,148.16E) — зона 25, X/Y в километрах', () {
+    test('Сусуман (≈62.78N,148.16E) — X/Y целыми метрами, формат как в CSV', () {
       final gk = wgs84ToSk42Gk(62.78, 148.16);
       expect(gk.zone, 25, reason: '148°E → 6-градусная зона 25');
       final label = sk42CornerLabel(62.78, 148.16);
-      expect(label, startsWith('з25 X'));
-      expect(label, contains(' Y'));
-      // X (северный) ~6960 км на этой широте; Y (с ложным сдвигом 500 км) ~400–600.
-      final xkm = gk.x / 1000;
-      expect(xkm, closeTo(6960, 30));
+      // Тот же формат, что выгрузка [zone, x, y]: X целые метры, Y с зоной.
+      expect(label, 'X${gk.x.round()} Y${gk.y.round()}');
+      expect(label, matches(RegExp(r'^X\d{7} Y25\d{6}$')),
+          reason: 'X ~6.96 млн м (7 цифр), Y несёт зону 25 в старших цифрах');
+      expect(gk.x / 1000, closeTo(6960, 30));
     });
   });
 
@@ -46,9 +46,9 @@ void main() {
       );
       expect(s, contains('СК-42 з.25'));
       expect(s, contains('ОМ 147°')); // 25*6-3
-      expect(s, contains('\nСЗ з25 '));
-      expect(s, contains('\nЮВ з25 '));
-      expect(s, endsWith(' км'));
+      expect(s, contains('\nСЗ X'));
+      expect(s, contains('\nЮВ X'));
+      expect(s, endsWith(' м'));
     });
 
     test('несколько зон — диапазон зон, без осевого меридиана', () {
@@ -73,7 +73,8 @@ void main() {
         degenerate: true,
       );
       expect('\n'.allMatches(s).length, 1, reason: 'заголовок + один угол');
-      expect(s, contains('з25 X'));
+      expect(s, contains('X'));
+      expect(s, endsWith(' м'));
     });
   });
 }

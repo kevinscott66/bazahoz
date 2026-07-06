@@ -621,6 +621,10 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(GfRadius.r8),
+        // Бирка — всегда белая бумага (не следует теме приложения: это макет
+        // печатной наклейки). Тонкий кант — чтобы «наклейка» читалась как
+        // отдельная карточка и на светлой теме, где фон тоже светлый.
+        border: Border.all(color: Colors.black.withValues(alpha: 0.15)),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
