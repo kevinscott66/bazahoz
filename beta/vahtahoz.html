@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v139 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v140 · БЕТА</div>
   </div>
 </div>
 
@@ -2850,6 +2850,12 @@ function renderMore(){
       <div class="text-xs opacity-70 mt-2">Назначайте начальника партии на регион, директоров и бухгалтерию — на все базы. Только роли ниже вашей.</div>
     </div>`:""}
 
+    ${canSeeAllBases()?`<div class="card">
+      <div class="font-bold mb-2">🧮 Сводка по всем базам</div>
+      <button class="btn btn-ghost w-full" onclick="openAllBasesSheet()">Остатки всех баз + выгрузка в Excel</button>
+      <div class="text-xs opacity-70 mt-2">Чтение остатков по всем базам и общий экспорт. Для бухгалтерии и директоров.</div>
+    </div>`:""}
+
     ${canEditStock()?`<div class="card">
       <div class="font-bold mb-2">📍 Места и категории</div>
       <div class="grid grid-cols-2 gap-2">
@@ -2911,7 +2917,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v139 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v140 · тестовый канал</div>
   `;
 }
 
@@ -3870,6 +3876,9 @@ function isGlobalManager(){ return !!(cloud.profile && cloud.profile.is_admin) |
 function assignableOrgRoles(){ const mine=myRank(); return ORG_ROLES.filter(r=>r.rank<mine); }
 // раздел «Роли по регионам» доступен тем, кто может выдать хотя бы одну орг-роль (строго ниже своего ранга).
 function canManageOrgRoles(){ return isGlobalManager() && assignableOrgRoles().length>0; }
+// бухгалтер: сквозная роль (чтение по всем базам). Сводный экран — бухгалтеру и глобальным управляющим.
+function isAccountant(){ return (cloud.orgRoles||[]).some(o=>o.active!==false && o.role==="accounting"); }
+function canSeeAllBases(){ return isAccountant() || isGlobalManager(); }
 function canManageBase(){
   const cid=activeCloudId(); if(!cid) return false;
   if(cloud.profile && cloud.profile.is_admin) return true;
@@ -4208,6 +4217,65 @@ async function orgRoleRemove(uid, role, partyId){
     await cloudCallFn("set_org_role", { base_id:activeCloudId()||"00000000-0000-0000-0000-000000000000", user_id:uid, role, party_id:partyId||null, remove:true });
     toast("Роль снята"); await openOrgRolesSheet();
   }catch(e){ toast("Не удалось. "+(e.message||"Проверьте интернет и повторите")); }
+}
+
+/* ===== Сводка по ВСЕМ базам (бухгалтерия/директора): чтение остатков + экспорт ===== */
+let _allBasesCache = null;
+const _rawTypeLabel = (t)=>{ const m=(STOCK_TYPES||[]).find(x=>x.key===t); return m?m.short:(t||""); };
+async function loadAllBasesStock(){
+  const tok=cloud.session && cloud.session.access_token;
+  const entries=Object.entries(cloud.bases||{});
+  return await Promise.all(entries.map(async([id,name])=>{
+    try{
+      const rows=await cloudRest(`stock_items?select=name,category,qty,unit,min_stock,expiry,location,type,note&base_id=eq.${encodeURIComponent(id)}`, tok, {timeout:60000});
+      return { id, name, rows: Array.isArray(rows)?rows:[] };
+    }catch(e){ return { id, name, rows:null }; }
+  }));
+}
+async function openAllBasesSheet(){
+  openSheet(`<div class="font-bold text-xl mb-3">🧮 Сводка по всем базам</div><div class="opacity-70 text-sm">Загрузка остатков…</div>`);
+  let data;
+  try{ data=await loadAllBasesStock(); _allBasesCache=data; }
+  catch(e){ openSheet(`<div class="font-bold text-xl mb-3">🧮 Сводка по всем базам</div><div class="err-text text-sm">Не удалось загрузить: ${esc(e.message||"нет связи")}</div><button class="btn btn-ghost w-full mt-3" data-close>Закрыть</button>`); return; }
+  const rowsHtml = data.length ? data.map(b=>{
+    if(b.rows===null) return `<div class="card"><div class="font-semibold truncate">${esc(b.name)}</div><div class="err-text text-xs">Не удалось загрузить эту базу</div></div>`;
+    const total=b.rows.length, inStk=b.rows.filter(r=>Number(r.qty||0)>0).length;
+    return `<div class="card flex items-center justify-between gap-2">
+      <div class="min-w-0"><div class="font-semibold truncate">${esc(b.name)}</div>
+        <div class="text-xs opacity-70">Позиций: ${total} · в наличии: ${inStk}</div></div>
+      <button class="btn btn-ghost px-2" onclick="exportOneBaseXlsx('${b.id}')">Excel</button>
+    </div>`;
+  }).join("") : `<div class="opacity-70 text-sm">Баз нет.</div>`;
+  const totalItems=data.reduce((a,b)=>a+((b.rows||[]).length),0);
+  const anyLoaded=data.some(b=>Array.isArray(b.rows));
+  openSheet(`<div class="font-bold text-xl mb-3">🧮 Сводка по всем базам</div>
+    <div class="text-xs opacity-70 mb-2">Баз: ${data.length} · позиций всего: ${totalItems}</div>
+    <div class="space-y-2 max-h-80 overflow-y-auto pr-1">${rowsHtml}</div>
+    ${anyLoaded?`<button class="btn btn-success w-full mt-3" onclick="exportAllBasesXlsx()">📊 Выгрузить ВСЕ базы в Excel</button>`:""}
+    <div class="text-xs opacity-60 mt-2">Остатки по всем базам (только чтение). Для бухгалтерии и директоров.</div>
+    <button class="btn btn-ghost w-full mt-2" data-close>Закрыть</button>`);
+}
+async function exportAllBasesXlsx(){
+  if(!_allBasesCache){ toast("Сначала откройте сводку"); return; }
+  toast("Подготовка файла…");
+  let XLSX; try{ XLSX=await ensureXlsx(); }catch(e){ toast("Не удалось сделать Excel"); return; }
+  const rows=[];
+  _allBasesCache.forEach(b=>{ (b.rows||[]).forEach(r=>{ rows.push({
+    "База": b.name, "Тип": _rawTypeLabel(r.type), "Категория": r.category||"", "Наименование": r.name,
+    "Количество": roundQty(Number(r.qty||0)), "Ед. изм.": r.unit||"", "Мин. запас": (r.min_stock==null?"":Number(r.min_stock)),
+    "Срок годности": r.expiry||"", "Место": r.location||"", "Примечание": r.note||"" }); }); });
+  const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"База":"","Наименование":""}]));
+  ws["!cols"]=[{wch:18},{wch:10},{wch:20},{wch:38},{wch:10},{wch:10},{wch:10},{wch:14},{wch:16},{wch:24}];
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Все базы");
+  XLSX.writeFile(wb, `vahtahoz-все-базы-${todayStr()}.xlsx`);
+}
+async function exportOneBaseXlsx(baseId){
+  const b=(_allBasesCache||[]).find(x=>x.id===baseId); if(!b||!b.rows){ toast("Нет данных по базе"); return; }
+  let XLSX; try{ XLSX=await ensureXlsx(); }catch(e){ toast("Не удалось сделать Excel"); return; }
+  const rows=b.rows.map(r=>({ "Тип":_rawTypeLabel(r.type), "Категория":r.category||"", "Наименование":r.name, "Количество":roundQty(Number(r.qty||0)), "Ед. изм.":r.unit||"", "Мин. запас":(r.min_stock==null?"":Number(r.min_stock)), "Срок годности":r.expiry||"", "Место":r.location||"", "Примечание":r.note||"" }));
+  const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}]));
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Остатки");
+  XLSX.writeFile(wb, `vahtahoz-${String(b.name||"база").replace(/[^0-9A-Za-zА-Яа-яёЁ -]/g,"")}-${todayStr()}.xlsx`);
 }
 const cloudDirtyKey = (cid)=>`vahtahoz_dirty_${cid}`;
 // удалить все sync-маркеры базы (dirty + снимки подписей) — при удалении/замене базы, чтобы не копить мусор
