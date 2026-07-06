@@ -116,6 +116,25 @@ void main() {
     expect(row2['coord_source'], 'manual');
   });
 
+  testWidgets('ГМС-показ WGS-84 координат; в СК-42 его нет (там зона)',
+      (tester) async {
+    await pumpPoint(tester);
+    await tester.enterText(find.widgetWithText(TextField, 'Широта'), '62.78341');
+    await tester.enterText(
+        find.widgetWithText(TextField, 'Долгота'), '148.15702');
+    await settleSave(tester);
+    // Десятичные — для ввода, ГМС — для сверки с рамкой топокарты.
+    expect(find.text('62°47′00.3″ с.ш. · 148°09′25.3″ в.д.'), findsOneWidget);
+
+    // Переключаемся на СК-42 — ГМС уходит, появляется зона.
+    await tester.tap(find.text('Система координат'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('СК-42'));
+    await settleSave(tester);
+    expect(find.textContaining('″ с.ш.'), findsNothing);
+    expect(find.textContaining('Зона 25'), findsOneWidget);
+  });
+
   testWidgets(
       'заполнение обязательного снимает черновик; порода из справочника по коду',
       (tester) async {

@@ -23,3 +23,22 @@ double? parseDouble(String s) {
   if (t.isEmpty) return null;
   return double.tryParse(t);
 }
+
+/// Градусы-минуты-секунды для показа WGS-84 рядом с десятичными (ТЗ §6.2):
+/// топокарты подписаны в ГМС, геологу удобно сверять по рамке. Полусфера
+/// словами (с.ш./ю.ш., в.д./з.д.), секунды до 0.1″ (~3 м — полевая точность).
+/// Счёт в десятых долях секунды целыми — секунды/минуты переносятся без дрейфа
+/// (59.96″ не остаётся «60.0″», а прибавляет минуту).
+String formatGms(double deg, {required bool isLat}) {
+  if (!deg.isFinite) return '—';
+  final hem = isLat
+      ? (deg < 0 ? 'ю.ш.' : 'с.ш.')
+      : (deg < 0 ? 'з.д.' : 'в.д.');
+  var tenths = (deg.abs() * 36000).round(); // десятые доли угловой секунды
+  final d = tenths ~/ 36000;
+  tenths %= 36000;
+  final m = tenths ~/ 600;
+  tenths %= 600;
+  final s = (tenths / 10.0).toStringAsFixed(1).padLeft(4, '0'); // 05.0
+  return '$d°${m.toString().padLeft(2, '0')}′$s″ $hem';
+}

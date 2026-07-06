@@ -437,6 +437,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
                   onEdited: _onCoordsEdited)),
         ]),
         if (_sk42) _zoneReadout(),
+        if (!_sk42) _gmsReadout(),
         const SizedBox(height: GfSpace.x12),
         Row(children: [
           Expanded(child: _numField(_elevCtrl, 'Высота, м')),
@@ -544,6 +545,20 @@ class _PointFormScreenState extends State<PointFormScreen> {
     } else {
       text = 'Зона определится по долготе (18–28: Магадан, Якутия)';
     }
+    return Padding(
+      padding: const EdgeInsets.only(top: GfSpace.x8),
+      child: Text(text, style: GfText.hint),
+    );
+  }
+
+  /// ГМС-показ введённых WGS-84 координат (ТЗ §6.2): десятичные — для ввода,
+  /// градусы-минуты-секунды — для сверки с рамкой топокарты. Только показ,
+  /// ввод остаётся десятичным (в поле не набирают °′″ вручную).
+  Widget _gmsReadout() {
+    final w = _coordsAsWgs();
+    final text = (w.lat != null && w.lon != null)
+        ? '${formatGms(w.lat!, isLat: true)} · ${formatGms(w.lon!, isLat: false)}'
+        : 'ГМС покажется по координатам';
     return Padding(
       padding: const EdgeInsets.only(top: GfSpace.x8),
       child: Text(text, style: GfText.hint),
