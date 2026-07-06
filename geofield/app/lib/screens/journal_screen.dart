@@ -14,6 +14,7 @@ import '../models/sample.dart';
 import '../sync/hlc.dart';
 import '../theme/sample_type.dart';
 import '../theme/tokens.dart';
+import '../util/crs.dart';
 import '../util/csv_export.dart';
 import '../util/format.dart';
 import 'point_form_screen.dart';
@@ -405,6 +406,13 @@ class _JournalScreenState extends State<JournalScreen> {
             pt.number,
             pt.lat,
             pt.lon,
+            // СК-42 ГК из канонических WGS-84; для точек без координат — пусто.
+            if (pt.lat != null && pt.lon != null)
+              ...() {
+                final gk = wgs84ToSk42Gk(pt.lat!, pt.lon!);
+                return [gk.zone, gk.x.round(), gk.y.round()];
+              }()
+            else ...[null, null, null],
             pt.elevation,
             pt.coordSource,
             pt.gpsAccuracyM,

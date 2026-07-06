@@ -9,6 +9,7 @@ import '../data/sample_repository.dart';
 import '../models/observation_point.dart';
 import '../models/sample.dart';
 import '../theme/tokens.dart';
+import '../util/crs.dart';
 import '../util/format.dart';
 import '../util/gps.dart';
 import '../util/sample_number.dart';
@@ -83,6 +84,9 @@ class _PointFormScreenState extends State<PointFormScreen> {
   String? _coordSource; // 'gps' | 'manual' — как сняты текущие координаты
   double? _gpsAccuracy;
   bool _gpsBusy = false;
+  // Система координат ВВОДА/ПОКАЗА. Хранение всегда каноническое (WGS-84);
+  // СК-42 — вид поверх (ТЗ §6.2). false — WGS-84, true — СК-42 ГК зона 25.
+  bool _sk42 = false;
   final Set<String> _selectedMinerals = {};
   List<DictEntry> _objectTypes = const [];
   List<DictEntry> _rocks = const [];
@@ -219,8 +223,6 @@ class _PointFormScreenState extends State<PointFormScreen> {
 
   Future<SaveResult> _doSave() async {
     final number = _numberCtrl.text.trim();
-    final lat = parseDouble(_latCtrl.text);
-    final lon = parseDouble(_lonCtrl.text);
     final elev = parseDouble(_elevCtrl.text);
 
     // Противоречия — invalid, не пишем (ТЗ §0, правило 3).
@@ -228,25 +230,14 @@ class _PointFormScreenState extends State<PointFormScreen> {
       _setSave('Номер точки обязателен', error: true);
       return SaveResult.invalid;
     }
-    final latText = _latCtrl.text.trim();
-    final lonText = _lonCtrl.text.trim();
-    if (latText.isNotEmpty != lonText.isNotEmpty) {
-      _setSave('Укажите обе координаты или ни одной', error: true);
+    // Координаты интерпретируются по текущей СК и приводятся к WGS-84 (канон).
+    final coords = _coordsAsWgs();
+    if (coords.error != null) {
+      _setSave(coords.error!, error: true);
       return SaveResult.invalid;
     }
-    if ((latText.isNotEmpty && lat == null) ||
-        (lonText.isNotEmpty && lon == null)) {
-      _setSave('Координаты — числа', error: true);
-      return SaveResult.invalid;
-    }
-    if (lat != null && (lat < -90 || lat > 90)) {
-      _setSave('Широта вне диапазона ±90', error: true);
-      return SaveResult.invalid;
-    }
-    if (lon != null && (lon < -180 || lon > 180)) {
-      _setSave('Долгота вне диапазона ±180', error: true);
-      return SaveResult.invalid;
-    }
+    final lat = coords.lat;
+    final lon = coords.lon;
 
     // Порода и изменения: код из справочника; новое — «на проверку» (ТЗ §6.3).
     String? rockCode;
@@ -418,14 +409,30 @@ class _PointFormScreenState extends State<PointFormScreen> {
           decoration: _dec('Т-001'),
         ),
         const SizedBox(height: GfSpace.x16),
-        const Text('КООРДИНАТЫ (WGS-84)', style: GfText.sectionLabel),
+        Text(_sk42 ? 'КООРДИНАТЫ (СК-42 · ГК)' : 'КООРДИНАТЫ (WGS-84)',
+            style: GfText.sectionLabel),
+        const SizedBox(height: GfSpace.x8),
+        FieldPicker(
+          label: 'Система координат',
+          options: const [
+            ('wgs84', 'WGS-84 · широта/долгота, °'),
+            ('sk42', 'СК-42 · Гаусса-Крюгера, зона 25, м'),
+          ],
+          selected: _sk42 ? 'sk42' : 'wgs84',
+          onSelected: (code) => _onCrsChanged(code == 'sk42'),
+        ),
         const SizedBox(height: GfSpace.x8),
         Row(children: [
+          // Русская геодезическая конвенция: X — северная (сверху), Y —
+          // восточная (снизу). Подписи словами, чтобы камералка/Micromine не
+          // получили перевёрнутые точки (ревизия geo-consultant).
           Expanded(
-              child: _numField(_latCtrl, 'Широта', onEdited: _onCoordsEdited)),
+              child: _numField(_latCtrl, _sk42 ? 'Север (X), м' : 'Широта',
+                  onEdited: _onCoordsEdited)),
           const SizedBox(width: GfSpace.x12),
           Expanded(
-              child: _numField(_lonCtrl, 'Долгота', onEdited: _onCoordsEdited)),
+              child: _numField(_lonCtrl, _sk42 ? 'Восток (Y), м' : 'Долгота',
+                  onEdited: _onCoordsEdited)),
         ]),
         const SizedBox(height: GfSpace.x12),
         Row(children: [
@@ -460,6 +467,79 @@ class _PointFormScreenState extends State<PointFormScreen> {
         _gpsAccuracy = null;
       });
     }
+  }
+
+  /// Два поля координат → WGS-84 (lat/lon) по текущей СК. error != null —
+  /// показать пользователю и не писать; оба null без error — координат нет.
+  ({double? lat, double? lon, String? error}) _coordsAsWgs() {
+    final aText = _latCtrl.text.trim();
+    final bText = _lonCtrl.text.trim();
+    if (aText.isEmpty && bText.isEmpty) {
+      return (lat: null, lon: null, error: null);
+    }
+    if (aText.isEmpty != bText.isEmpty) {
+      return (
+        lat: null,
+        lon: null,
+        error: _sk42
+            ? 'Укажите оба значения (X и Y) или ни одного'
+            : 'Укажите обе координаты или ни одной'
+      );
+    }
+    final a = parseDouble(aText);
+    final b = parseDouble(bText);
+    if (a == null || b == null) {
+      return (
+        lat: null,
+        lon: null,
+        error: _sk42 ? 'X и Y — числа' : 'Координаты — числа'
+      );
+    }
+    if (!_sk42) {
+      if (a < -90 || a > 90) {
+        return (lat: null, lon: null, error: 'Широта вне диапазона ±90');
+      }
+      if (b < -180 || b > 180) {
+        return (lat: null, lon: null, error: 'Долгота вне диапазона ±180');
+      }
+      return (lat: a, lon: b, error: null);
+    }
+    // СК-42: a = X (север), b = Y (восток, с префиксом зоны). Зона — из Y.
+    final w = sk42GkToWgs84(a, b);
+    if (w.lat < -90 || w.lat > 90 || w.lon < -180 || w.lon > 180) {
+      return (
+        lat: null,
+        lon: null,
+        error: 'X/Y вне разумных пределов зоны — проверьте значения'
+      );
+    }
+    return (lat: w.lat, lon: w.lon, error: null);
+  }
+
+  /// Записать WGS-84 координату в поля ввода в текущей СК (без дрейфа: канон —
+  /// переданные lat/lon, а не то, что уже в полях).
+  void _writeCoordFields(double lat, double lon) {
+    if (!_sk42) {
+      _latCtrl.text = lat.toStringAsFixed(6);
+      _lonCtrl.text = lon.toStringAsFixed(6);
+    } else {
+      final gk = wgs84ToSk42Gk(lat, lon);
+      _latCtrl.text = gk.x.toStringAsFixed(0); // Север (X)
+      _lonCtrl.text = gk.y.toStringAsFixed(0); // Восток (Y) с префиксом зоны
+    }
+  }
+
+  /// Переключение СК: пересчитать уже введённые координаты в новую систему,
+  /// чтобы точка не «переехала». Пустые/невалидные поля оставляем как есть.
+  void _onCrsChanged(bool sk42) {
+    if (sk42 == _sk42) return;
+    final w = _coordsAsWgs(); // в СТАРОЙ системе
+    setState(() {
+      _sk42 = sk42;
+      if (w.lat != null && w.lon != null) {
+        _writeCoordFields(w.lat!, w.lon!);
+      }
+    });
   }
 
   Widget _descriptionBlock() {
@@ -693,9 +773,8 @@ class _PointFormScreenState extends State<PointFormScreen> {
     try {
       final fix = await widget.gps();
       if (!mounted) return;
-      // 6 знаков ≈ 0.1 м — точнее любого полевого приёмника.
-      _latCtrl.text = fix.lat.toStringAsFixed(6);
-      _lonCtrl.text = fix.lon.toStringAsFixed(6);
+      // Приёмник даёт WGS-84; в поля кладём в текущей СК (СК-42 при показе).
+      _writeCoordFields(fix.lat, fix.lon);
       if (fix.elevation != null) {
         _elevCtrl.text = fix.elevation!.toStringAsFixed(0);
       }

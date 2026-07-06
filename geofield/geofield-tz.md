@@ -531,7 +531,7 @@ photos:
 
 # project.suzun.yaml — слой 4 (с сервера)
 coordinate_systems:
-  default: SK-42 / Gauss-Kruger zone 7
+  default: SK-42 / Gauss-Kruger zone 25   # Сусуман ~148° в.д.: ОМ 147° (6·25−3)
   available: [WGS-84, SK-42, MSK-49]
 sample_numbering: "SUZ-{seq:05}"
 dictionaries_version: 2026-06-12

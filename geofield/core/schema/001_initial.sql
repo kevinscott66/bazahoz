@@ -36,7 +36,7 @@ CREATE TABLE projects (
     id                    TEXT    PRIMARY KEY NOT NULL,
     name                  TEXT    NOT NULL,
     area                  TEXT,                -- участок
-    default_crs           TEXT,                -- рабочая система координат, напр. 'SK-42/GK-7'
+    default_crs           TEXT,                -- рабочая система координат, напр. 'SK-42/GK-25' (Сусуман, ОМ 147°)
     sample_numbering      TEXT,                -- шаблон номера, напр. 'SUZ-{seq:05}'
     dictionaries_version  TEXT,                -- версия справочников проекта
     author_id             TEXT    REFERENCES users(id),

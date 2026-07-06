@@ -6,6 +6,7 @@ import 'package:geofield/data/demo_seed.dart';
 import 'package:geofield/models/sample.dart';
 import 'package:geofield/screens/point_form_screen.dart';
 import 'package:geofield/screens/sample_capture_screen.dart';
+import 'package:geofield/util/crs.dart';
 import 'package:geofield/util/gps.dart';
 import 'package:geofield/widgets/photo_strip.dart';
 import 'package:path/path.dart' as p;
@@ -55,6 +56,42 @@ void main() {
     }
     expect(find.text('Готово'), findsOneWidget);
     expect(find.text('Удалить точку'), findsOneWidget);
+  });
+
+  testWidgets(
+      'СК-42: ввод X/Y сохраняется каноническим WGS-84; '
+      'переключение СК не двигает точку', (tester) async {
+    final h = await pumpPoint(tester);
+    // Переключить систему координат на СК-42 через шторку-пикер.
+    await tester.tap(find.text('Система координат'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('СК-42'));
+    await tester.pumpAndSettle();
+    // Поля переименовались в Север (X) / Восток (Y).
+    expect(textFieldLabeled('Север (X), м'), findsOneWidget);
+    expect(textFieldLabeled('Восток (Y), м'), findsOneWidget);
+
+    // Ввести плоские координаты Сусумана и проверить, что в базе — WGS-84.
+    final gk = wgs84ToSk42Gk(62.78341, 148.15702);
+    await tester.enterText(
+        textFieldLabeled('Север (X), м'), gk.x.toStringAsFixed(0));
+    await tester.enterText(
+        textFieldLabeled('Восток (Y), м'), gk.y.toStringAsFixed(0));
+    await settleSave(tester);
+    final row = (await h.db.query('observation_points')).single;
+    expect(row['lat'] as double, closeTo(62.78341, 1e-4),
+        reason: 'СК-42 X/Y приведены к каноническому WGS-84');
+    expect(row['lon'] as double, closeTo(148.15702, 1e-4));
+
+    // Вернуть WGS-84 — координата не должна «переехать» от round-trip.
+    await tester.tap(find.text('Система координат'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('WGS-84'));
+    await tester.pumpAndSettle();
+    expect(textFieldLabeled('Широта'), findsOneWidget);
+    final row2 = (await h.db.query('observation_points')).single;
+    expect(row2['lat'] as double, closeTo(62.78341, 1e-4));
+    expect(row2['lon'] as double, closeTo(148.15702, 1e-4));
   });
 
   testWidgets(
