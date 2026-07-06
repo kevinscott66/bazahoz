@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v143 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v144 · БЕТА</div>
   </div>
 </div>
 
@@ -2917,7 +2917,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v143 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v144 · тестовый канал</div>
   `;
 }
 
@@ -3712,11 +3712,19 @@ async function cloudRest(path, token, opts, _retried){
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), opts.timeout || 30000);   // НЕ виснем вечно; запас под слабый интернет
   try{
-    const r = await fetch(`${CLOUD_CFG.url}/rest/v1/${path}`, {
-      method: opts.method || "GET", signal: ctrl.signal,
-      headers: Object.assign({ apikey:CLOUD_CFG.anon, Authorization:`Bearer ${token}` }, opts.headers||{}),
-      body: opts.body
-    });
+    let r;
+    try{
+      r = await fetch(`${CLOUD_CFG.url}/rest/v1/${path}`, {
+        method: opts.method || "GET", signal: ctrl.signal,
+        headers: Object.assign({ apikey:CLOUD_CFG.anon, Authorization:`Bearer ${token}` }, opts.headers||{}),
+        body: opts.body
+      });
+    }catch(fe){
+      // НАСТОЯЩИЙ сетевой сбой (не наш таймаут-abort) → сеть пропала, хотя navigator.onLine мог остаться
+      // ложно-true и событие offline не пришло. Снимаем подтверждение — следующий гейт покажет оффлайн быстро.
+      if(fe && fe.name!=="AbortError") _netConfirmed = false;
+      throw fe;
+    }
     _netConfirmed = true;   // ответ долетел → сеть точно есть (снимаем ложный navigator.onLine=false)
     // 401 = access-токен протух ПОСРЕДИ сессии (живёт ~1ч). Обновляем токен и повторяем ОДИН раз —
     // иначе синк падал «REST 401» до перезагрузки. Тело первого ответа не читаем, чтобы повтор был чистым.
