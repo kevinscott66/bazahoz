@@ -195,6 +195,12 @@ Deno.serve(async (req) => {
     const caps = await callerCaps(admin, callerId);
     const deny = await canGrant(admin, caps, role, undefined, PARTY_ROLES.has(role) ? partyId : undefined);
     if (deny) return json({ error: deny }, 403);
+    // регион должен существовать (глобальный директор пропускает territory-check в canGrant → проверяем явно,
+    // чтобы не создавать аккаунт и не откатывать его на FK-нарушении)
+    if (PARTY_ROLES.has(role)) {
+      const { data: pp } = await admin.from("parties").select("id").eq("id", partyId).maybeSingle();
+      if (!pp) return json({ error: "Регион не найден" }, 400);
+    }
     const email = `${username}@bazahoz.app`;
 
     const { data: cu, error: cerr } = await admin.auth.admin.createUser({
@@ -225,6 +231,10 @@ Deno.serve(async (req) => {
     const caps = await callerCaps(admin, callerId);
     const deny = await canGrant(admin, caps, role, undefined, PARTY_ROLES.has(role) ? partyId : undefined);
     if (deny) return json({ error: deny }, 403);
+    if (PARTY_ROLES.has(role) && !remove) {   // при выдаче регион должен существовать (при remove — не важно)
+      const { data: pp } = await admin.from("parties").select("id").eq("id", partyId).maybeSingle();
+      if (!pp) return json({ error: "Регион не найден" }, 400);
+    }
     // нельзя трогать того, кто по рангу ≥ тебя (защита от перехвата старшего)
     const tcaps = await callerCaps(admin, targetId);
     if (tcaps.rank >= caps.rank) return json({ error: "Нельзя менять роль тому, кто равен или выше вас" }, 403);
