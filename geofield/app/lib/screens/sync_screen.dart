@@ -155,7 +155,7 @@ class _SyncScreenState extends State<SyncScreen> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: GfColors.bg,
-        title: const Text('Синхронизация', style: GfText.screenTitle),
+        title: Text('Синхронизация', style: GfText.screenTitle),
       ),
       body: SafeArea(
         child: ListView(
@@ -167,7 +167,7 @@ class _SyncScreenState extends State<SyncScreen> {
               _progressCard(_progress!),
               const SizedBox(height: GfSpace.x24),
             ],
-            const Text('RELAY', style: GfText.sectionLabel),
+            Text('RELAY', style: GfText.sectionLabel),
             const SizedBox(height: GfSpace.x8),
             TextField(
               controller: _urlCtrl,
@@ -218,7 +218,7 @@ class _SyncScreenState extends State<SyncScreen> {
       padding: const EdgeInsets.all(GfSpace.x16),
       decoration: gfCard(),
       child: Row(children: [
-        const Icon(Icons.cloud_upload_outlined, color: GfColors.textSecondary),
+        Icon(Icons.cloud_upload_outlined, color: GfColors.textSecondary),
         const SizedBox(width: GfSpace.x12),
         Expanded(
           child: Text(
@@ -264,7 +264,7 @@ class _SyncScreenState extends State<SyncScreen> {
       padding: const EdgeInsets.all(GfSpace.x16),
       decoration: gfCard(),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('ПОСЛЕДНИЙ СЕАНС', style: GfText.sectionLabel),
+        Text('ПОСЛЕДНИЙ СЕАНС', style: GfText.sectionLabel),
         const SizedBox(height: GfSpace.x8),
         Text(
           '${s['at'] ?? '—'}\n'

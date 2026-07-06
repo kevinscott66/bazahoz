@@ -114,6 +114,77 @@ void main() {
         find.byType(MaterialApp), matchesGoldenFile('journal_main.png'));
   }, skip: !enabled);
 
+  testWidgets('журнал «день на снегу»: светлая тема → PNG', (tester) async {
+    tester.view.physicalSize = const Size(1170, 2532);
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.reset);
+
+    final h = await TestHarness.create();
+    addTearDown(h.close);
+    // Тот же путь, что в приложении: включаем светлую тему через настройку,
+    // MaterialApp пересобирается на палитре «день на снегу».
+    await h.display.setDaylight(true);
+
+    final now = DateTime.now().toUtc().toIso8601String();
+    Future<void> point(String id, String n,
+        {bool draft = false, String sync = 'pending'}) async {
+      await h.points.save(
+          ObservationPoint(
+            id: id,
+            routeId: demoRouteId,
+            number: n,
+            lat: 62.78341,
+            lon: 148.15702,
+            objectType: 'outcrop',
+            rockCode: 'granite',
+            isDraft: draft,
+            authorId: demoAuthorId,
+            createdAt: now,
+            modifiedAt: now,
+          ),
+          isNew: true);
+      if (sync != 'pending') {
+        await h.db.update('observation_points', {'sync_status': sync},
+            where: 'id = ?', whereArgs: [id]);
+      }
+    }
+
+    Future<void> sample(String id, String n, String type,
+        {String parent = 'p1', String sync = 'pending'}) async {
+      await h.samples.save(
+          Sample(
+            id: id,
+            projectId: demoProjectId,
+            parentType: 'point',
+            parentId: parent,
+            sampleNumber: n,
+            sampleType: type,
+            barcode: n,
+            authorId: demoAuthorId,
+            createdAt: now,
+            modifiedAt: now,
+          ),
+          isNew: true);
+      if (sync != 'pending') {
+        await h.db.update('samples', {'sync_status': sync},
+            where: 'id = ?', whereArgs: [id]);
+      }
+    }
+
+    await point('p1', 'Т-001', sync: 'confirmed');
+    await point('p2', 'Т-002');
+    await point('p3', 'Т-003', draft: true);
+    await sample('s1', 'SUZ-00001', 'core', sync: 'confirmed');
+    await sample('s2', 'SUZ-00002', 'schlich', parent: 'p2');
+    await sample('s3', 'SUZ-00003', 'channel', parent: 'p2');
+
+    await tester.pumpWidget(h.journal());
+    await tester.pumpAndSettle();
+
+    await expectLater(
+        find.byType(MaterialApp), matchesGoldenFile('journal_daylight.png'));
+  }, skip: !enabled);
+
   testWidgets('журнал крупным шрифтом (1.3×): без переполнений',
       (tester) async {
     tester.view.physicalSize = const Size(1170, 3000);

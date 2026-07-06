@@ -121,8 +121,8 @@ class _PhotoStripState extends State<PhotoStrip> {
           ConstrainedBox(
             constraints: const BoxConstraints(maxHeight: 480),
             child: Image.file(File(photo.filePath),
-                errorBuilder: (_, __, ___) => const Padding(
-                      padding: EdgeInsets.all(GfSpace.x24),
+                errorBuilder: (_, __, ___) => Padding(
+                      padding: const EdgeInsets.all(GfSpace.x24),
                       child: Text('Файл фото не найден на устройстве',
                           style: GfText.body),
                     )),
@@ -202,7 +202,7 @@ class _PhotoStripState extends State<PhotoStrip> {
                       width: 96,
                       height: 96,
                       color: GfColors.surface,
-                      child: const Icon(Icons.broken_image_outlined,
+                      child: Icon(Icons.broken_image_outlined,
                           color: GfColors.textFaint),
                     ),
                   ),
@@ -217,18 +217,18 @@ class _PhotoStripState extends State<PhotoStrip> {
               height: 96,
               decoration: gfCard(),
               child: _busy
-                  ? const Center(
+                  ? Center(
                       child: SizedBox(
                           width: 24,
                           height: 24,
                           child: CircularProgressIndicator(
                               strokeWidth: 2, color: GfColors.accent)))
-                  : const Column(
+                  : Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Icon(Icons.add_a_photo_outlined,
                             color: GfColors.textSecondary),
-                        SizedBox(height: GfSpace.x4),
+                        const SizedBox(height: GfSpace.x4),
                         Text('+ Фото', style: GfText.hint),
                       ],
                     ),

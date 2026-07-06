@@ -330,7 +330,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
       child: Scaffold(
         appBar: AppBar(
           backgroundColor: GfColors.bg,
-          title: const Text('Точка наблюдения', style: GfText.screenTitle),
+          title: Text('Точка наблюдения', style: GfText.screenTitle),
           actions: [
             if (_isDraft)
               Padding(
@@ -343,7 +343,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
                       color: GfColors.draftBg,
                       borderRadius: BorderRadius.circular(GfRadius.r8),
                     ),
-                    child: const Text('черновик',
+                    child: Text('черновик',
                         style: TextStyle(fontSize: 12, color: GfColors.draft)),
                   ),
                 ),
@@ -400,7 +400,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('НОМЕР ТОЧКИ', style: GfText.sectionLabel),
+        Text('НОМЕР ТОЧКИ', style: GfText.sectionLabel),
         const SizedBox(height: GfSpace.x8),
         TextField(
           controller: _numberCtrl,
@@ -585,7 +585,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
         _dictAutocomplete(_alterationCtrl, _alterationFocus, _alterations,
             'Вторичные изменения (окварцевание, серицитизация…)'),
         const SizedBox(height: GfSpace.x12),
-        const Text('МИНЕРАЛИЗАЦИЯ', style: GfText.sectionLabel),
+        Text('МИНЕРАЛИЗАЦИЯ', style: GfText.sectionLabel),
         const SizedBox(height: GfSpace.x8),
         _mineralChips(),
         const SizedBox(height: GfSpace.x12),
@@ -609,7 +609,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
 
   Widget _mineralChips() {
     if (_mineralDict.isEmpty) {
-      return const Text('Справочник минералов пуст — обновите с сервера',
+      return Text('Справочник минералов пуст — обновите с сервера',
           style: GfText.hint);
     }
     return Wrap(
@@ -690,7 +690,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
           Padding(
             padding: const EdgeInsets.only(bottom: GfSpace.x8),
             child: Row(children: [
-              const Icon(Icons.architecture,
+              Icon(Icons.architecture,
                   size: 18, color: GfColors.textSecondary),
               const SizedBox(width: GfSpace.x8),
               Expanded(

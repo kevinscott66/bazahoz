@@ -64,6 +64,13 @@ class TestHarness {
 
   ThemeData get themeData => buildGeoFieldTheme();
 
+  /// Переключить активную палитру на «день на снегу» и вернуть тёмную по
+  /// завершении теста — глобальная палитра не должна течь между тестами.
+  static void useDaylight(WidgetTester tester) {
+    GfColors.use(GfPalette.daylight);
+    addTearDown(() => GfColors.use(GfPalette.dark));
+  }
+
   JournalScreen journalScreen() => JournalScreen(
         points: points,
         samples: samples,
@@ -79,10 +86,15 @@ class TestHarness {
         lab: lab,
       );
 
-  Widget journal() => MaterialApp(
-        debugShowCheckedModeBanner: false,
-        theme: buildGeoFieldTheme(),
-        home: journalScreen(),
+  /// Как в приложении: тема и масштаб живут под слушателем display, поэтому
+  /// смена «дня на снегу» пересобирает MaterialApp целиком (тест темы это ловит).
+  Widget journal() => ListenableBuilder(
+        listenable: display,
+        builder: (context, _) => MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: buildGeoFieldTheme(display.palette),
+          home: journalScreen(),
+        ),
       );
 
   Widget wrap(Widget screen) => MaterialApp(

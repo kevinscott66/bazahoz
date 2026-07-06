@@ -37,7 +37,7 @@ class _Booting extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: buildGeoFieldTheme(),
-      home: const Scaffold(
+      home: Scaffold(
         body: Center(child: CircularProgressIndicator(color: GfColors.accent)),
       ),
     );
@@ -62,11 +62,11 @@ class _BootError extends StatelessWidget {
           child: ListView(
             padding: const EdgeInsets.all(GfSpace.x24),
             children: [
-              const Icon(Icons.error_outline, size: 48, color: GfColors.error),
+              Icon(Icons.error_outline, size: 48, color: GfColors.error),
               const SizedBox(height: GfSpace.x16),
-              const Text('Хранилище не открылось', style: GfText.screenTitle),
+              Text('Хранилище не открылось', style: GfText.screenTitle),
               const SizedBox(height: GfSpace.x8),
-              const Text(
+              Text(
                 'Данные не тронуты. Сфотографируйте этот экран и передайте '
                 'разработчику.',
                 style: GfText.body,
@@ -108,33 +108,35 @@ class GeoFieldApp extends StatelessWidget {
     final lab = LabService(database.db, samples,
         deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
 
-    return MaterialApp(
-      title: 'GeoField',
-      debugShowCheckedModeBanner: false,
-      theme: buildGeoFieldTheme(),
-      // Масштаб шрифта применяется НАД навигатором — на все экраны и шторки
-      // (ТЗ §4.5). Перестраивается при смене настройки.
-      builder: (context, child) => ListenableBuilder(
-        listenable: display,
-        builder: (context, _) => MediaQuery.withClampedTextScaling(
+    // Тема И масштаб шрифта живут в display: смена «дня на снегу» меняет
+    // тему целиком, поэтому весь MaterialApp пересобирается под слушателем
+    // (навигатор и его стек при этом сохраняются — обычный приём смены темы).
+    return ListenableBuilder(
+      listenable: display,
+      builder: (context, _) => MaterialApp(
+        title: 'GeoField',
+        debugShowCheckedModeBanner: false,
+        theme: buildGeoFieldTheme(display.palette),
+        // Масштаб шрифта применяется НАД навигатором — на все экраны и шторки.
+        builder: (context, child) => MediaQuery.withClampedTextScaling(
           minScaleFactor: display.textScale,
           maxScaleFactor: display.textScale,
           child: child!,
         ),
-      ),
-      home: JournalScreen(
-        points: points,
-        samples: samples,
-        dictionaries: dictionaries,
-        photos: photos,
-        display: display,
-        projectId: demoProjectId,
-        routeId: demoRouteId,
-        authorId: demoAuthorId,
-        sampleNumbering: demoNumbering,
-        deviceId: demoDeviceId,
-        clock: clock,
-        lab: lab,
+        home: JournalScreen(
+          points: points,
+          samples: samples,
+          dictionaries: dictionaries,
+          photos: photos,
+          display: display,
+          projectId: demoProjectId,
+          routeId: demoRouteId,
+          authorId: demoAuthorId,
+          sampleNumbering: demoNumbering,
+          deviceId: demoDeviceId,
+          clock: clock,
+          lab: lab,
+        ),
       ),
     );
   }

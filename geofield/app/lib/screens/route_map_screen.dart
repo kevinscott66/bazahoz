@@ -41,16 +41,16 @@ class RouteMapScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: GfColors.bg,
-        title: const Text('Схема маршрута', style: GfText.screenTitle),
+        title: Text('Схема маршрута', style: GfText.screenTitle),
       ),
       body: SafeArea(
         child: Column(
           children: [
             Expanded(
               child: located.isEmpty
-                  ? const Center(
+                  ? Center(
                       child: Padding(
-                        padding: EdgeInsets.all(GfSpace.x24),
+                        padding: const EdgeInsets.all(GfSpace.x24),
                         child: Text(
                           'Пока нет точек с координатами — снимите GPS или '
                           'введите координаты в форме точки',
@@ -69,7 +69,7 @@ class RouteMapScreen extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.all(GfSpace.x16),
                 child: Row(children: [
-                  const Icon(Icons.location_off_outlined,
+                  Icon(Icons.location_off_outlined,
                       size: 18, color: GfColors.textSecondary),
                   const SizedBox(width: GfSpace.x8),
                   Expanded(
@@ -248,7 +248,7 @@ class _RoutePainter extends CustomPainter {
     canvas.drawLine(Offset(x, y - 12), Offset(x - 4, y - 6), paint);
     canvas.drawLine(Offset(x, y - 12), Offset(x + 4, y - 6), paint);
     (TextPainter(
-      text: const TextSpan(text: 'С', style: GfText.hint),
+      text: TextSpan(text: 'С', style: GfText.hint),
       textDirection: TextDirection.ltr,
     )..layout())
         .paint(canvas, Offset(x - 4, y - 30));

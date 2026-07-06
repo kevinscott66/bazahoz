@@ -68,7 +68,7 @@ class _LabScreenState extends State<LabScreen> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: GfColors.bg,
-        title: const Text('Лаборатория', style: GfText.screenTitle),
+        title: Text('Лаборатория', style: GfText.screenTitle),
       ),
       body: SafeArea(
         child: _loading
@@ -130,7 +130,7 @@ class _LabScreenState extends State<LabScreen> {
         Text(title, style: GfText.sectionLabel),
         const SizedBox(height: GfSpace.x8),
         if (items.isEmpty)
-          const Text('—', style: GfText.hint)
+          Text('—', style: GfText.hint)
         else
           for (final s in items) SampleRow(s),
       ],
@@ -209,7 +209,7 @@ class _LabScreenState extends State<LabScreen> {
         content: TextField(
           controller: pathCtrl,
           style: GfText.body,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
               hintText: 'Путь к CSV-файлу лаборатории', hintStyle: GfText.hint),
         ),
         actions: [

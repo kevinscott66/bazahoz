@@ -259,7 +259,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
       child: Scaffold(
         appBar: AppBar(
           backgroundColor: GfColors.bg,
-          title: const Text('Регистрация пробы', style: GfText.screenTitle),
+          title: Text('Регистрация пробы', style: GfText.screenTitle),
           actions: [
             IconButton(
               tooltip: _gloveMode ? 'Перчатки: вкл' : 'Перчатки: выкл',
@@ -336,7 +336,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
       decoration: gfCard(),
       child: Row(
         children: [
-          const Icon(Icons.link, size: 20, color: GfColors.textSecondary),
+          Icon(Icons.link, size: 20, color: GfColors.textSecondary),
           const SizedBox(width: GfSpace.x8),
           Expanded(
             child: Text('Привязано к: $_bindLabel', style: GfText.body),
@@ -362,8 +362,8 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
           shrinkWrap: true,
           padding: const EdgeInsets.symmetric(vertical: GfSpace.x8),
           children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
                   GfSpace.x16, GfSpace.x8, GfSpace.x16, GfSpace.x8),
               child: Text('ПРИВЯЗАТЬ К ТОЧКЕ', style: GfText.sectionLabel),
             ),
@@ -402,7 +402,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
           child: Row(children: [
             Expanded(child: Text(label, style: GfText.body)),
             if (selected)
-              const Icon(Icons.check, size: 20, color: GfColors.accent),
+              Icon(Icons.check, size: 20, color: GfColors.accent),
           ]),
         ),
       );
@@ -593,7 +593,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
           children: [
             _tagPreview(number),
             const SizedBox(height: GfSpace.x12),
-            const Text('Нет принтера — сфотографировать/наклеить код от руки',
+            Text('Нет принтера — сфотографировать/наклеить код от руки',
                 style: GfText.hint, textAlign: TextAlign.center),
           ],
         ),

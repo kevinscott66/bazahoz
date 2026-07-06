@@ -131,27 +131,27 @@ class _JournalScreenState extends State<JournalScreen> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: GfColors.bg,
-        title: const Text('Маршрут · журнал', style: GfText.screenTitle),
+        title: Text('Маршрут · журнал', style: GfText.screenTitle),
         actions: [
           IconButton(
             tooltip: 'Размер шрифта',
-            icon: const Icon(Icons.format_size, color: GfColors.textSecondary),
+            icon: Icon(Icons.format_size, color: GfColors.textSecondary),
             onPressed: _onDisplaySettings,
           ),
           IconButton(
             tooltip: 'Схема маршрута',
-            icon: const Icon(Icons.scatter_plot_outlined,
+            icon: Icon(Icons.scatter_plot_outlined,
                 color: GfColors.textSecondary),
             onPressed: _onOpenMap,
           ),
           IconButton(
             tooltip: 'Выгрузка CSV',
-            icon: const Icon(Icons.ios_share, color: GfColors.textSecondary),
+            icon: Icon(Icons.ios_share, color: GfColors.textSecondary),
             onPressed: _onExport,
           ),
           IconButton(
             tooltip: 'Лаборатория',
-            icon: const Icon(Icons.science_outlined,
+            icon: Icon(Icons.science_outlined,
                 color: GfColors.textSecondary),
             onPressed: () async {
               await Navigator.of(context).push(MaterialPageRoute<void>(
@@ -167,7 +167,7 @@ class _JournalScreenState extends State<JournalScreen> {
           ),
           IconButton(
             tooltip: 'Синхронизация',
-            icon: const Icon(Icons.sync, color: GfColors.textSecondary),
+            icon: Icon(Icons.sync, color: GfColors.textSecondary),
             onPressed: () async {
               await Navigator.of(context).push(MaterialPageRoute<void>(
                 builder: (_) => SyncScreen(
@@ -210,12 +210,12 @@ class _JournalScreenState extends State<JournalScreen> {
                       decoration: gfInputDecoration(
                         hint: 'Поиск по номеру (точка или проба)',
                       ).copyWith(
-                        prefixIcon: const Icon(Icons.search,
+                        prefixIcon: Icon(Icons.search,
                             color: GfColors.textSecondary),
                         suffixIcon: _query.isEmpty
                             ? null
                             : IconButton(
-                                icon: const Icon(Icons.close,
+                                icon: Icon(Icons.close,
                                     color: GfColors.textSecondary),
                                 onPressed: () {
                                   _searchCtrl.clear();
@@ -300,7 +300,7 @@ class _JournalScreenState extends State<JournalScreen> {
           decoration: gfCard(
               borderColor: pt.isDraft ? GfColors.draft : GfColors.outline),
           child: Row(children: [
-            const Icon(Icons.place_outlined,
+            Icon(Icons.place_outlined,
                 size: 22, color: GfColors.textSecondary),
             const SizedBox(width: GfSpace.x12),
             Expanded(
@@ -389,8 +389,8 @@ class _JournalScreenState extends State<JournalScreen> {
           builder: (context, _) => Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Padding(
-                padding: EdgeInsets.fromLTRB(
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
                     GfSpace.x16, GfSpace.x16, GfSpace.x16, GfSpace.x8),
                 child: Align(
                   alignment: Alignment.centerLeft,
@@ -408,11 +408,40 @@ class _JournalScreenState extends State<JournalScreen> {
                     child: Row(children: [
                       Expanded(child: Text(label, style: GfText.body)),
                       if (widget.display.textScale == scale)
-                        const Icon(Icons.check,
-                            size: 20, color: GfColors.accent),
+                        Icon(Icons.check, size: 20, color: GfColors.accent),
                     ]),
                   ),
                 ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                    GfSpace.x16, GfSpace.x16, GfSpace.x16, GfSpace.x8),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('ТЕМА', style: GfText.sectionLabel),
+                ),
+              ),
+              for (final (label, daylight) in const [
+                ('Тёмная (ночь)', false),
+                ('День на снегу', true),
+              ])
+                InkWell(
+                  onTap: () => widget.display.setDaylight(daylight),
+                  child: Container(
+                    constraints: const BoxConstraints(minHeight: GfTouch.min),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: GfSpace.x16),
+                    alignment: Alignment.centerLeft,
+                    child: Row(children: [
+                      Icon(daylight ? Icons.wb_sunny_outlined : Icons.nightlight_outlined,
+                          size: 20, color: GfColors.textSecondary),
+                      const SizedBox(width: GfSpace.x12),
+                      Expanded(child: Text(label, style: GfText.body)),
+                      if (widget.display.daylight == daylight)
+                        Icon(Icons.check, size: 20, color: GfColors.accent),
+                    ]),
+                  ),
+                ),
+              const SizedBox(height: GfSpace.x8),
             ],
           ),
         ),

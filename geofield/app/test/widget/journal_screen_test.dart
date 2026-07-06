@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geofield/screens/point_form_screen.dart';
 import 'package:geofield/screens/sync_screen.dart';
+import 'package:geofield/theme/tokens.dart';
 
 import 'helpers.dart';
 
@@ -98,6 +99,33 @@ void main() {
     final row =
         await h.db.query('sync_state', where: "key = 'text_scale'", limit: 1);
     expect(row.single['value'], '1.15', reason: 'сохранено в sync_state');
+  });
+
+  testWidgets('«день на снегу»: выбор темы применяется и перекрашивает экран',
+      (tester) async {
+    addTearDown(() => GfColors.use(GfPalette.dark)); // не течь в соседние тесты
+    tallPhone(tester);
+    final h = await TestHarness.create();
+    addTearDown(h.close);
+    await tester.pumpWidget(h.journal());
+    await tester.pumpAndSettle();
+    expect(GfColors.active.brightness, Brightness.dark);
+
+    await tester.tap(find.byTooltip('Размер шрифта'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('День на снегу'));
+    await tester.pumpAndSettle();
+
+    expect(h.display.daylight, isTrue, reason: 'настройка применена');
+    expect(GfColors.active.brightness, Brightness.light,
+        reason: 'активная палитра переключилась на светлую');
+    final row = await h.db
+        .query('sync_state', where: "key = 'daylight_theme'", limit: 1);
+    expect(row.single['value'], '1', reason: 'сохранено в sync_state');
+
+    // Экран действительно перекрашен: AppBar взял светлый фон из палитры.
+    final appBar = tester.widget<AppBar>(find.byType(AppBar));
+    expect(appBar.backgroundColor, GfPalette.daylight.bg);
   });
 
   testWidgets('поиск по номеру отбирает точки и пробы', (tester) async {

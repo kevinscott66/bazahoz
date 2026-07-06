@@ -50,7 +50,7 @@ class FieldPicker extends StatelessWidget {
                       child: Row(children: [
                         Expanded(child: Text(text, style: GfText.body)),
                         if (code == selected)
-                          const Icon(Icons.check,
+                          Icon(Icons.check,
                               size: 20, color: GfColors.accent),
                       ]),
                     ),
@@ -64,7 +64,7 @@ class FieldPicker extends StatelessWidget {
       child: InputDecorator(
         decoration: gfInputDecoration(label: label).copyWith(
           suffixIcon:
-              const Icon(Icons.expand_more, color: GfColors.textSecondary),
+              Icon(Icons.expand_more, color: GfColors.textSecondary),
         ),
         isEmpty: current == null,
         child: current == null ? null : Text(current, style: GfText.body),
