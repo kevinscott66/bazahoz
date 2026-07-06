@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v146 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v147 · БЕТА</div>
   </div>
 </div>
 
@@ -480,7 +480,7 @@ function openProfilesSheet(){
   openSheet(`
     <div class="font-bold text-xl mb-1">🏠 Базы</div>
     <div class="text-xs opacity-70 mb-3">У каждой базы свой склад, журналы и места хранения. Переключение сохраняет текущую базу и открывает выбранную.</div>
-    <div class="space-y-1 max-h-72 overflow-y-auto" id="profList">${rows}</div>
+    <div class="space-y-1 max-h-72 overflow-y-auto" id="profList">${rows||`<div class="opacity-70 text-sm py-2">Баз пока нет</div>`}</div>
     <div class="flex gap-2 pt-3">
       ${canAddLocalBase()?`<button class="btn btn-primary flex-1" id="profAddBtn">➕ Новая база</button>`:""}
       <button class="btn btn-ghost ${canAddLocalBase()?"":"flex-1"}" data-close>Закрыть</button>
@@ -1933,7 +1933,7 @@ function editOp(kind, opId){
       <div>
         <div class="text-sm opacity-70 mb-1">Сменить позицию (опц.)</div>
         <input class="input" id="eopSearch" placeholder="Поиск по складу…" autocomplete="off" />
-        <div id="eopList" class="mt-2 space-y-1 max-h-48 overflow-y-auto list-box"></div>
+        <div id="eopList" class="mt-2 space-y-1 max-h-72 overflow-y-auto list-box"></div>
         <div class="text-xs opacity-60 mt-1" id="eopSel">Текущая: ${esc(op.productName)}${op.productId?" (привязана к складу)":" (вручную)"}</div>
         <input type="hidden" id="eopProdId" value="${esc(op.productId||"")}" />
       </div>
@@ -2929,7 +2929,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v146 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v147 · тестовый канал</div>
   `;
 }
 
@@ -3962,7 +3962,7 @@ async function openMembersSheet(){
   openSheet(`<div class="font-bold text-xl mb-3">👥 Работники базы</div><div class="opacity-70">Загрузка…</div>`);
   let members;
   try{ members = await cloudLoadBaseMembers(); }
-  catch(e){ console.warn("members load", e); openSheet(`<div class="font-bold text-xl mb-3">👥 Работники базы</div><div style="color:#dc2626">Не удалось загрузить список. Проверьте интернет и попробуйте ещё раз.</div><button class="btn btn-ghost w-full mt-3" data-close>Закрыть</button>`); return; }
+  catch(e){ console.warn("members load", e); openSheet(`<div class="font-bold text-xl mb-3">👥 Работники базы</div><div class="err-text text-sm">Не удалось загрузить список. Проверьте интернет и попробуйте ещё раз.</div><button class="btn btn-ghost w-full mt-3" data-close>Закрыть</button>`); return; }
   finally{ cloud._membersLoading = false; }
   const myId = cloud.profile && cloud.profile.id;
   const rows = members.slice().sort((a,b)=>(a.username||"").localeCompare(b.username||"","ru")).map(m=>{
@@ -4109,7 +4109,7 @@ function openAddMember(){
   const _amRoles = assignableRoles();   // роли строго ниже моего ранга
   openSheet(`<div class="font-bold text-xl mb-3">＋ Новый работник</div>
     <div class="space-y-3">
-      <div><div class="text-sm opacity-70 mb-1">Логин (от 3 до 32: английские буквы, цифры, _)</div>
+      <div><div class="text-sm opacity-70 mb-1">Логин (3–32: англ. буквы, цифры, _)</div>
         <input class="input" id="amu" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="напр. ivanov" /></div>
       <div><div class="text-sm opacity-70 mb-1">Пароль (не короче 6 символов)</div>
         <input class="input" id="amp" type="text" autocapitalize="none" autocorrect="off" placeholder="придумайте пароль" /></div>
@@ -4133,7 +4133,7 @@ async function doAddMember(){
   const password=document.getElementById("amp").value||"";
   const roleEl=document.getElementById("amr"); const role=roleEl?roleEl.value:"";
   if(!role){ toast("Выберите роль"); return; }
-  if(!/^[a-z0-9_]{3,32}$/.test(username)){ toast("Логин: от 3 до 32 символов — английские буквы, цифры, _"); return; }
+  if(!/^[a-z0-9_]{3,32}$/.test(username)){ toast("Логин: 3–32 символа — англ. буквы, цифры, _"); return; }
   if(password.length<6){ toast("Пароль не короче 6 символов"); return; }
   const btn=document.getElementById("amGo"); btn.disabled=true; btn.textContent="Создание…";
   try{
@@ -4213,17 +4213,19 @@ function openAddOrgMember(){
   document.getElementById("omGo").onclick=()=>doAddOrgMember();
   _omToggleParty();
 }
-function _omToggleParty(){
-  const sel=document.getElementById("omr"); if(!sel) return;
+// общий тумблер поля «регион» для форм орг-ролей (om — новый аккаунт, ae — существующий): показывает поле
+// только для роли scope==='party' и блокирует «Создать/Назначить», если регионов ещё нет.
+function _toggleOrgPartyField(prefix){
+  const sel=document.getElementById(prefix+"r"); if(!sel) return;
   const r=ORG_ROLES.find(x=>x.key===sel.value);
   const needParty = !!(r && r.scope==="party");
-  const wrap=document.getElementById("omPartyWrap");
+  const wrap=document.getElementById(prefix+"PartyWrap");
   if(wrap) wrap.style.display = needParty ? "" : "none";
-  // нельзя создать начальника партии, если регионов ещё нет — блокируем «Создать», а не упираемся в toast
-  const go=document.getElementById("omGo");
+  const go=document.getElementById(prefix+"Go");
   if(go){ const block = needParty && !((_orgCache.parties||[]).length);
     go.disabled = block; go.style.opacity = block ? ".5" : ""; go.title = block ? "Сначала создайте регион" : ""; }
 }
+function _omToggleParty(){ _toggleOrgPartyField("om"); }
 async function doAddOrgMember(){
   const username=(document.getElementById("omu").value||"").trim().toLowerCase();
   const password=document.getElementById("omp").value||"";
@@ -4264,14 +4266,7 @@ function openAssignExisting(){
   document.getElementById("aeGo").onclick=()=>doAssignExisting();
   _aeToggleParty();
 }
-function _aeToggleParty(){
-  const sel=document.getElementById("aer"); if(!sel) return;
-  const r=ORG_ROLES.find(x=>x.key===sel.value);
-  const needParty=!!(r && r.scope==="party");
-  const wrap=document.getElementById("aePartyWrap"); if(wrap) wrap.style.display = needParty ? "" : "none";
-  const go=document.getElementById("aeGo");
-  if(go){ const block=needParty && !((_orgCache.parties||[]).length); go.disabled=block; go.style.opacity=block?".5":""; go.title=block?"Сначала создайте регион":""; }
-}
+function _aeToggleParty(){ _toggleOrgPartyField("ae"); }
 async function doAssignExisting(){
   const username=(document.getElementById("aeu").value||"").trim().toLowerCase();
   const role=document.getElementById("aer").value;
@@ -4757,6 +4752,7 @@ async function cloudAutoLink(){
   // базы не получит чужие (их нет в его cloud.bases).
   let myBases = Object.keys(cloud.bases||{});
   cloud.members.forEach(m=>{ if(m.base_id && !myBases.includes(m.base_id)) myBases.push(m.base_id); });   // подстраховка
+  myBases.sort((a,b)=>String(cloud.bases[a]||"").localeCompare(String(cloud.bases[b]||""),"ru"));   // стабильный порядок → предсказуемая база по умолчанию (напр. у нач.партии с 2 базами)
   let changed=false, switchTo=null;
   for(const cid of myBases){
     if(profiles.list.some(x=>x.cloudId===cid)) continue;
@@ -5310,6 +5306,12 @@ async function cloudRefreshMyMembership(){
     if(Array.isArray(mem)) cloud.members=mem;
     if(Array.isArray(orgs)) cloud.orgRoles=orgs;
     if(Array.isArray(bs)){ cloud.bases={}; cloud._baseParty={}; bs.forEach(b=>{ cloud.bases[b.id]=b.name; cloud._baseParty[b.id]=b.party_id||null; }); }
+    // если появились новые видимые базы (выдали орг-роль/добавили в базу пока сидел в приложении) — привяжем их,
+    // иначе пользователь не увидит новые базы до перезахода (org_roles/base_members без реалтайма).
+    if(Array.isArray(bs)){
+      const linked = new Set(profiles.list.filter(x=>x.cloudId).map(x=>x.cloudId));
+      if(Object.keys(cloud.bases).some(cid=>!linked.has(cid))) await cloudAutoLink();
+    }
     renderHeader();
   }catch(_){}
 }
