@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:geofield/config/display_settings.dart';
 import 'package:geofield/data/database.dart';
 import 'package:geofield/data/demo_seed.dart';
 import 'package:geofield/data/dictionary_repository.dart';
@@ -15,7 +16,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 /// Живой стенд: реальная SQLite (in-memory, ffi) с демо-сидом + репозитории.
 class TestHarness {
   TestHarness._(this.db, this.clock, this.points, this.samples, this.dicts,
-      this.photos, this.lab);
+      this.photos, this.lab, this.display);
 
   final Database db;
   final HlcClock clock;
@@ -24,6 +25,7 @@ class TestHarness {
   final DictionaryRepository dicts;
   final PhotoRepository photos;
   final LabService lab;
+  final DisplaySettings display;
 
   static Future<TestHarness> create() async {
     sqfliteFfiInit();
@@ -55,25 +57,32 @@ class TestHarness {
         deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
     final lab = LabService(db, samples,
         deviceId: demoDeviceId, authorId: demoAuthorId, clock: clock);
-    return TestHarness._(db, clock, points, samples, dicts, photos, lab);
+    final display = await DisplaySettings.load(db);
+    return TestHarness._(
+        db, clock, points, samples, dicts, photos, lab, display);
   }
+
+  ThemeData get themeData => buildGeoFieldTheme();
+
+  JournalScreen journalScreen() => JournalScreen(
+        points: points,
+        samples: samples,
+        dictionaries: dicts,
+        photos: photos,
+        display: display,
+        projectId: demoProjectId,
+        routeId: demoRouteId,
+        authorId: demoAuthorId,
+        sampleNumbering: demoNumbering,
+        deviceId: demoDeviceId,
+        clock: clock,
+        lab: lab,
+      );
 
   Widget journal() => MaterialApp(
         debugShowCheckedModeBanner: false,
         theme: buildGeoFieldTheme(),
-        home: JournalScreen(
-          points: points,
-          samples: samples,
-          dictionaries: dicts,
-          photos: photos,
-          projectId: demoProjectId,
-          routeId: demoRouteId,
-          authorId: demoAuthorId,
-          sampleNumbering: demoNumbering,
-          deviceId: demoDeviceId,
-          clock: clock,
-          lab: lab,
-        ),
+        home: journalScreen(),
       );
 
   Widget wrap(Widget screen) => MaterialApp(

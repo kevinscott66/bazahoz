@@ -113,4 +113,59 @@ void main() {
     await expectLater(
         find.byType(MaterialApp), matchesGoldenFile('journal_main.png'));
   }, skip: !enabled);
+
+  testWidgets('журнал крупным шрифтом (1.3×): без переполнений',
+      (tester) async {
+    tester.view.physicalSize = const Size(1170, 3000);
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.reset);
+    final h = await TestHarness.create();
+    addTearDown(h.close);
+    final now = DateTime.now().toUtc().toIso8601String();
+    for (var i = 1; i <= 2; i++) {
+      await h.points.save(
+        ObservationPoint(
+          id: 'p$i',
+          routeId: demoRouteId,
+          number: 'Т-00$i',
+          lat: 62.78 + i * 0.001,
+          lon: 148.15 + i * 0.001,
+          coordSource: 'gps',
+          isDraft: i == 2,
+          authorId: demoAuthorId,
+          createdAt: now,
+          modifiedAt: now,
+        ),
+        isNew: true,
+      );
+    }
+    await h.samples.save(
+      Sample(
+        id: 's1',
+        projectId: demoProjectId,
+        parentType: 'point',
+        parentId: 'p1',
+        sampleNumber: 'SUZ-00001',
+        sampleType: 'core',
+        authorId: demoAuthorId,
+        createdAt: now,
+        modifiedAt: now,
+      ),
+      isNew: true,
+    );
+    // Тот же путь, что в приложении: масштаб применяется билдером над навигатором.
+    await tester.pumpWidget(MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: h.themeData,
+      builder: (context, child) => MediaQuery.withClampedTextScaling(
+        minScaleFactor: 1.3,
+        maxScaleFactor: 1.3,
+        child: child!,
+      ),
+      home: h.journalScreen(),
+    ));
+    await tester.pumpAndSettle();
+    await expectLater(
+        find.byType(MaterialApp), matchesGoldenFile('journal_large_text.png'));
+  }, skip: !enabled);
 }

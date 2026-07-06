@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'config/display_settings.dart';
 import 'data/database.dart';
 import 'data/demo_seed.dart';
 import 'data/dictionary_repository.dart';
@@ -20,7 +21,8 @@ Future<void> main() async {
     final app = await AppDatabase.open();
     await seedDemo(app.db);
     final clock = await HlcClock.load(app.db, demoDeviceId);
-    runApp(GeoFieldApp(database: app, clock: clock));
+    final display = await DisplaySettings.load(app.db);
+    runApp(GeoFieldApp(database: app, clock: clock, display: display));
   } catch (e, st) {
     runApp(_BootError(error: e, stack: st));
   }
@@ -82,10 +84,16 @@ class _BootError extends StatelessWidget {
 }
 
 class GeoFieldApp extends StatelessWidget {
-  const GeoFieldApp({super.key, required this.database, required this.clock});
+  const GeoFieldApp({
+    super.key,
+    required this.database,
+    required this.clock,
+    required this.display,
+  });
 
   final AppDatabase database;
   final HlcClock clock;
+  final DisplaySettings display;
 
   @override
   Widget build(BuildContext context) {
@@ -104,11 +112,22 @@ class GeoFieldApp extends StatelessWidget {
       title: 'GeoField',
       debugShowCheckedModeBanner: false,
       theme: buildGeoFieldTheme(),
+      // Масштаб шрифта применяется НАД навигатором — на все экраны и шторки
+      // (ТЗ §4.5). Перестраивается при смене настройки.
+      builder: (context, child) => ListenableBuilder(
+        listenable: display,
+        builder: (context, _) => MediaQuery.withClampedTextScaling(
+          minScaleFactor: display.textScale,
+          maxScaleFactor: display.textScale,
+          child: child!,
+        ),
+      ),
       home: JournalScreen(
         points: points,
         samples: samples,
         dictionaries: dictionaries,
         photos: photos,
+        display: display,
         projectId: demoProjectId,
         routeId: demoRouteId,
         authorId: demoAuthorId,

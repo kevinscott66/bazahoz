@@ -82,6 +82,24 @@ void main() {
     expect(find.textContaining('Точка Т-'), findsNWidgets(2));
   });
 
+  testWidgets('размер шрифта: выбор сохраняется и применяется', (tester) async {
+    tallPhone(tester);
+    final h = await TestHarness.create();
+    addTearDown(h.close);
+    await tester.pumpWidget(h.journal());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Размер шрифта'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Крупный'));
+    await tester.pumpAndSettle();
+
+    expect(h.display.textScale, 1.15, reason: 'настройка применена');
+    final row =
+        await h.db.query('sync_state', where: "key = 'text_scale'", limit: 1);
+    expect(row.single['value'], '1.15', reason: 'сохранено в sync_state');
+  });
+
   testWidgets('поиск по номеру отбирает точки и пробы', (tester) async {
     tallPhone(tester);
     final h = await TestHarness.create();

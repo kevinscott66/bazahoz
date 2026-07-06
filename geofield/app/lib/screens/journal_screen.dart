@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart' show getDatabasesPath;
 
+import '../config/display_settings.dart';
 import '../data/dictionary_repository.dart';
 import '../data/photo_repository.dart';
 import '../data/point_repository.dart';
@@ -35,6 +36,7 @@ class JournalScreen extends StatefulWidget {
     required this.samples,
     required this.dictionaries,
     required this.photos,
+    required this.display,
     required this.projectId,
     required this.routeId,
     required this.authorId,
@@ -48,6 +50,7 @@ class JournalScreen extends StatefulWidget {
   final SampleRepository samples;
   final DictionaryRepository dictionaries;
   final PhotoRepository photos;
+  final DisplaySettings display;
   final String projectId;
   final String routeId;
   final String authorId;
@@ -130,6 +133,11 @@ class _JournalScreenState extends State<JournalScreen> {
         backgroundColor: GfColors.bg,
         title: const Text('Маршрут · журнал', style: GfText.screenTitle),
         actions: [
+          IconButton(
+            tooltip: 'Размер шрифта',
+            icon: const Icon(Icons.format_size, color: GfColors.textSecondary),
+            onPressed: _onDisplaySettings,
+          ),
           IconButton(
             tooltip: 'Схема маршрута',
             icon: const Icon(Icons.scatter_plot_outlined,
@@ -219,13 +227,17 @@ class _JournalScreenState extends State<JournalScreen> {
                   ),
                   Padding(
                     padding: const EdgeInsets.all(GfSpace.x16),
-                    child: Row(children: [
-                      _chip('Все', _Filter.all),
-                      const SizedBox(width: GfSpace.x8),
-                      _chip('Черновики', _Filter.drafts),
-                      const SizedBox(width: GfSpace.x8),
-                      _chip('Не отправлено', _Filter.unsent),
-                    ]),
+                    // Wrap, а не Row: при крупном шрифте (ТЗ §4.5) три чипа не
+                    // влезают в строку — переносятся, а не переполняют её.
+                    child: Wrap(
+                      spacing: GfSpace.x8,
+                      runSpacing: GfSpace.x8,
+                      children: [
+                        _chip('Все', _Filter.all),
+                        _chip('Черновики', _Filter.drafts),
+                        _chip('Не отправлено', _Filter.unsent),
+                      ],
+                    ),
                   ),
                   Expanded(
                     child: (points.isEmpty && samples.isEmpty)
@@ -366,6 +378,47 @@ class _JournalScreenState extends State<JournalScreen> {
   }
 
   // --- действия -------------------------------------------------------------------
+
+  Future<void> _onDisplaySettings() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: GfColors.surfaceHi,
+      builder: (_) => SafeArea(
+        child: ListenableBuilder(
+          listenable: widget.display,
+          builder: (context, _) => Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(
+                    GfSpace.x16, GfSpace.x16, GfSpace.x16, GfSpace.x8),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('РАЗМЕР ШРИФТА', style: GfText.sectionLabel),
+                ),
+              ),
+              for (final (label, scale) in DisplaySettings.scales)
+                InkWell(
+                  onTap: () => widget.display.setTextScale(scale),
+                  child: Container(
+                    constraints: const BoxConstraints(minHeight: GfTouch.min),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: GfSpace.x16),
+                    alignment: Alignment.centerLeft,
+                    child: Row(children: [
+                      Expanded(child: Text(label, style: GfText.body)),
+                      if (widget.display.textScale == scale)
+                        const Icon(Icons.check,
+                            size: 20, color: GfColors.accent),
+                    ]),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   Future<void> _onOpenMap() async {
     final counts = <String, int>{};
