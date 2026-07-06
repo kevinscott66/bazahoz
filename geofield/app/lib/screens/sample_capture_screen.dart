@@ -319,11 +319,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
   Widget _binding() {
     return Container(
       padding: const EdgeInsets.all(GfSpace.x12),
-      decoration: BoxDecoration(
-        color: GfColors.surface,
-        borderRadius: BorderRadius.circular(GfRadius.r12),
-        border: Border.all(color: GfColors.outline),
-      ),
+      decoration: gfCard(),
       child: Row(
         children: [
           const Icon(Icons.link, size: 20, color: GfColors.textSecondary),
@@ -426,8 +422,10 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
     );
   }
 
+  // Плавающая подпись поверх рамки — как на форме точки (единый вид полей
+  // обеих главных форм, конвенция gfInputDecoration).
   InputDecoration _fieldDecoration({required String hint}) =>
-      gfInputDecoration(hint: hint);
+      gfInputDecoration(hint: hint, label: hint);
 
   Widget _barcodeRow() {
     return Row(
@@ -596,6 +594,8 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
     if (!confirmed) return;
     if (_persistedOnce) {
       try {
+        // Фото пробы (керн, бирка) — её аннотации: каскадно, без сирот.
+        await widget.photos.softDeleteForParent('sample', _id);
         await widget.repository.softDelete(_current(version: _version));
       } catch (e) {
         // Симметрично _doSave: реальный сбой хранилища не проглатываем и не

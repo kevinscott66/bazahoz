@@ -92,4 +92,38 @@ void main() {
     expect(File(photo.filePath).existsSync(), isTrue,
         reason: 'файл не удаляется до синхронизации — восстановимо');
   });
+
+  test('softDeleteForParent: каскад фото при удалении родителя, без сирот',
+      () async {
+    final db = await databaseFactory.openDatabase(
+      inMemoryDatabasePath,
+      options: OpenDatabaseOptions(
+        version: 3,
+        onCreate: (d, _) async {
+          await AppDatabase.migrate001(d);
+          await AppDatabase.migrate002(d);
+        },
+      ),
+    );
+    addTearDown(() => db.close());
+    final clock = await HlcClock.load(db, 'dev-t');
+    final repo =
+        PhotoRepository(db, deviceId: 'dev-t', authorId: 'geo-t', clock: clock);
+    final tmp = Directory.systemTemp.createTempSync('geofield_cascade');
+    File src(String n) => File(p.join(tmp.path, n))..writeAsBytesSync([1]);
+
+    await repo.addFromFile(src('a.jpg').path,
+        parentType: 'point', parentId: 'pt-1');
+    await repo.addFromFile(src('b.jpg').path,
+        parentType: 'point', parentId: 'pt-1');
+    await repo.addFromFile(src('c.jpg').path,
+        parentType: 'point', parentId: 'pt-2'); // чужой родитель
+
+    final n = await repo.softDeleteForParent('point', 'pt-1');
+    expect(n, 2);
+    expect(await repo.listByParent('point', 'pt-1'), isEmpty,
+        reason: 'фото удалённой точки не осиротели');
+    expect(await repo.listByParent('point', 'pt-2'), hasLength(1),
+        reason: 'фото другой точки не тронуты');
+  });
 }

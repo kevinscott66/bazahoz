@@ -104,6 +104,12 @@ void tallPhone(WidgetTester tester) {
 Finder textFieldValued(String value) => find
     .byWidgetPredicate((w) => w is TextField && w.controller?.text == value);
 
+/// TextField по labelText оформления — однозначно (одно поле на подпись).
+/// widgetWithText у поля с совпадающими label и hint матчит два Text-потомка
+/// ОДНОГО поля и падает как «нашлось два».
+Finder textFieldLabeled(String label) => find.byWidgetPredicate(
+    (w) => w is TextField && w.decoration?.labelText == label);
+
 /// Дать реальному вводу-выводу (файлы, сокеты) завершиться под FakeAsync.
 Future<void> realIo(WidgetTester tester,
     [Duration d = const Duration(milliseconds: 500)]) {

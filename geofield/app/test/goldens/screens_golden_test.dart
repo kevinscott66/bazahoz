@@ -138,7 +138,7 @@ void main() {
       ),
     )));
     await settleSave(tester);
-    await tester.enterText(find.widgetWithText(TextField, 'Масса, кг'), '2,4');
+    await tester.enterText(textFieldLabeled('Масса, кг'), '2,4');
     await settleSave(tester);
     await expectLater(
         find.byType(MaterialApp), matchesGoldenFile('sample_capture.png'));

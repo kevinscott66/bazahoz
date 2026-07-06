@@ -1,4 +1,3 @@
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geofield/data/demo_seed.dart';
 import 'package:geofield/models/sample.dart';
@@ -49,18 +48,18 @@ void main() {
     final h = await pumpSample(tester);
     // Керн (по умолчанию): интервал видим.
     expect(find.text('ИНТЕРВАЛ ОТБОРА (м)'), findsOneWidget);
-    expect(find.widgetWithText(TextField, 'Длина, м'), findsNothing);
+    expect(textFieldLabeled('Длина, м'), findsNothing);
 
     await tester.tap(find.text('Борозда'));
     await settleSave(tester);
     expect(find.text('ИНТЕРВАЛ ОТБОРА (м)'), findsNothing);
-    expect(find.widgetWithText(TextField, 'Длина, м'), findsOneWidget);
+    expect(textFieldLabeled('Длина, м'), findsOneWidget);
 
     await tester.ensureVisible(find.text('Штуф'));
     await tester.tap(find.text('Штуф'));
     await settleSave(tester);
     expect(find.text('ИНТЕРВАЛ ОТБОРА (м)'), findsNothing);
-    expect(find.widgetWithText(TextField, 'Длина, м'), findsNothing);
+    expect(textFieldLabeled('Длина, м'), findsNothing);
     final row = (await h.db.query('samples')).single;
     expect(row['sample_type'], 'grab');
   });
@@ -69,8 +68,8 @@ void main() {
       '«До < От» блокирует, исправление сохраняет; смена типа снимает блок',
       (tester) async {
     final h = await pumpSample(tester);
-    await tester.enterText(find.widgetWithText(TextField, 'От'), '10');
-    await tester.enterText(find.widgetWithText(TextField, 'До'), '5');
+    await tester.enterText(textFieldLabeled('От'), '10');
+    await tester.enterText(textFieldLabeled('До'), '5');
     await settleSave(tester);
     expect(find.text('«До» не может быть меньше «От»'), findsOneWidget);
     var row = (await h.db.query('samples')).single;
@@ -89,7 +88,7 @@ void main() {
     // Обратно керн, валидный интервал — персистится.
     await tester.tap(find.text('Керн'));
     await settleSave(tester);
-    await tester.enterText(find.widgetWithText(TextField, 'До'), '12');
+    await tester.enterText(textFieldLabeled('До'), '12');
     await settleSave(tester);
     row = (await h.db.query('samples')).single;
     expect(row['depth_from'], 10.0);
@@ -98,7 +97,7 @@ void main() {
 
   testWidgets('пустой номер: ошибка, «Готово» не закрывает', (tester) async {
     await pumpSample(tester);
-    await tester.enterText(find.widgetWithText(TextField, 'SUZ-00001'), '');
+    await tester.enterText(textFieldValued('SUZ-00001'), '');
     await settleSave(tester);
     expect(find.text('Номер пробы обязателен'), findsOneWidget);
     await tester.tap(find.text('Готово'));
@@ -161,7 +160,7 @@ void main() {
     // не делает insert — записи нужна база).
     await h.samples.save(existing, isNew: true);
 
-    await tester.enterText(find.widgetWithText(TextField, 'Масса, кг'), '2,5');
+    await tester.enterText(textFieldLabeled('Масса, кг'), '2,5');
     await settleSave(tester);
     final row = (await h.db.query('samples', where: "id = 's-ed'")).single;
     expect(row['status'], 'packed',

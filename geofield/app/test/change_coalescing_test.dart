@@ -49,8 +49,8 @@ void main() {
       'modified_at': 't',
     });
     final clock = await HlcClock.load(db, 'dev-t');
-    samples = SampleRepository(db,
-        deviceId: 'dev-t', authorId: 'geo', clock: clock);
+    samples =
+        SampleRepository(db, deviceId: 'dev-t', authorId: 'geo', clock: clock);
   });
 
   tearDown(() => db.close());
@@ -66,8 +66,7 @@ void main() {
     final log = await db.query('change_log');
     expect(log, hasLength(1));
     expect(log.single['op'], 'insert');
-    final payload =
-        (jsonDecode(log.single['payload'] as String) as Map);
+    final payload = (jsonDecode(log.single['payload'] as String) as Map);
     expect(payload['version'], 4, reason: 'итоговое состояние, не первое');
   });
 
@@ -76,11 +75,43 @@ void main() {
     await samples.save(await sample('s1'), isNew: true);
     await db.update('change_log', {'synced': 1}); // как после сеанса
     await samples.save(await sample('s1', version: 2), isNew: false);
-    final unsynced =
-        await db.query('change_log', where: 'synced = 0');
+    final unsynced = await db.query('change_log', where: 'synced = 0');
     expect(unsynced, hasLength(1));
     expect(unsynced.single['op'], 'update',
         reason: 'подтверждённую мутацию трогать нельзя — дельта отдельно');
+  });
+
+  test(
+      'заявленную в push строку (ack_batch) правка НЕ склеивает — отдельная '
+      'строка, не потеря правки', () async {
+    await samples.save(await sample('s1'), isNew: true);
+    // Движок заявил строку в пакет и ждёт ack (спутник) — помечаем как он.
+    await db.update('change_log', {'ack_batch': 'sending'},
+        where: 'synced = 0');
+    // Пока ack не пришёл, пользователь правит ту же запись.
+    await samples.save(await sample('s1', version: 2), isNew: false);
+
+    final rows = await db.query('change_log', orderBy: 'seq');
+    expect(rows, hasLength(2),
+        reason: 'правка легла ОТДЕЛЬНОЙ строкой, не влилась в отправленную');
+    expect(rows.first['ack_batch'], 'sending',
+        reason:
+            'отправленная строка не тронута — relay подтвердит ЕЁ содержимое');
+    expect(rows.last['ack_batch'], isNull);
+    expect(rows.last['op'], 'update');
+    expect((jsonDecode(rows.last['payload'] as String) as Map)['version'], 2);
+  });
+
+  test('удаление заявленной в push записи оставляет tombstone (не схлопывает)',
+      () async {
+    await samples.save(await sample('s1'), isNew: true);
+    await db.update('change_log', {'ack_batch': 'sending'},
+        where: 'synced = 0'); // insert ушёл в пакет
+    await samples.softDelete(await sample('s1'));
+    final rows = await db.query('change_log', orderBy: 'seq');
+    expect(rows, hasLength(2),
+        reason: 'insert мог дойти до relay — нужен delete');
+    expect(rows.last['op'], 'delete');
   });
 
   test('черновик умер до синхронизации — журнал пуст (без tombstone)',
@@ -132,8 +163,8 @@ void main() {
 
     await compactChangeLog(db);
 
-    final s1 = await db.query('change_log',
-        where: "entity_id = 's1' AND synced = 0");
+    final s1 =
+        await db.query('change_log', where: "entity_id = 's1' AND synced = 0");
     expect(s1, hasLength(1));
     expect(s1.single['op'], 'insert');
     final p1 = jsonDecode(s1.single['payload'] as String) as Map;
@@ -144,13 +175,14 @@ void main() {
 
     expect(await db.query('change_log', where: "entity_id = 's2'"), isEmpty);
 
-    final s3 = await db.query('change_log',
-        where: "entity_id = 's3' AND synced = 0");
+    final s3 =
+        await db.query('change_log', where: "entity_id = 's3' AND synced = 0");
     expect(s3, hasLength(1));
     expect(s3.single['op'], 'update');
     expect((jsonDecode(s3.single['payload'] as String) as Map)['note'], 'yz');
     // Подтверждённая история s3 не тронута.
-    expect(await db.query('change_log', where: "entity_id = 's3' AND synced = 1"),
+    expect(
+        await db.query('change_log', where: "entity_id = 's3' AND synced = 1"),
         hasLength(1));
   });
 }

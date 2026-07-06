@@ -96,6 +96,9 @@ class _PhotoStripState extends State<PhotoStrip> {
       return;
     }
     if (path == null) return; // отменил — не ошибка
+    // Камера могла держать экран открытым долго — за это время форму могли
+    // закрыть (навигация назад). setState на размонтированном State — краш.
+    if (!mounted) return;
 
     setState(() => _busy = true);
     try {

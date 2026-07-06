@@ -596,7 +596,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
                 child: Text(
                   '${measureTypes[m.measureType] ?? m.measureType ?? '—'}: '
                   'аз. пад. ${_fmtNum(m.dipAzimuth)}° / угол ${_fmtNum(m.dipAngle)}°',
-                  style: GfText.number.copyWith(fontSize: 16),
+                  style: GfText.numberSmall,
                 ),
               ),
             ]),
@@ -817,6 +817,8 @@ class _PointFormScreenState extends State<PointFormScreen> {
     if (!confirmed) return;
     if (_persistedOnce) {
       try {
+        // Фото точки — её аннотации: каскадно, чтобы не осталось сирот.
+        await widget.photos.softDeleteForParent('point', _id);
         final ex = await widget.points.byId(_id);
         if (ex != null) await widget.points.softDelete(ex);
       } catch (e) {

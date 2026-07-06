@@ -1,6 +1,7 @@
-import 'dart:io' show Platform;
+import 'dart:io' show Directory, File, Platform;
 
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart' show databaseFactorySqflitePlugin;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -29,8 +30,7 @@ class AppDatabase {
       // первый openDatabase на устройстве падает StateError.
       databaseFactory = databaseFactorySqflitePlugin;
     }
-    final dbPath =
-        path ?? p.join(await databaseFactory.getDatabasesPath(), 'geofield.db');
+    final dbPath = path ?? await _deviceDbPath();
 
     final database = await databaseFactory.openDatabase(
       dbPath,
@@ -59,6 +59,32 @@ class AppDatabase {
       ),
     );
     return AppDatabase._(database);
+  }
+
+  /// Путь к базе на устройстве — в Application Support, а НЕ в Documents.
+  /// Info.plist включает file sharing (выгрузки CSV и фото видны в «Файлах»),
+  /// а `getDatabasesPath()` на iOS — это Documents; держать там базу значило бы
+  /// отдать весь SQLite с данными по недрам на копирование через «Файлы»/Finder
+  /// без всякой аутентификации. Application Support под file sharing не попадает.
+  /// Сборки 1–5 клали базу в Documents — переносим её один раз, чтобы не
+  /// потерять уже собранное в поле.
+  static Future<String> _deviceDbPath() async {
+    final supportDir = await getApplicationSupportDirectory();
+    final newPath = p.join(supportDir.path, 'geofield.db');
+    if (!File(newPath).existsSync()) {
+      final oldPath =
+          p.join(await databaseFactory.getDatabasesPath(), 'geofield.db');
+      if (File(oldPath).existsSync()) {
+        Directory(supportDir.path).createSync(recursive: true);
+        // Вместе с WAL/SHM — иначе после переноса база «забудет» незакоммиченный
+        // хвост. Оба каталога в контейнере приложения (один том) — rename дёшев.
+        for (final suffix in ['', '-wal', '-shm']) {
+          final src = File('$oldPath$suffix');
+          if (src.existsSync()) src.renameSync('$newPath$suffix');
+        }
+      }
+    }
+    return newPath;
   }
 
   /// Публична для тестов: стенды поднимают ту же схему на in-memory базе.

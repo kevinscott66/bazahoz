@@ -137,6 +137,13 @@ class SyncEngine {
     try {
       // --- PUSH: только дельта, пакетами, с подтверждением ---------------------
       final pending = await _pendingRows();
+      // Заявка на весь снимок ДО отправки: помечаем строки «в отправке»
+      // (ack_batch). Экран синхронизации не блокирует правки, и без заявки
+      // конкурентный автосейв склеил бы новую дельту в строку, уже ушедшую в
+      // пакет — ack за старое содержимое пометил бы synced=1 новое, и правка
+      // потерялась бы. Склейка (logChange) обходит заявленные строки, поэтому
+      // такая правка ложится отдельной строкой и уйдёт следующим сеансом.
+      await _claimForPush(pending);
       final packets = splitIntoPackets(
         [for (final r in pending) wireChange(r)],
         maxBytes: packetBytes,
@@ -237,6 +244,28 @@ class SyncEngine {
   }
 
   // --- PUSH внутренности ---------------------------------------------------------
+
+  /// Пометить снимок «в отправке» (ack_batch != NULL), чтобы склейка мутаций
+  /// его не трогала. Идемпотентно: повторная заявка после сбоя сеанса не
+  /// вредит, строки всё ещё synced=0 и переотправятся (relay дедуплицирует
+  /// по change_id). Реальный batch_id проставит _markSynced по ack.
+  Future<void> _claimForPush(List<Map<String, Object?>> rows) async {
+    if (rows.isEmpty) return;
+    final ids = [for (final r in rows) r['change_id'] as String];
+    await _db.transaction((txn) async {
+      const chunk = 500; // потолок переменных SQLite
+      for (var i = 0; i < ids.length; i += chunk) {
+        final part =
+            ids.sublist(i, i + chunk > ids.length ? ids.length : i + chunk);
+        final ph = List.filled(part.length, '?').join(',');
+        await txn.rawUpdate(
+          "UPDATE change_log SET ack_batch = 'sending' "
+          "WHERE change_id IN ($ph) AND synced = 0 AND ack_batch IS NULL",
+          part,
+        );
+      }
+    });
+  }
 
   Future<List<Map<String, Object?>>> _pendingRows() {
     return _db

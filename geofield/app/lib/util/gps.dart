@@ -53,7 +53,10 @@ Future<GpsFix> acquireGpsFix() async {
   return (
     lat: pos.latitude,
     lon: pos.longitude,
-    elevation: pos.altitude == 0 ? null : pos.altitude,
-    accuracy: pos.accuracy == 0 ? null : pos.accuracy,
+    // Высоту 0 (уровень моря, реальное значение для прибрежной точки) нельзя
+    // трактовать как «нет данных» — ориентируемся на точность высоты: <=0
+    // значит прибор высоту не дал (или платформа её не отдаёт).
+    elevation: pos.altitudeAccuracy > 0 ? pos.altitude : null,
+    accuracy: pos.accuracy > 0 ? pos.accuracy : null,
   );
 }

@@ -17,6 +17,7 @@ dependencies:
   qr_flutter: ^4.1.0          # QR штрихкода пробы на экран
   image_picker: ^1.1.2        # фото обнажений/проб: камера и галерея (ТЗ §6.6)
   geolocator: ^13.0.1         # координаты точки с приёмника (ТЗ §6.2)
+  path_provider: ^2.1.4       # БД в Application Support (вне file sharing)
 
 dev_dependencies:
   flutter_test:

@@ -45,7 +45,6 @@ class PhotoRepository {
         p.extension(sourcePath).isEmpty ? '.jpg' : p.extension(sourcePath);
     final dir = await photosDir();
     final destPath = p.join(dir.path, '$id$ext');
-    File(sourcePath).copySync(destPath);
     final now = nowIso();
     final photo = Photo(
       id: id,
@@ -61,6 +60,10 @@ class PhotoRepository {
     );
     final map = photo.toMap();
     try {
+      // Копия ВНУТРИ try: при переполнении диска copySync обрывается на
+      // полфайла — удаляем недописанную копию, иначе битая сирота останется
+      // навсегда (её нет в базе, никто не подчистит) и приблизит переполнение.
+      File(sourcePath).copySync(destPath);
       await _db.transaction((txn) async {
         await txn.insert('photos', map);
         await logChange(txn,
@@ -73,8 +76,13 @@ class PhotoRepository {
             deviceId: deviceId);
       });
     } catch (e) {
-      // Строка не записалась — копию не бросаем сиротой на диске.
-      File(destPath).deleteSync();
+      // Копию не бросаем сиротой. Сам cleanup не должен подменить исходную
+      // ошибку (файл залочен ОС/индексатором) — глотаем его отдельно, чтобы
+      // rethrow донёс настоящую причину сбоя.
+      try {
+        final orphan = File(destPath);
+        if (orphan.existsSync()) orphan.deleteSync();
+      } catch (_) {}
       rethrow;
     }
     return photo;
@@ -88,6 +96,18 @@ class PhotoRepository {
       orderBy: 'created_at',
     );
     return rows.map(Photo.fromMap).toList();
+  }
+
+  /// Каскад при удалении родителя: фото — аннотации точки/пробы, а не
+  /// самостоятельные записи (в отличие от проб, чьё удаление блокируется).
+  /// Мягко удаляем все фото родителя, чтобы не осталось сирот с parent_id
+  /// в никуда. Возвращает число удалённых.
+  Future<int> softDeleteForParent(String parentType, String parentId) async {
+    final photos = await listByParent(parentType, parentId);
+    for (final photo in photos) {
+      await softDelete(photo);
+    }
+    return photos.length;
   }
 
   /// Мягкое удаление строки. Файл НЕ трогаем: до синхронизации/камералки
