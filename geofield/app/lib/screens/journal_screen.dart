@@ -382,13 +382,24 @@ class _JournalScreenState extends State<JournalScreen> {
   Future<void> _onDisplaySettings() async {
     await showModalBottomSheet<void>(
       context: context,
-      backgroundColor: GfColors.surfaceHi,
-      builder: (_) => SafeArea(
-        child: ListenableBuilder(
-          listenable: widget.display,
-          builder: (context, _) => Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
+      // Фон шторки — ВНУТРИ ListenableBuilder (Container ниже), а не в параметре
+      // showModalBottomSheet: параметр вычислялся бы один раз, и при смене темы
+      // прямо в открытой шторке контент перекрасился бы, а панель — нет (тёмный
+      // текст на тёмном фоне). Именно этот компонент существует ради читаемости.
+      backgroundColor: Colors.transparent,
+      builder: (_) => ListenableBuilder(
+        listenable: widget.display,
+        builder: (context, _) => Container(
+          decoration: BoxDecoration(
+            color: GfColors.surfaceHi,
+            borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(GfRadius.r16)),
+          ),
+          child: SafeArea(
+            top: false,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
               Padding(
                 padding: const EdgeInsets.fromLTRB(
                     GfSpace.x16, GfSpace.x16, GfSpace.x16, GfSpace.x8),
@@ -446,6 +457,7 @@ class _JournalScreenState extends State<JournalScreen> {
           ),
         ),
       ),
+    ),
     );
   }
 

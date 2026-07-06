@@ -128,6 +128,31 @@ void main() {
     expect(appBar.backgroundColor, GfPalette.daylight.bg);
   });
 
+  testWidgets('шторка настроек перекрашивается при смене темы прямо в ней',
+      (tester) async {
+    addTearDown(() => GfColors.use(GfPalette.dark));
+    tallPhone(tester);
+    final h = await TestHarness.create();
+    addTearDown(h.close);
+    await tester.pumpWidget(h.journal());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Размер шрифта'));
+    await tester.pumpAndSettle();
+    // Переключаем на светлую тему НЕ закрывая шторку.
+    await tester.tap(find.text('День на снегу'));
+    await tester.pumpAndSettle();
+
+    // Панель самой шторки (не только её контент) взяла светлую палитру —
+    // иначе был бы тёмный текст на тёмном фоне ровно в компоненте читаемости.
+    final repainted = tester.widgetList<Container>(find.byType(Container)).where(
+        (c) =>
+            c.decoration is BoxDecoration &&
+            (c.decoration as BoxDecoration).color ==
+                GfPalette.daylight.surfaceHi);
+    expect(repainted, isNotEmpty, reason: 'фон шторки перекрасился в светлый');
+  });
+
   testWidgets('поиск по номеру отбирает точки и пробы', (tester) async {
     tallPhone(tester);
     final h = await TestHarness.create();

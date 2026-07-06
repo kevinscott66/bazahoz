@@ -115,7 +115,12 @@ List<double> gridLinesMeters(double min, double max, double step) {
 /// точки). Это РЕАЛЬНЫЕ координаты угла охвата (метровый датум) — честный
 /// георефер; метровая сетка внутри — НЕ клетки ГК (схема в локальной ENU).
 String sk42CornerLabel(double lat, double lon) {
+  // Нечисловая координата (NaN/∞) уронила бы wgs84ToSk42Gk на gkZone→floor;
+  // для валидированных полевых точек недостижимо, но подпись должна быть
+  // тотальной — прочерк, а не исключение/буквальное «NaN».
+  if (!lat.isFinite || !lon.isFinite) return 'X— Y—';
   final gk = wgs84ToSk42Gk(lat, lon);
+  if (!gk.x.isFinite || !gk.y.isFinite) return 'X— Y—';
   return 'X${gk.x.round()} Y${gk.y.round()}';
 }
 
@@ -130,10 +135,17 @@ String sk42Georef({
   required Set<int> zones,
   bool degenerate = false,
 }) {
+  final sorted = zones.toList()..sort();
+  // Диапазон «21–25» только если зоны идут подряд; при разрыве (например
+  // {25,27} — точки в несмежных зонах) перечисляем через запятую, чтобы не
+  // подразумевать зону 26, которой в наборе нет.
+  final contiguous =
+      sorted.isNotEmpty && sorted.last - sorted.first + 1 == sorted.length;
   final head = zones.length == 1
       ? 'СК-42 з.${zones.first} · ОМ ${gkCentralMeridian(zones.first).toStringAsFixed(0)}°'
-      : 'СК-42 Гаусса-Крюгера, зоны '
-          '${(zones.toList()..sort()).first}–${(zones.toList()..sort()).last}';
+      : contiguous
+          ? 'СК-42 Гаусса-Крюгера, зоны ${sorted.first}–${sorted.last}'
+          : 'СК-42 Гаусса-Крюгера, зоны ${sorted.join(', ')}';
   if (degenerate) {
     return '$head\n${sk42CornerLabel(nwLat, nwLon)} м';
   }
