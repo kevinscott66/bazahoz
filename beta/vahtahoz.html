@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v142 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v143 · БЕТА</div>
   </div>
 </div>
 
@@ -2917,7 +2917,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v142 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v143 · тестовый канал</div>
   `;
 }
 
@@ -3717,6 +3717,7 @@ async function cloudRest(path, token, opts, _retried){
       headers: Object.assign({ apikey:CLOUD_CFG.anon, Authorization:`Bearer ${token}` }, opts.headers||{}),
       body: opts.body
     });
+    _netConfirmed = true;   // ответ долетел → сеть точно есть (снимаем ложный navigator.onLine=false)
     // 401 = access-токен протух ПОСРЕДИ сессии (живёт ~1ч). Обновляем токен и повторяем ОДИН раз —
     // иначе синк падал «REST 401» до перезагрузки. Тело первого ответа не читаем, чтобы повтор был чистым.
     if(r.status===401 && !_retried && cloud.session && cloud.session.refresh_token){
@@ -4338,7 +4339,19 @@ async function exportOneBaseXlsx(baseId){
 const cloudDirtyKey = (cid)=>`vahtahoz_dirty_${cid}`;
 // удалить все sync-маркеры базы (dirty + снимки подписей) — при удалении/замене базы, чтобы не копить мусор
 function clearBaseSyncKeys(cid){ if(!cid) return; try{ localStorage.removeItem(cloudDirtyKey(cid)); for(const k of ["stock","jr","settings"]) localStorage.removeItem(`vahtahoz_sig_${k}_${cid}`); }catch(_){} }
-function cloudOnline(){ return navigator.onLine!==false; }
+// navigator.onLine на iOS standalone-PWA часто ЛОЖНО false сразу после загрузки (пока не пошёл первый
+// запрос), и событие "online" не срабатывает → статус залипал в «оффлайн» при живой сети. Поэтому online
+// считаем подтверждённым, если ЛИБО navigator.onLine!==false, ЛИБО реальный запрос долетел (_netConfirmed).
+let _netConfirmed = false;
+function cloudOnline(){ return _netConfirmed || navigator.onLine!==false; }
+// лёгкая проба сети: любой ДОЛЕТЕВШИЙ ответ (даже 4xx) = сеть есть; только сетевой сбой/таймаут = нет.
+async function netProbe(){
+  try{
+    const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(),6000);
+    try{ await fetch(`${CLOUD_CFG.url}/rest/v1/`, { method:"GET", headers:{ apikey:CLOUD_CFG.anon }, signal:ctrl.signal }); return true; }
+    finally{ clearTimeout(to); }
+  }catch(e){ return false; }
+}
 /* «ограниченный» пользователь — вошёл в облако и НЕ имеет права на задачи (начальник):
    ему показываем только складскую часть (журнал операций без задач). */
 function isRestrictedUser(){ const m = activeMember(); return !!(m && !m.can_view_tasks); }
@@ -4389,6 +4402,7 @@ async function cloudInit(){
   if(cloud._initDone) return; cloud._initDone = true;   // защита от повторного запуска (дубль listener)
   // авто-пуш/синхронизация при возврате сети
   window.addEventListener("online", async ()=>{
+    _netConfirmed = true;   // браузер сообщил о сети — снимаем возможный ложный оффлайн
     if((cloud.session || loadCloudSess()) && cloud.basesLoaded!==true){
       // базы не загрузились — продлеваем токен при необходимости и дозагружаем базы
       try{
@@ -4413,9 +4427,19 @@ async function cloudInit(){
       if(localStorage.getItem(TASKS_DIRTY)) cloudPushTasksNow().catch(()=>{}); else cloudSyncTasks().catch(()=>{});
     }
   });
-  window.addEventListener("offline", ()=>{ if(cloud.ready && activeCloudId()) setSyncStatus("offline"); });
+  window.addEventListener("offline", ()=>{ _netConfirmed = false; if(cloud.ready && activeCloudId()) setSyncStatus("offline"); });
   try{
     await ensureSB();   // клиент нужен для realtime/setSession ниже
+    // iOS ложно-offline при старте: если браузер говорит «нет сети», НЕ блокируем запуск, а фоном пробуем
+    // достучаться. Долетело → сеть есть: снимаем оффлайн и до-запускаем синк (как по событию online).
+    if(navigator.onLine===false){
+      (async()=>{
+        for(let i=0;i<3 && !_netConfirmed;i++){   // до 3 попыток: холодный старт бэкенда мог не уложиться в 6с
+          if(await netProbe()){ if(!_netConfirmed){ _netConfirmed=true; try{ renderHeader(); }catch(_){}; window.dispatchEvent(new Event("online")); } break; }
+          await new Promise(r=>setTimeout(r, 4000));
+        }
+      })().catch(()=>{});
+    }
     let s = loadCloudSess();
     // access-токен живёт ~1ч. Если истёк/истекает в ближайшую минуту — продлеваем ПРЯМЫМ fetch
     // по refresh-токену (не зависим от supabase-клиента, который в standalone мог висеть).
