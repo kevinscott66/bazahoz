@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../models/observation_point.dart';
 import '../models/sample.dart';
 import '../theme/tokens.dart';
+import '../util/crs.dart';
 import '../util/plot_projection.dart';
 
 /// Схема маршрута (ТЗ §6.7, шаг к карте §6.2): точки маршрута, разложенные по
@@ -96,6 +97,52 @@ class RouteMapScreen extends StatelessWidget {
   );
 }
 
+/// Мировые метры кратные [step] в пределах [min]..[max] — линии координатной
+/// сетки. Пустой список при абсурдном шаге (страховка от зависания на нуле/∞).
+List<double> gridLinesMeters(double min, double max, double step) {
+  if (step <= 0 || !step.isFinite || max < min) return const [];
+  final first = (min / step).ceil();
+  final last = (max / step).floor();
+  if (last - first > 2000) return const []; // шаг мельче пикселя — не рисуем
+  return [for (var k = first; k <= last; k++) k * step];
+}
+
+/// Короткая подпись СК-42 угла схемы: зона и X/Y (Гаусс-Крюгер) в километрах.
+/// Y — без цифры зоны (восток с ложным сдвигом 500 км, как пишут на топокартах).
+/// Это РЕАЛЬНЫЕ координаты угла (метровая точность датума) — честный георефер;
+/// метровая сетка внутри — НЕ клетки ГК (партия работает через границы зон,
+/// проекция схемы локальная ENU), поэтому абсолюта только по углам.
+String sk42CornerLabel(double lat, double lon) {
+  final gk = wgs84ToSk42Gk(lat, lon);
+  final xkm = (gk.x / 1000).toStringAsFixed(1);
+  final yEast = gk.y - gk.zone * 1e6; // 500000 + восток
+  final ykm = (yEast / 1000).toStringAsFixed(1);
+  return 'з${gk.zone} X$xkm Y$ykm';
+}
+
+/// Многострочный блок георефера СК-42 для угла схемы: зона(ы) + координаты
+/// северо-западного и юго-восточного углов охвата. [zones] — множество зон ГК
+/// всех точек (одна → показываем осевой меридиан).
+String sk42Georef({
+  required double nwLat,
+  required double nwLon,
+  required double seLat,
+  required double seLon,
+  required Set<int> zones,
+  bool degenerate = false,
+}) {
+  final head = zones.length == 1
+      ? 'СК-42 з.${zones.first} · ОМ ${gkCentralMeridian(zones.first).toStringAsFixed(0)}°'
+      : 'СК-42 Гаусса-Крюгера, зоны '
+          '${(zones.toList()..sort()).first}–${(zones.toList()..sort()).last}';
+  if (degenerate) {
+    return '$head\n${sk42CornerLabel(nwLat, nwLon)} км';
+  }
+  return '$head\n'
+      'СЗ ${sk42CornerLabel(nwLat, nwLon)}\n'
+      'ЮВ ${sk42CornerLabel(seLat, seLon)} км';
+}
+
 class _PlotArea extends StatelessWidget {
   const _PlotArea({
     required this.points,
@@ -115,6 +162,23 @@ class _PlotArea extends StatelessWidget {
     final lon0 =
         points.map((p) => p.lon!).reduce((a, b) => a + b) / points.length;
     final enu = [for (final p in points) _enu(p.lat!, p.lon!, lat0, lon0)];
+
+    // Георефер СК-42: реальные координаты СЗ/ЮВ углов охвата + зоны ГК всех
+    // точек. Считается один раз (не в paint) — тяжёлая тригонометрия датума.
+    final lats = points.map((p) => p.lat!);
+    final lons = points.map((p) => p.lon!);
+    final minLat = lats.reduce(math.min), maxLat = lats.reduce(math.max);
+    final minLon = lons.reduce(math.min), maxLon = lons.reduce(math.max);
+    final degenerate = minLat == maxLat && minLon == maxLon;
+    final zones = {for (final p in points) wgs84ToSk42Gk(p.lat!, p.lon!).zone};
+    final georef = sk42Georef(
+      nwLat: maxLat, // север-запад охвата: макс. широта, мин. долгота
+      nwLon: minLon,
+      seLat: minLat,
+      seLon: maxLon,
+      zones: zones,
+      degenerate: degenerate,
+    );
 
     return LayoutBuilder(builder: (context, box) {
       final size = Size(box.maxWidth, box.maxHeight);
@@ -146,6 +210,7 @@ class _PlotArea extends StatelessWidget {
             enu: enu,
             transform: t,
             samplesByPoint: samplesByPoint,
+            georef: georef,
           ),
         ),
       );
@@ -159,18 +224,22 @@ class _RoutePainter extends CustomPainter {
     required this.enu,
     required this.transform,
     required this.samplesByPoint,
+    required this.georef,
   });
 
   final List<ObservationPoint> points;
   final List<({double east, double north})> enu;
   final PlotTransform transform;
   final Map<String, int> samplesByPoint;
+  final String georef;
 
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(Offset.zero & size, Paint()..color = GfColors.bg);
+    _drawGrid(canvas, size);
     _drawScaleBar(canvas, size);
     _drawNorth(canvas, size);
+    _drawGeoref(canvas, size);
     _drawTrack(canvas);
 
     for (var i = 0; i < points.length; i++) {
@@ -212,6 +281,53 @@ class _RoutePainter extends CustomPainter {
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5,
     );
+  }
+
+  /// Метрическая опорная сетка (север вверх): помогает на глаз оценивать
+  /// расстояния между точками и форму облака. Шаг — «красивый» (как линейка).
+  /// Это НЕ клетки Гаусса-Крюгера (см. sk42CornerLabel) — метрический референс.
+  void _drawGrid(Canvas canvas, Size size) {
+    final scale = transform.scale;
+    if (scale <= 0 || !scale.isFinite) return;
+    final step = _niceMeters((size.width / scale) / 5);
+    if (step <= 0) return;
+    final visMinE = transform.originEast + (0 - transform.padX) / scale;
+    final visMaxE = transform.originEast + (size.width - transform.padX) / scale;
+    final visMaxN = transform.originNorth + transform.padY / scale;
+    final visMinN =
+        transform.originNorth - (size.height - transform.padY) / scale;
+    final paint = Paint()
+      ..color = GfColors.outline.withValues(alpha: 0.45)
+      ..strokeWidth = 1;
+    for (final e in gridLinesMeters(visMinE, visMaxE, step)) {
+      final x = transform.project(e, transform.originNorth).dx;
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+    }
+    for (final n in gridLinesMeters(visMinN, visMaxN, step)) {
+      final y = transform.project(transform.originEast, n).dy;
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+    }
+  }
+
+  /// Блок георефера СК-42 в левом верхнем углу: зона(ы) и реальные координаты
+  /// углов охвата — привязка к бумажной карте, честно (без ложной сетки ГК).
+  void _drawGeoref(Canvas canvas, Size size) {
+    final tp = TextPainter(
+      text: TextSpan(
+          text: georef,
+          style: GfText.hint.copyWith(
+              color: GfColors.textSecondary,
+              fontFeatures: const [FontFeature.tabularFigures()])),
+      textDirection: TextDirection.ltr,
+      maxLines: 3,
+    )..layout(maxWidth: size.width - 32);
+    // Полупрозрачная подложка, чтобы читалось поверх сетки и точек.
+    final rect = Rect.fromLTWH(12, 10, tp.width + 12, tp.height + 8);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(GfRadius.r8)),
+      Paint()..color = GfColors.bg.withValues(alpha: 0.7),
+    );
+    tp.paint(canvas, const Offset(18, 14));
   }
 
   void _drawScaleBar(Canvas canvas, Size size) {
