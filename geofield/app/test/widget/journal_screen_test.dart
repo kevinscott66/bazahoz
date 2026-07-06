@@ -82,6 +82,38 @@ void main() {
     expect(find.textContaining('Точка Т-'), findsNWidgets(2));
   });
 
+  testWidgets('поиск по номеру отбирает точки и пробы', (tester) async {
+    tallPhone(tester);
+    final h = await TestHarness.create();
+    addTearDown(h.close);
+    await tester.pumpWidget(h.journal());
+    await tester.pumpAndSettle();
+    // Две точки с автономерами Т-001 и Т-002.
+    for (var i = 0; i < 2; i++) {
+      await tester.tap(find.text('+ Точка'));
+      await tester.pumpAndSettle();
+      await settleSave(tester);
+      await tester.tap(find.text('Готово'));
+      await tester.pumpAndSettle();
+    }
+    expect(find.textContaining('Точка Т-'), findsNWidgets(2));
+
+    // Поиск «002» оставляет только Т-002.
+    await tester.enterText(
+        find.widgetWithText(TextField, 'Поиск по номеру (точка или проба)'),
+        '002');
+    await tester.pumpAndSettle();
+    expect(find.text('Точка Т-002'), findsOneWidget);
+    expect(find.text('Точка Т-001'), findsNothing);
+
+    // Несуществующий номер — «Ничего не найдено».
+    await tester.enterText(
+        find.widgetWithText(TextField, 'Поиск по номеру (точка или проба)'),
+        'Т-999');
+    await tester.pumpAndSettle();
+    expect(find.text('Ничего не найдено'), findsOneWidget);
+  });
+
   testWidgets('тап по карточке точки открывает редактирование с её данными',
       (tester) async {
     tallPhone(tester);

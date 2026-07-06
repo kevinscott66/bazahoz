@@ -64,6 +64,8 @@ class _JournalScreenState extends State<JournalScreen> {
   List<ObservationPoint> _points = const [];
   List<Sample> _samples = const [];
   _Filter _filter = _Filter.all;
+  final _searchCtrl = TextEditingController();
+  String _query = '';
   bool _loading = true;
   int _reloadGen = 0;
 
@@ -71,6 +73,12 @@ class _JournalScreenState extends State<JournalScreen> {
   void initState() {
     super.initState();
     _reload();
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _reload() async {
@@ -87,15 +95,22 @@ class _JournalScreenState extends State<JournalScreen> {
     });
   }
 
-  // --- отбор по фильтру ---------------------------------------------------------
+  // --- отбор по фильтру + поиску ------------------------------------------------
 
-  bool _pointVisible(ObservationPoint pt) => switch (_filter) {
+  bool _matchesQuery(String number) =>
+      _query.isEmpty || number.toLowerCase().contains(_query);
+
+  bool _pointVisible(ObservationPoint pt) =>
+      _matchesQuery(pt.number) &&
+      switch (_filter) {
         _Filter.all => true,
         _Filter.drafts => pt.isDraft,
         _Filter.unsent => pt.syncStatus != SyncStatus.confirmed,
       };
 
-  bool _sampleVisible(Sample s) => switch (_filter) {
+  bool _sampleVisible(Sample s) =>
+      _matchesQuery(s.sampleNumber) &&
+      switch (_filter) {
         _Filter.all => true,
         _Filter.drafts => false, // у проб черновиков нет: номер обязателен
         _Filter.unsent => s.syncStatus != SyncStatus.confirmed,
@@ -177,6 +192,32 @@ class _JournalScreenState extends State<JournalScreen> {
                     ),
                   ),
                   Padding(
+                    padding: const EdgeInsets.fromLTRB(
+                        GfSpace.x16, GfSpace.x12, GfSpace.x16, 0),
+                    child: TextField(
+                      controller: _searchCtrl,
+                      style: GfText.body,
+                      onChanged: (v) =>
+                          setState(() => _query = v.trim().toLowerCase()),
+                      decoration: gfInputDecoration(
+                        hint: 'Поиск по номеру (точка или проба)',
+                      ).copyWith(
+                        prefixIcon: const Icon(Icons.search,
+                            color: GfColors.textSecondary),
+                        suffixIcon: _query.isEmpty
+                            ? null
+                            : IconButton(
+                                icon: const Icon(Icons.close,
+                                    color: GfColors.textSecondary),
+                                onPressed: () {
+                                  _searchCtrl.clear();
+                                  setState(() => _query = '');
+                                },
+                              ),
+                      ),
+                    ),
+                  ),
+                  Padding(
                     padding: const EdgeInsets.all(GfSpace.x16),
                     child: Row(children: [
                       _chip('Все', _Filter.all),
@@ -188,8 +229,11 @@ class _JournalScreenState extends State<JournalScreen> {
                   ),
                   Expanded(
                     child: (points.isEmpty && samples.isEmpty)
-                        ? const Center(
-                            child: Text('Пока пусто — начните с «+ Точка»',
+                        ? Center(
+                            child: Text(
+                                _query.isNotEmpty || _filter != _Filter.all
+                                    ? 'Ничего не найдено'
+                                    : 'Пока пусто — начните с «+ Точка»',
                                 style: GfText.hint))
                         // .builder — виртуализация (ТЗ §10.5): строятся только
                         // видимые карточки, многодневный журнал не жрёт память

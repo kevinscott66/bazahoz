@@ -32,8 +32,10 @@ class RouteMapScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final located =
-        points.where((p) => p.lat != null && p.lon != null).toList();
+    final located = points.where((p) => p.lat != null && p.lon != null).toList()
+      // Порядок обхода — по времени создания: линия трека показывает путь и
+      // возвраты (журнал отдаёт точки новыми-сверху, для трека нужен хронологич.).
+      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
     final noCoords = points.length - located.length;
 
     return Scaffold(
@@ -169,6 +171,7 @@ class _RoutePainter extends CustomPainter {
     canvas.drawRect(Offset.zero & size, Paint()..color = GfColors.bg);
     _drawScaleBar(canvas, size);
     _drawNorth(canvas, size);
+    _drawTrack(canvas);
 
     for (var i = 0; i < points.length; i++) {
       final p = points[i];
@@ -192,6 +195,23 @@ class _RoutePainter extends CustomPainter {
       )..layout();
       tp.paint(canvas, o + const Offset(12, -8));
     }
+  }
+
+  /// Линия трека — точки в порядке обхода. Тонкая, приглушённая, под точками.
+  void _drawTrack(Canvas canvas) {
+    if (points.length < 2) return;
+    final path = Path();
+    for (var i = 0; i < points.length; i++) {
+      final o = transform.project(enu[i].east, enu[i].north);
+      i == 0 ? path.moveTo(o.dx, o.dy) : path.lineTo(o.dx, o.dy);
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = GfColors.textFaint
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
   }
 
   void _drawScaleBar(Canvas canvas, Size size) {

@@ -242,7 +242,7 @@ void main() {
   testWidgets('схема маршрута: облако точек с масштабом и легендой',
       (tester) async {
     phone(tester);
-    ObservationPoint pt(String id, String num, double lat, double lon,
+    ObservationPoint pt(String id, String num, double lat, double lon, int seq,
             {bool draft = false, SyncStatus sync = SyncStatus.pending}) =>
         ObservationPoint(
           id: id,
@@ -253,16 +253,17 @@ void main() {
           coordSource: 'gps',
           isDraft: draft,
           authorId: demoAuthorId,
-          createdAt: now,
+          // Разные метки времени — детерминированный порядок трека.
+          createdAt: '2026-07-04T09:0$seq:00Z',
           modifiedAt: now,
           syncStatus: sync,
         );
     // Небольшой участок под Сусуманом: разброс ~сотни метров.
     final pts = [
-      pt('a', 'Т-001', 62.7834, 148.1570, sync: SyncStatus.confirmed),
-      pt('b', 'Т-002', 62.7841, 148.1602),
-      pt('c', 'Т-003', 62.7829, 148.1625, draft: true),
-      pt('d', 'Т-004', 62.7850, 148.1585, sync: SyncStatus.sent),
+      pt('a', 'Т-001', 62.7834, 148.1570, 1, sync: SyncStatus.confirmed),
+      pt('b', 'Т-002', 62.7841, 148.1602, 2),
+      pt('c', 'Т-003', 62.7829, 148.1625, 3, draft: true),
+      pt('d', 'Т-004', 62.7850, 148.1585, 4, sync: SyncStatus.sent),
     ];
     await tester.pumpWidget(MaterialApp(
       debugShowCheckedModeBanner: false,
