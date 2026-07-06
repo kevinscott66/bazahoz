@@ -9,6 +9,8 @@ import 'package:geofield/models/observation_point.dart';
 import 'package:geofield/models/sample.dart';
 import 'package:geofield/screens/lab_screen.dart';
 import 'package:geofield/screens/point_form_screen.dart';
+import 'package:geofield/theme/tokens.dart';
+import 'package:geofield/screens/route_map_screen.dart';
 import 'package:geofield/screens/sample_capture_screen.dart';
 import 'package:geofield/screens/sync_screen.dart';
 import 'package:sqflite/sqflite.dart';
@@ -235,5 +237,44 @@ void main() {
     )));
     await tester.pumpAndSettle();
     await expectLater(find.byType(MaterialApp), matchesGoldenFile('lab.png'));
+  }, skip: !enabled);
+
+  testWidgets('схема маршрута: облако точек с масштабом и легендой',
+      (tester) async {
+    phone(tester);
+    ObservationPoint pt(String id, String num, double lat, double lon,
+            {bool draft = false, SyncStatus sync = SyncStatus.pending}) =>
+        ObservationPoint(
+          id: id,
+          routeId: demoRouteId,
+          number: num,
+          lat: lat,
+          lon: lon,
+          coordSource: 'gps',
+          isDraft: draft,
+          authorId: demoAuthorId,
+          createdAt: now,
+          modifiedAt: now,
+          syncStatus: sync,
+        );
+    // Небольшой участок под Сусуманом: разброс ~сотни метров.
+    final pts = [
+      pt('a', 'Т-001', 62.7834, 148.1570, sync: SyncStatus.confirmed),
+      pt('b', 'Т-002', 62.7841, 148.1602),
+      pt('c', 'Т-003', 62.7829, 148.1625, draft: true),
+      pt('d', 'Т-004', 62.7850, 148.1585, sync: SyncStatus.sent),
+    ];
+    await tester.pumpWidget(MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: buildGeoFieldTheme(),
+      home: RouteMapScreen(
+        points: pts,
+        samplesByPoint: const {'a': 2, 'd': 1},
+        onTapPoint: (_) {},
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await expectLater(
+        find.byType(MaterialApp), matchesGoldenFile('route_map.png'));
   }, skip: !enabled);
 }

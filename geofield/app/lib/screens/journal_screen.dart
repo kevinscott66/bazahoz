@@ -18,6 +18,7 @@ import '../util/crs.dart';
 import '../util/csv_export.dart';
 import '../util/format.dart';
 import 'point_form_screen.dart';
+import 'route_map_screen.dart';
 import 'sample_capture_screen.dart';
 import 'lab_screen.dart';
 import 'sync_screen.dart';
@@ -114,6 +115,12 @@ class _JournalScreenState extends State<JournalScreen> {
         backgroundColor: GfColors.bg,
         title: const Text('Маршрут · журнал', style: GfText.screenTitle),
         actions: [
+          IconButton(
+            tooltip: 'Схема маршрута',
+            icon: const Icon(Icons.scatter_plot_outlined,
+                color: GfColors.textSecondary),
+            onPressed: _onOpenMap,
+          ),
           IconButton(
             tooltip: 'Выгрузка CSV',
             icon: const Icon(Icons.ios_share, color: GfColors.textSecondary),
@@ -315,6 +322,26 @@ class _JournalScreenState extends State<JournalScreen> {
   }
 
   // --- действия -------------------------------------------------------------------
+
+  Future<void> _onOpenMap() async {
+    final counts = <String, int>{};
+    for (final s in _samples) {
+      if (s.parentType == 'point' && s.parentId != null) {
+        counts[s.parentId!] = (counts[s.parentId!] ?? 0) + 1;
+      }
+    }
+    await Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => RouteMapScreen(
+        points: _points,
+        samplesByPoint: counts,
+        onTapPoint: (pt) {
+          Navigator.of(context).pop(); // закрыть схему
+          _openPoint(pt);
+        },
+      ),
+    ));
+    await _reload();
+  }
 
   Future<void> _onAddPoint() async {
     final seq = await widget.points.nextSeq(widget.routeId);

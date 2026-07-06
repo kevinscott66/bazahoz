@@ -416,7 +416,9 @@ class _PointFormScreenState extends State<PointFormScreen> {
           label: 'Система координат',
           options: const [
             ('wgs84', 'WGS-84 · широта/долгота, °'),
-            ('sk42', 'СК-42 · Гаусса-Крюгера, зона 25, м'),
+            // Зона НЕ фиксирована: партия работает по всей Магаданской обл. и
+            // Якутии (зоны ГК 18–28) — зона берётся из долготы/префикса Y.
+            ('sk42', 'СК-42 · Гаусса-Крюгера (метры)'),
           ],
           selected: _sk42 ? 'sk42' : 'wgs84',
           onSelected: (code) => _onCrsChanged(code == 'sk42'),
@@ -434,6 +436,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
               child: _numField(_lonCtrl, _sk42 ? 'Восток (Y), м' : 'Долгота',
                   onEdited: _onCoordsEdited)),
         ]),
+        if (_sk42) _zoneReadout(),
         const SizedBox(height: GfSpace.x12),
         Row(children: [
           Expanded(child: _numField(_elevCtrl, 'Высота, м')),
@@ -527,6 +530,24 @@ class _PointFormScreenState extends State<PointFormScreen> {
       _latCtrl.text = gk.x.toStringAsFixed(0); // Север (X)
       _lonCtrl.text = gk.y.toStringAsFixed(0); // Восток (Y) с префиксом зоны
     }
+  }
+
+  /// Актуальная зона ГК по введённым координатам — подтверждает геологу, что
+  /// точка легла в ту зону (Тенькинский р-н у границы 150° может уйти в 26).
+  Widget _zoneReadout() {
+    final w = _coordsAsWgs();
+    String text;
+    if (w.lat != null && w.lon != null) {
+      final gk = wgs84ToSk42Gk(w.lat!, w.lon!);
+      text = 'Зона ${gk.zone} · осевой меридиан '
+          '${gkCentralMeridian(gk.zone).toStringAsFixed(0)}°';
+    } else {
+      text = 'Зона определится по долготе (18–28: Магадан, Якутия)';
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: GfSpace.x8),
+      child: Text(text, style: GfText.hint),
+    );
   }
 
   /// Переключение СК: пересчитать уже введённые координаты в новую систему,
