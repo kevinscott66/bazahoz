@@ -100,7 +100,7 @@
   .light #navbar{ border-top-color:#e5e7eb; }
   .light .list-box{ border-color:#e5e7eb; }
   .btn:disabled, .btn[disabled]{ opacity:.45; cursor:default; }
-  .btn.px-2{ min-width:44px; }
+  .btn.px-2{ min-width:40px; }
   /* индикатор активной синхронизации — бегущая полоска снизу sync-бара */
   #syncBar.busy{ overflow:hidden; }
   #syncBar.busy::after{ content:""; position:absolute; bottom:0; left:-35%; height:2px; width:35%; background:rgba(255,255,255,.85); border-radius:2px; animation:syncslide 1.1s ease-in-out infinite; }
@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v146</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v134</div>
   </div>
 </div>
 
@@ -309,7 +309,6 @@ const CLOUD_CFG = {
 const LOGIN_DOMAIN = "@bazahoz.app";
 const cloud = {
   sb:null, session:null, profile:null, members:[], bases:{},
-  orgRoles:[], _baseParty:{},   // территориальные/глобальные роли + карта база→партия (RBAC v2)
   channel:null, subscribedBase:null,
   pushTimer:null, pullTimer:null, applying:false, ready:false, busy:false,
   pushPending:false, retryTimer:null, pullRetryT:null, baseMembers:[], basesLoaded:false,
@@ -454,19 +453,9 @@ async function deleteProfile(id){
   renderHeader(); openProfilesSheet();
   toast("База удалена");
 }
-// базы, которые ПОКАЗЫВАЕМ пользователю: при входе в облако прячем НЕпривязанные локальные базы
-// (фантомный дефолт «База 1» при установке), если есть хотя бы одна облачная — иначе участник одной базы
-// видел бы чужой/пустой локальный дефолт. Оффлайн (без облака) — показываем всё как есть.
-function visibleProfiles(){
-  if(cloud.ready && profiles.list.some(x=>x.cloudId)) return profiles.list.filter(x=>x.cloudId || x.id===profiles.activeId);
-  return profiles.list;
-}
-// «Новая база» = локальная, без синхронизации. Уместна вне облака или у владельца; облачному работнику её прячем,
-// иначе он создаст непривязанную базу, которую никто не увидит (и visibleProfiles её потом спрячет).
-function canAddLocalBase(){ return !cloud.ready || !!(cloud.profile && cloud.profile.is_admin); }
 function openProfilesSheet(){
   if(roleBaseLocked()){ toast("Переключение и управление базами недоступно для вашей роли"); return; }   // начальник заперт на своей базе (+ защита от гонки роли)
-  const rows = visibleProfiles().map(p=>{
+  const rows = profiles.list.map(p=>{
     const isActive = p.id===profiles.activeId;
     return `<div class="flex items-center gap-2 text-sm py-2 border-b border-gray-800" data-profid="${esc(p.id)}">
       <span class="flex-1 truncate ${isActive?"font-bold":""}">${isActive?"✅ ":""}${esc(p.name)}</span>
@@ -480,14 +469,14 @@ function openProfilesSheet(){
   openSheet(`
     <div class="font-bold text-xl mb-1">🏠 Базы</div>
     <div class="text-xs opacity-70 mb-3">У каждой базы свой склад, журналы и места хранения. Переключение сохраняет текущую базу и открывает выбранную.</div>
-    <div class="space-y-1 max-h-72 overflow-y-auto" id="profList">${rows}</div>
+    <div class="space-y-1 max-h-96 overflow-y-auto" id="profList">${rows}</div>
     <div class="flex gap-2 pt-3">
-      ${canAddLocalBase()?`<button class="btn btn-primary flex-1" id="profAddBtn">➕ Новая база</button>`:""}
-      <button class="btn btn-ghost ${canAddLocalBase()?"":"flex-1"}" data-close>Закрыть</button>
+      <button class="btn btn-primary flex-1" id="profAddBtn">➕ Новая база</button>
+      <button class="btn btn-ghost" data-close>Закрыть</button>
     </div>
   `);
   const body = document.getElementById("sheetBody");
-  const addBtn = body.querySelector("#profAddBtn"); if(addBtn) addBtn.addEventListener("click", ()=>addProfile());
+  body.querySelector("#profAddBtn").addEventListener("click", ()=>addProfile());
   body.querySelector("#profList").addEventListener("click", e=>{
     const btn = e.target.closest("[data-profact]"); if(!btn) return;
     const row = btn.closest("[data-profid]"); if(!row) return;
@@ -1088,7 +1077,7 @@ function renderHeader(){
   const bc = document.getElementById("baseChip");
   if(bc){
     // показываем чип только когда баз больше одной и роль позволяет переключение (начальник/роль-неизвестна — скрыт)
-    if(visibleProfiles().length>1 && !roleBaseLocked()){ bc.textContent = `🏠 ${activeProfileName()}`; bc.style.display=""; }
+    if(profiles.list.length>1 && !roleBaseLocked()){ bc.textContent = `🏠 ${activeProfileName()}`; bc.style.display=""; }
     else { bc.style.display="none"; }
   }
   // статус-бар/чип облака скрываем, если активная база не связана с облаком или нет входа
@@ -1146,11 +1135,11 @@ function renderDashboard(){
         <div class="text-2xl font-bold mt-1">${lowStock.length}</div>
         <div class="text-sm opacity-70">Низкий запас</div>
       </button>
-      ${canSeeKitchen()?`<button class="card tap text-left" onclick="nav('kitchen')">
+      <button class="card tap text-left" onclick="nav('kitchen')">
         <div class="text-3xl">🍳</div>
         <div class="text-2xl font-bold mt-1">${state.stock.filter(s=>s.type==="product" && inStock(s)).length}</div>
         <div class="text-sm opacity-70">Продуктов в наличии</div>
-      </button>`:""}
+      </button>
     </div>
 
     ${canEditTasks?`<button class="btn btn-primary w-full mt-2" onclick="openTaskEdit()">＋ Задача</button>`:""}
@@ -2654,7 +2643,7 @@ function openLocationsEdit(){
     <div class="flex gap-2 mb-3" id="locTabs">
       ${STOCK_TYPES.map(t=>`<button class="chip ${type===t.key?'active':''}" data-loctab="${t.key}">${t.icon} ${t.label}</button>`).join("")}
     </div>
-    <div class="space-y-1 max-h-72 overflow-y-auto" id="locList">
+    <div class="space-y-1 max-h-96 overflow-y-auto" id="locList">
       ${list.length===0
         ? `<div class="text-sm opacity-60">Пусто. Добавьте первое место ниже.</div>`
         : list.map(name=>{
@@ -2834,16 +2823,14 @@ function resetChecklist(){
 function renderMore(){
   const v = document.querySelector('[data-view="more"]');
   const restricted = isRestrictedUser();   // начальник: скрываем управление базами/каталог/полный бэкап
-  const baseLocked = roleBaseLocked();     // роль ограничена ИЛИ ещё не известна (гонка) → без переключения баз
-  const nBases = visibleProfiles().length;
   v.innerHTML = `
     <div class="card">
       <div class="flex items-center justify-between gap-2">
         <div>
           <div class="font-bold">🏠 База: ${esc(activeProfileName())}</div>
-          <div class="text-xs opacity-70 mt-0.5">${baseLocked?"Ваша база":`Баз: ${nBases}`}</div>
+          <div class="text-xs opacity-70 mt-0.5">${restricted?"Ваша база":`Баз: ${profiles.list.length}`}</div>
         </div>
-        ${(!baseLocked && nBases>1)?`<button class="btn btn-primary" onclick="openProfilesSheet()">Сменить базу</button>`:""}
+        ${restricted?"":`<button class="btn btn-primary" onclick="openProfilesSheet()">Сменить / базы</button>`}
       </div>
       ${restricted?"":`<div class="text-xs opacity-70 mt-2">У каждой базы свой склад, журналы и места хранения. Данные других баз сохраняются.</div>`}
     </div>
@@ -2854,18 +2841,6 @@ function renderMore(){
       <div class="font-bold mb-2">👥 Работники и роли</div>
       <button class="btn btn-ghost w-full" onclick="openMembersSheet()">Управление работниками базы</button>
       <div class="text-xs opacity-70 mt-2">Добавляйте работников, выдавайте логин и роль, оформляйте пересменку. Раздел виден только тем, кто управляет базой.</div>
-    </div>`:""}
-
-    ${canManageOrgRoles()?`<div class="card">
-      <div class="font-bold mb-2">🗺 Роли по регионам</div>
-      <button class="btn btn-ghost w-full" onclick="openOrgRolesSheet()">Начальники партий, директора, бухгалтерия</button>
-      <div class="text-xs opacity-70 mt-2">Назначайте начальника партии на регион, директоров и бухгалтерию — на все базы. Только роли ниже вашей.</div>
-    </div>`:""}
-
-    ${canSeeAllBases()?`<div class="card">
-      <div class="font-bold mb-2">🧮 Сводка по всем базам</div>
-      <button class="btn btn-ghost w-full" onclick="openAllBasesSheet()">Остатки всех баз + выгрузка в Excel</button>
-      <div class="text-xs opacity-70 mt-2">Чтение остатков по всем базам и общий экспорт. Для бухгалтерии и директоров.</div>
     </div>`:""}
 
     ${canEditStock()?`<div class="card">
@@ -2929,7 +2904,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v146</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v134</div>
   `;
 }
 
@@ -3724,20 +3699,11 @@ async function cloudRest(path, token, opts, _retried){
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), opts.timeout || 30000);   // НЕ виснем вечно; запас под слабый интернет
   try{
-    let r;
-    try{
-      r = await fetch(`${CLOUD_CFG.url}/rest/v1/${path}`, {
-        method: opts.method || "GET", signal: ctrl.signal,
-        headers: Object.assign({ apikey:CLOUD_CFG.anon, Authorization:`Bearer ${token}` }, opts.headers||{}),
-        body: opts.body
-      });
-    }catch(fe){
-      // НАСТОЯЩИЙ сетевой сбой (не наш таймаут-abort) → сеть пропала, хотя navigator.onLine мог остаться
-      // ложно-true и событие offline не пришло. Снимаем подтверждение — следующий гейт покажет оффлайн быстро.
-      if(fe && fe.name!=="AbortError") _netConfirmed = false;
-      throw fe;
-    }
-    _netConfirmed = true;   // ответ долетел → сеть точно есть (снимаем ложный navigator.onLine=false)
+    const r = await fetch(`${CLOUD_CFG.url}/rest/v1/${path}`, {
+      method: opts.method || "GET", signal: ctrl.signal,
+      headers: Object.assign({ apikey:CLOUD_CFG.anon, Authorization:`Bearer ${token}` }, opts.headers||{}),
+      body: opts.body
+    });
     // 401 = access-токен протух ПОСРЕДИ сессии (живёт ~1ч). Обновляем токен и повторяем ОДИН раз —
     // иначе синк падал «REST 401» до перезагрузки. Тело первого ответа не читаем, чтобы повтор был чистым.
     if(r.status===401 && !_retried && cloud.session && cloud.session.refresh_token){
@@ -3793,8 +3759,8 @@ async function cloudRefresh(refresh_token){
 // постоянный сбой рефреша → чистый выход на экран входа (аккаунт удалён/токен отозван/сменили пароль)
 async function cloudSessionExpired(reason){
   if(!cloud.session && !cloud.ready) return;   // уже разлогинены — не дублируем
-  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.ready=false; cloud.basesLoaded=false;
-  cloud.bases={}; clearAllBasesCache();        // имена баз и снимок остатков протухшей сессии не должны висеть в UI/памяти
+  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.ready=false; cloud.basesLoaded=false;
+  cloud.bases={};                              // имена баз протухшей сессии не должны висеть в UI/cloudActivate
   cloud._basesLoading=false; cloud.busy=false; cloud.pushPending=false; cloud.applying=false;   // иначе повторный вход залипнет (cloudOnLogin рано выходит при _basesLoading)
   try{ if(cloud.channel && cloud.sb) cloud.sb.removeChannel(cloud.channel); }catch(_){}
   try{ if(cloud.tasksChannel && cloud.sb) cloud.sb.removeChannel(cloud.tasksChannel); }catch(_){}
@@ -3851,74 +3817,27 @@ function activeMember(){
 // работник СНЯТ СО СМЕНЫ на активной облачной базе (его base_members.active=false). Владелец(is_admin) — никогда.
 // Тогда RLS на сервере режет доступ к складу/журналам → делаем базу read-only локально и не долбим сервер бесполезным push (иначе «REST 403»).
 function isOffShift(cid){ cid=cid||activeCloudId(); if(!cid) return false; if(cloud.profile && cloud.profile.is_admin) return false; const m=memberOf(cid); return !!(m && m.active===false); }
-function canEditStock(){
-  const m=activeMember();
-  if(m) return !!m.can_edit_stock && m.active!==false;
-  if(cloud.profile && cloud.profile.is_admin) return true;   // владелец
-  // облачный пользователь без членства базы (территориальная/глобальная роль): право правки — по флагу орг-роли,
-  // покрывающей эту базу. Бухгалтер (can_edit_stock=false) → только чтение, не правит склад локально.
-  if(cloud.ready && (cloud.orgRoles||[]).some(o=>o.active!==false)){
-    const cid=activeCloudId(); const partyId=(cloud._baseParty||{})[cid];
-    return (cloud.orgRoles||[]).some(o=>o.active!==false && o.can_edit_stock && (o.party_id==null || o.party_id===partyId));
-  }
-  return true;   // локальная/оффлайн база без облачных ролей — одиночный режим
-}
+function canEditStock(){ const m=activeMember(); if(!m) return true; return !!m.can_edit_stock && m.active!==false; }
 function ensureCanEdit(){ if(!canEditStock()){ toast(isOffShift()?"Вы сняты со смены — редактирование недоступно":"У вас нет прав на редактирование — обратитесь к начальнику участка"); return false; } return true; }
 
 /* ===================== УПРАВЛЕНИЕ УЧАСТНИКАМИ И РОЛЯМИ =====================
    Роль = пресет прав (источник истины для RLS — флаги). Менеджер (can_manage)
    или владелец (is_admin) управляет участниками СВОЕЙ базы. Создание логина и
    сброс пароля — через Edge Function (service_role); роль/active/удаление — напрямую (RLS). */
-// rank — лестница иерархии: назначить/выдать можно только роль СТРОГО НИЖЕ своей (совпадает с сервером role_rank).
-// В карточке участников БАЗЫ доступны только базовые роли (rank 1-2); партийные/глобальные назначаются через отдельный поток.
 const MEMBER_ROLES = [
-  { key:"worker",       label:"Хозрабочий",        rank:1, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
-  { key:"cook",         label:"Повар",             rank:1, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
-  { key:"mechanic",     label:"Механик",           rank:1, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
-  { key:"site_manager", label:"Начальник участка", rank:2, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:true } },
+  { key:"worker",       label:"Хозрабочий",        perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
+  { key:"cook",         label:"Повар",             perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
+  { key:"mechanic",     label:"Механик",           perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
+  { key:"party_chief",  label:"Начальник партии",  perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
+  { key:"site_manager", label:"Начальник участка", perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:true } },
+  { key:"accounting",   label:"Бухгалтерия",       perm:{can_view_stock:true, can_edit_stock:false, can_view_tasks:false, can_edit_tasks:false, can_manage:false} },
 ];
-// полная лестница рангов (в т.ч. территориальные/глобальные роли — для подписей и вычисления своего ранга)
-const ROLE_RANK = { owner:6, general_director:5, director:4, party_chief:3, site_manager:2, worker:1, cook:1, mechanic:1, accounting:1 };
-const ROLE_LABELS = { owner:"Владелец", general_director:"Ген. директор", director:"Директор", party_chief:"Начальник партии", site_manager:"Начальник участка", worker:"Хозрабочий", cook:"Повар", mechanic:"Механик", accounting:"Бухгалтерия", custom:"Особая" };
-const rankOf = (k)=> ROLE_RANK[k] || 0;
-const roleLabel = (k)=> (MEMBER_ROLES.find(r=>r.key===k)||{}).label || ROLE_LABELS[k] || k || "—";
-// ранг текущего пользователя: владелец=6, иначе макс по глобальным/партийным (org_roles) и по управляемым базам.
-function myRank(){
-  if(cloud.profile && cloud.profile.is_admin) return 6;
-  let r = 0;
-  (cloud.orgRoles||[]).forEach(o=>{ if(o.active!==false) r = Math.max(r, rankOf(o.role)); });
-  (cloud.members||[]).forEach(m=>{ if(m.active!==false && m.can_manage) r = Math.max(r, rankOf(m.role)||2); });
-  return r;
-}
-// роли, назначаемые текущим пользователем: СТРОГО ниже своего ранга. keepRole — текущую роль участника
-// показываем всегда (чтобы её было видно активной), даже если она равна/выше моего ранга.
-function assignableRoles(keepRole){
-  const mine = myRank();
-  return MEMBER_ROLES.filter(r => r.rank < mine || r.key === keepRole);
-}
-// территориальные/глобальные роли (живут в org_roles). scope: 'party' → нужна партия; 'global' → все базы.
-const ORG_ROLES = [
-  { key:"party_chief",      label:"Начальник партии", rank:3, scope:"party"  },
-  { key:"director",         label:"Директор",          rank:4, scope:"global" },
-  { key:"general_director", label:"Ген. директор",     rank:5, scope:"global" },
-  { key:"accounting",       label:"Бухгалтерия",       rank:1, scope:"global" },
-];
-// глобальный управляющий (может назначать директоров/бухгалтерию/нач.партий): владелец или директор+.
-function isGlobalManager(){ return !!(cloud.profile && cloud.profile.is_admin) || (cloud.orgRoles||[]).some(o=>o.active!==false && (o.role==="director"||o.role==="general_director") && o.can_manage); }
-function assignableOrgRoles(){ const mine=myRank(); return ORG_ROLES.filter(r=>r.rank<mine); }
-// раздел «Роли по регионам» доступен тем, кто может выдать хотя бы одну орг-роль (строго ниже своего ранга).
-function canManageOrgRoles(){ return isGlobalManager() && assignableOrgRoles().length>0; }
-// бухгалтер: сквозная роль (чтение по всем базам). Сводный экран — бухгалтеру и глобальным управляющим.
-function isAccountant(){ return (cloud.orgRoles||[]).some(o=>o.active!==false && o.role==="accounting"); }
-function canSeeAllBases(){ return isAccountant() || isGlobalManager(); }
+const roleLabel = (k)=> (MEMBER_ROLES.find(r=>r.key===k)||{label: k==="owner"?"Владелец":(k==="custom"?"Особая":(k||"—"))}).label;
 function canManageBase(){
   const cid=activeCloudId(); if(!cid) return false;
   if(cloud.profile && cloud.profile.is_admin) return true;
   const m=memberOf(cid);
-  if(m && m.active!==false && m.can_manage) return true;
-  // партийный/глобальный управляющий: директор/ген.директор (глобально) или начальник партии своей партии
-  const partyId = (cloud._baseParty||{})[cid];
-  return (cloud.orgRoles||[]).some(o=> o.active!==false && o.can_manage && (o.party_id==null || o.party_id===partyId));
+  return !!(m && m.active!==false && m.can_manage);
 }
 // вызов Edge Function manage-user (создание логина / сброс пароля — service_role на сервере)
 async function cloudCallFn(action, payload){
@@ -4020,19 +3939,15 @@ async function _patchMember(uid, body, okMsg){
 }
 function openMemberRole(uid){
   const m=_findBM(uid); if(!m){ toast("Список устарел. Закройте и откройте заново"); return; }
-  const mine=myRank();
-  // показываем все базовые роли; роли РАВНЫЕ/ВЫШЕ моего ранга — disabled (назначить можно только строго ниже).
-  // сервер (Edge Function/RLS) — последний рубеж; здесь это UX + защита от случайного повышения.
   openSheet(`<div class="font-bold text-xl mb-3">Роль: ${esc(m.username)}</div>
     <div class="space-y-2">
-      ${MEMBER_ROLES.map(r=>{const locked=r.rank>=mine && r.key!==m.role; return `<button class="btn ${m.role===r.key?"btn-primary":"btn-ghost"} w-full" ${locked?"disabled":""} onclick="setMemberRole('${uid}','${r.key}')">${esc(r.label)}</button>`;}).join("")}
+      ${MEMBER_ROLES.map(r=>`<button class="btn ${m.role===r.key?"btn-primary":"btn-ghost"} w-full" onclick="setMemberRole('${uid}','${r.key}')">${esc(r.label)}</button>`).join("")}
     </div>
-    <div class="text-xs opacity-60 mt-2">Роль определяет, что человек может: вести склад, задачи, управлять базой. «Начальник участка» сможет сам добавлять и убирать работников. Роли равные вашей или выше — недоступны.</div>
+    <div class="text-xs opacity-60 mt-2">Роль определяет, что человек может: вести склад, задачи, управлять базой. «Начальник участка» сможет сам добавлять и убирать работников.</div>
     <button class="btn btn-ghost w-full mt-3" data-close>Отмена</button>`);
 }
 async function setMemberRole(uid, roleKey){
   const r=MEMBER_ROLES.find(x=>x.key===roleKey); if(!r) return;
-  if(r.rank>=myRank()){ toast("Нельзя назначить роль равную или выше вашей"); return; }
   if(_wouldOrphan(uid,{role:roleKey})){ toast("База останется без управляющего. Сначала назначьте другого «Начальника участка»"); return; }
   await _patchMember(uid, Object.assign({ role:roleKey }, r.perm), "Роль обновлена");
 }
@@ -4106,7 +4021,6 @@ async function memberRemove(uid){
   }catch(e){ toast("Не удалось: "+(e.message||"Проверьте интернет и повторите")); }
 }
 function openAddMember(){
-  const _amRoles = assignableRoles();   // роли строго ниже моего ранга
   openSheet(`<div class="font-bold text-xl mb-3">＋ Новый работник</div>
     <div class="space-y-3">
       <div><div class="text-sm opacity-70 mb-1">Логин (от 3 до 32: английские буквы, цифры, _)</div>
@@ -4114,25 +4028,22 @@ function openAddMember(){
       <div><div class="text-sm opacity-70 mb-1">Пароль (не короче 6 символов)</div>
         <input class="input" id="amp" type="text" autocapitalize="none" autocorrect="off" placeholder="придумайте пароль" /></div>
       <div><div class="text-sm opacity-70 mb-1">Роль</div>
-        ${_amRoles.length
-          ? `<select class="input" id="amr">${_amRoles.map(r=>`<option value="${r.key}">${esc(r.label)}</option>`).join("")}</select>`
-          : `<div class="err-text text-sm">Нет ролей, которые вы можете назначить. Обратитесь к директору.</div>`}</div>
+        <select class="input" id="amr">${MEMBER_ROLES.map(r=>`<option value="${r.key}">${esc(r.label)}</option>`).join("")}</select></div>
     </div>
     <div class="flex gap-2 mt-3">
       <button class="btn btn-ghost flex-1" data-close>Отмена</button>
-      ${_amRoles.length?`<button class="btn btn-success flex-1" id="amGo">Создать</button>`:``}
+      <button class="btn btn-success flex-1" id="amGo">Создать</button>
     </div>
     <div class="text-xs opacity-60 mt-2">Логин будет: <span id="amHint">…${LOGIN_DOMAIN}</span>. Передайте работнику этот логин и пароль, который задали выше — он войдёт по ним.</div>`);
   const u=document.getElementById("amu");
   u.addEventListener("input",()=>{ document.getElementById("amHint").textContent=((u.value.trim().toLowerCase())||"…")+LOGIN_DOMAIN; });
-  const go=document.getElementById("amGo"); if(go) go.onclick=()=>doAddMember();
+  document.getElementById("amGo").onclick=()=>doAddMember();
 }
 async function doAddMember(){
   const cid=activeCloudId();
   const username=(document.getElementById("amu").value||"").trim().toLowerCase();
   const password=document.getElementById("amp").value||"";
-  const roleEl=document.getElementById("amr"); const role=roleEl?roleEl.value:"";
-  if(!role){ toast("Выберите роль"); return; }
+  const role=document.getElementById("amr").value;
   if(!/^[a-z0-9_]{3,32}$/.test(username)){ toast("Логин: от 3 до 32 символов — английские буквы, цифры, _"); return; }
   if(password.length<6){ toast("Пароль не короче 6 символов"); return; }
   const btn=document.getElementById("amGo"); btn.disabled=true; btn.textContent="Создание…";
@@ -4158,244 +4069,13 @@ function openResetPwd(uid){
     catch(e){ toast("Не удалось. "+(e.message||"Проверьте интернет и повторите")); if(document.getElementById("rpGo")){ btn.disabled=false; btn.textContent="Сменить"; } }
   };
 }
-
-/* ===== Территориальные/глобальные роли (нач. партии по региону, директор/бухгалтерия глобально) ===== */
-const orgRoleLabel = (k)=> (ORG_ROLES.find(r=>r.key===k)||{}).label || ROLE_LABELS[k] || k;
-let _orgCache = { members:[], parties:[] };
-async function openOrgRolesSheet(){
-  openSheet(`<div class="font-bold text-xl mb-3">🗺 Роли по регионам</div><div class="opacity-70 text-sm">Загрузка…</div>`);
-  try{
-    const d = await cloudCallFn("list_org_members", {});
-    _orgCache = { members: d.members||[], parties: d.parties||[] };
-  }catch(e){ openSheet(`<div class="font-bold text-xl mb-3">🗺 Роли по регионам</div><div class="err-text text-sm">Не удалось загрузить: ${esc(e.message||"нет связи")}</div><button class="btn btn-ghost w-full mt-3" data-close>Закрыть</button>`); return; }
-  const mine = myRank();
-  const rows = _orgCache.members.slice().sort((a,b)=> (rankOf(b.role)-rankOf(a.role)) || String(a.username).localeCompare(b.username));
-  const list = rows.length ? rows.map(m=>{
-    const can = rankOf(m.role) < mine;   // снять можно только роль строго ниже своей
-    const where = m.party_name ? ` · ${esc(m.party_name)}` : " · все базы";
-    return `<div class="card flex items-center justify-between gap-2">
-      <div class="min-w-0"><div class="font-semibold truncate">${esc(m.username)}</div>
-        <div class="text-xs opacity-70 truncate">${esc(orgRoleLabel(m.role))}${where}${m.active===false?" · выкл":""}</div></div>
-      ${can?`<button class="btn btn-ghost px-2" onclick="orgRoleRemove('${m.user_id}','${m.role}',${m.party_id?`'${m.party_id}'`:"null"})">Снять</button>`:""}
-    </div>`;
-  }).join("") : `<div class="opacity-70 text-sm">Пока никого нет.</div>`;
-  openSheet(`<div class="font-bold text-xl mb-3">🗺 Роли по регионам</div>
-    <div class="space-y-2 max-h-72 overflow-y-auto pr-1">${list}</div>
-    <button class="btn btn-primary w-full mt-3" onclick="openAddOrgMember()">＋ Назначить роль (новый аккаунт)</button>
-    <button class="btn btn-ghost w-full mt-2" onclick="openAssignExisting()">Назначить существующему работнику</button>
-    <div class="text-xs opacity-60 mt-2">Начальник партии — на выбранный регион; директор, ген. директор и бухгалтерия — на все базы. Назначать можно только роли ниже вашей.</div>
-    <button class="btn btn-ghost w-full mt-3" data-close>Закрыть</button>`);
-}
-function openAddOrgMember(){
-  const roles = assignableOrgRoles();
-  if(!roles.length){ toast("Нет ролей, которые вы можете назначить"); return; }
-  const parties = _orgCache.parties||[];
-  const roleOpts = roles.map(r=>`<option value="${r.key}">${esc(r.label)}</option>`).join("");
-  const partyOpts = parties.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("");
-  openSheet(`<div class="font-bold text-xl mb-3">＋ Назначить роль</div>
-    <div class="space-y-3">
-      <div><div class="text-sm opacity-70 mb-1">Логин (3–32: англ. буквы, цифры, _)</div>
-        <input class="input" id="omu" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="напр. petrov" /></div>
-      <div><div class="text-sm opacity-70 mb-1">Пароль (не короче 6 символов)</div>
-        <input class="input" id="omp" type="text" autocapitalize="none" autocorrect="off" placeholder="придумайте пароль" /></div>
-      <div><div class="text-sm opacity-70 mb-1">Роль</div>
-        <select class="input" id="omr" onchange="_omToggleParty()">${roleOpts}</select></div>
-      <div id="omPartyWrap"><div class="text-sm opacity-70 mb-1">Регион</div>
-        ${parties.length?`<select class="input" id="omParty">${partyOpts}</select>`:`<div class="opacity-70 text-sm">Регионов пока нет — создать их может владелец.</div>`}</div>
-    </div>
-    <div class="flex gap-2 mt-3">
-      <button class="btn btn-ghost flex-1" data-close>Отмена</button>
-      <button class="btn btn-success flex-1" id="omGo">Создать</button>
-    </div>
-    <div class="text-xs opacity-60 mt-2">Будет создан новый аккаунт. Логин: <span id="omHint">…${LOGIN_DOMAIN}</span>. Передайте работнику логин и пароль.</div>`);
-  const u=document.getElementById("omu");
-  u.addEventListener("input",()=>{ document.getElementById("omHint").textContent=((u.value.trim().toLowerCase())||"…")+LOGIN_DOMAIN; });
-  document.getElementById("omGo").onclick=()=>doAddOrgMember();
-  _omToggleParty();
-}
-function _omToggleParty(){
-  const sel=document.getElementById("omr"); if(!sel) return;
-  const r=ORG_ROLES.find(x=>x.key===sel.value);
-  const needParty = !!(r && r.scope==="party");
-  const wrap=document.getElementById("omPartyWrap");
-  if(wrap) wrap.style.display = needParty ? "" : "none";
-  // нельзя создать начальника партии, если регионов ещё нет — блокируем «Создать», а не упираемся в toast
-  const go=document.getElementById("omGo");
-  if(go){ const block = needParty && !((_orgCache.parties||[]).length);
-    go.disabled = block; go.style.opacity = block ? ".5" : ""; go.title = block ? "Сначала создайте регион" : ""; }
-}
-async function doAddOrgMember(){
-  const username=(document.getElementById("omu").value||"").trim().toLowerCase();
-  const password=document.getElementById("omp").value||"";
-  const role=document.getElementById("omr").value;
-  const r=ORG_ROLES.find(x=>x.key===role);
-  if(!r){ toast("Выберите роль"); return; }
-  if(!/^[a-z0-9_]{3,32}$/.test(username)){ toast("Логин: 3–32 символа — англ. буквы, цифры, _"); return; }
-  if(password.length<6){ toast("Пароль не короче 6 символов"); return; }
-  let party_id=null;
-  if(r.scope==="party"){ const ps=document.getElementById("omParty"); party_id=ps?ps.value:""; if(!party_id){ toast("Выберите регион"); return; } }
-  const btn=document.getElementById("omGo"); btn.disabled=true; btn.textContent="Создание…";
-  try{
-    const d=await cloudCallFn("create_org_member", { base_id:activeCloudId()||"00000000-0000-0000-0000-000000000000", username, password, role, party_id });
-    toast("Назначен: "+(d.username||username)); await openOrgRolesSheet();
-  }catch(e){ toast("Не удалось. "+(e.message||"Проверьте интернет и повторите")); if(document.getElementById("omGo")){ btn.disabled=false; btn.textContent="Создать"; } }
-}
-// назначить территориальную/глобальную роль УЖЕ СУЩЕСТВУЮЩЕМУ работнику (по логину)
-function openAssignExisting(){
-  const roles = assignableOrgRoles();
-  if(!roles.length){ toast("Нет ролей, которые вы можете назначить"); return; }
-  const parties=_orgCache.parties||[];
-  const roleOpts=roles.map(r=>`<option value="${r.key}">${esc(r.label)}</option>`).join("");
-  const partyOpts=parties.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("");
-  openSheet(`<div class="font-bold text-xl mb-3">Назначить роль существующему</div>
-    <div class="space-y-3">
-      <div><div class="text-sm opacity-70 mb-1">Логин работника (уже есть аккаунт)</div>
-        <input class="input" id="aeu" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="напр. petrov" /></div>
-      <div><div class="text-sm opacity-70 mb-1">Роль</div>
-        <select class="input" id="aer" onchange="_aeToggleParty()">${roleOpts}</select></div>
-      <div id="aePartyWrap"><div class="text-sm opacity-70 mb-1">Регион</div>
-        ${parties.length?`<select class="input" id="aeParty">${partyOpts}</select>`:`<div class="opacity-70 text-sm">Регионов пока нет — создать их может владелец.</div>`}</div>
-    </div>
-    <div class="flex gap-2 mt-3">
-      <button class="btn btn-ghost flex-1" data-close>Отмена</button>
-      <button class="btn btn-success flex-1" id="aeGo">Назначить</button>
-    </div>
-    <div class="text-xs opacity-60 mt-2">Роль добавится к аккаунту с этим логином. Существующие права работника сохраняются.</div>`);
-  document.getElementById("aeGo").onclick=()=>doAssignExisting();
-  _aeToggleParty();
-}
-function _aeToggleParty(){
-  const sel=document.getElementById("aer"); if(!sel) return;
-  const r=ORG_ROLES.find(x=>x.key===sel.value);
-  const needParty=!!(r && r.scope==="party");
-  const wrap=document.getElementById("aePartyWrap"); if(wrap) wrap.style.display = needParty ? "" : "none";
-  const go=document.getElementById("aeGo");
-  if(go){ const block=needParty && !((_orgCache.parties||[]).length); go.disabled=block; go.style.opacity=block?".5":""; go.title=block?"Сначала создайте регион":""; }
-}
-async function doAssignExisting(){
-  const username=(document.getElementById("aeu").value||"").trim().toLowerCase();
-  const role=document.getElementById("aer").value;
-  const r=ORG_ROLES.find(x=>x.key===role);
-  if(!r){ toast("Выберите роль"); return; }
-  if(!/^[a-z0-9_]{3,32}$/.test(username)){ toast("Логин: 3–32 символа — англ. буквы, цифры, _"); return; }
-  let party_id=null;
-  if(r.scope==="party"){ const ps=document.getElementById("aeParty"); party_id=ps?ps.value:""; if(!party_id){ toast("Выберите регион"); return; } }
-  const btn=document.getElementById("aeGo"); btn.disabled=true; btn.textContent="Назначение…";
-  try{
-    await cloudCallFn("set_org_role", { base_id:activeCloudId()||"00000000-0000-0000-0000-000000000000", username, role, party_id });
-    toast("Роль назначена: "+username); await openOrgRolesSheet();
-  }catch(e){ toast("Не удалось. "+(e.message||"Проверьте логин и интернет")); if(document.getElementById("aeGo")){ btn.disabled=false; btn.textContent="Назначить"; } }
-}
-async function orgRoleRemove(uid, role, partyId){
-  const m=(_orgCache.members||[]).find(x=>x.user_id===uid && x.role===role && (x.party_id||null)===(partyId||null));
-  const who = m ? m.username : "работника";
-  const where = m && m.party_name ? ` в регионе «${m.party_name}»` : "";
-  const ok = await confirmSheet(`Снять роль «${orgRoleLabel(role)}»${where} у ${who}?`, {title:"Снять роль", yes:"Снять", no:"Отмена", danger:true});
-  if(!ok) return;
-  try{
-    await cloudCallFn("set_org_role", { base_id:activeCloudId()||"00000000-0000-0000-0000-000000000000", user_id:uid, role, party_id:partyId||null, remove:true });
-    toast("Роль снята"); await openOrgRolesSheet();
-  }catch(e){ toast("Не удалось. "+(e.message||"Проверьте интернет и повторите")); }
-}
-
-/* ===== Сводка по ВСЕМ базам (бухгалтерия/директора): чтение остатков + экспорт ===== */
-let _allBasesCache = null;     // [{id,name,rows}] — снимок; чистится при выходе (clearAllBasesCache)
-let _allBasesAt = 0;           // время снимка (для «Обновлено в HH:MM»)
-function clearAllBasesCache(){ _allBasesCache = null; _allBasesAt = 0; }
-const _rawTypeLabel = (t)=>{ const m=(STOCK_TYPES||[]).find(x=>x.key===t); return m?m.short:(t||""); };
-// количество/место считаем КАК В СКЛАДЕ: из батчей, если они есть (колонка qty — производная и может отстать)
-function _rowQty(r){ const b=Array.isArray(r.batches)?r.batches:[]; return b.length ? roundQty(b.reduce((s,x)=>s+roundQty((x&&x.qty)||0),0)) : roundQty(Number(r.qty||0)); }
-function _rowLoc(r){ const b=Array.isArray(r.batches)?r.batches:[]; if(b.length){ return [...new Set(b.map(x=>(x&&x.location)||"").filter(Boolean))].sort().join("; "); } return r.location||""; }
-function _fileSafe(s){ return String(s||"база").replace(/[^0-9A-Za-zА-Яа-яёЁ -]/g,"").trim().replace(/\s+/g,"_")||"база"; }
-// один запрос in.(...) вместо N параллельных: одна поездка, RLS сама отфильтрует видимое, тянем и batches
-async function loadAllBasesStock(){
-  const tok=cloud.session && cloud.session.access_token;
-  const ids=Object.keys(cloud.bases||{});
-  if(!ids.length) return [];
-  let rows;
-  try{ rows=await cloudRest(`stock_items?select=base_id,name,category,qty,unit,min_stock,expiry,location,type,note,batches&base_id=in.(${ids.map(encodeURIComponent).join(",")})`, tok, {timeout:90000}); }
-  catch(e){ return ids.map(id=>({ id, name:cloud.bases[id], rows:null })); }   // общий сбой → все базы помечаем «не загружено»
-  const byBase={}; (Array.isArray(rows)?rows:[]).forEach(r=>{ (byBase[r.base_id]=byBase[r.base_id]||[]).push(r); });
-  return ids.map(id=>({ id, name:cloud.bases[id], rows: byBase[id]||[] }));
-}
-async function openAllBasesSheet(){
-  openSheet(`<div class="font-bold text-xl mb-3">🧮 Сводка по всем базам</div><div class="opacity-70 text-sm">Загрузка остатков по всем базам…<br>это может занять несколько секунд</div>`);
-  let data;
-  try{ data=await loadAllBasesStock(); _allBasesCache=data; _allBasesAt=Date.now(); }
-  catch(e){ openSheet(`<div class="font-bold text-xl mb-3">🧮 Сводка по всем базам</div><div class="err-text text-sm">Не удалось загрузить: ${esc(e.message||"нет связи")}</div><button class="btn btn-ghost w-full mt-3" data-close>Закрыть</button>`); return; }
-  const rowsHtml = data.length ? data.map(b=>{
-    if(b.rows===null) return `<div class="card"><div class="font-semibold truncate">${esc(b.name)}</div><div class="err-text text-xs">Не удалось загрузить эту базу</div></div>`;
-    const total=b.rows.length, inStk=b.rows.filter(r=>_rowQty(r)>0).length;
-    return `<div class="card flex items-center justify-between gap-2">
-      <div class="min-w-0"><div class="font-semibold truncate">${esc(b.name)}</div>
-        <div class="text-xs opacity-70">Позиций: ${total} · в наличии: ${inStk}</div></div>
-      <button class="btn btn-ghost px-2" aria-label="Excel по этой базе" onclick="exportOneBaseXlsx('${b.id}')">📊</button>
-    </div>`;
-  }).join("") : `<div class="opacity-70 text-sm">Баз нет.</div>`;
-  const totalItems=data.reduce((a,b)=>a+((b.rows||[]).length),0);
-  const anyLoaded=data.some(b=>Array.isArray(b.rows));
-  const at=new Date(_allBasesAt).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"});
-  openSheet(`<div class="font-bold text-xl mb-3">🧮 Сводка по всем базам</div>
-    <div class="text-xs opacity-70 mb-2">Баз: ${data.length} · позиций всего: ${totalItems} · снимок в ${at}</div>
-    <div class="space-y-2 max-h-72 overflow-y-auto pr-1">${rowsHtml}</div>
-    ${anyLoaded?`<button class="btn btn-success w-full mt-3" onclick="exportAllBasesXlsx()">📊 Выгрузить ВСЕ базы в Excel</button>`:""}
-    <div class="text-xs opacity-60 mt-2">Остатки по всем базам на момент снимка (только чтение). Кнопка 📊 у базы — одна база; зелёная — все базы одним файлом. Для бухгалтерии и директоров.</div>
-    <div class="flex gap-2 mt-3">
-      <button class="btn btn-ghost flex-1" onclick="openAllBasesSheet()">🔄 Обновить</button>
-      <button class="btn btn-ghost flex-1" data-close>Закрыть</button>
-    </div>`);
-}
-async function exportAllBasesXlsx(){
-  if(!_allBasesCache){ toast("Сначала откройте сводку"); return; }
-  toast("Подготовка файла…");
-  let XLSX; try{ XLSX=await ensureXlsx(); }catch(e){ toast("Не удалось сделать Excel"); return; }
-  const rows=[];
-  _allBasesCache.forEach(b=>{ (b.rows||[]).forEach(r=>{ rows.push({
-    "База": b.name, "Тип": _rawTypeLabel(r.type), "Категория": r.category||"", "Наименование": r.name,
-    "Количество": _rowQty(r), "Ед. изм.": r.unit||"", "Мин. запас": (r.min_stock==null?"":Number(r.min_stock)),
-    "Срок годности": r.expiry||"", "Место": _rowLoc(r), "Примечание": r.note||"" }); }); });
-  const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"База":"","Наименование":""}]));
-  ws["!cols"]=[{wch:18},{wch:10},{wch:20},{wch:38},{wch:10},{wch:10},{wch:10},{wch:14},{wch:16},{wch:24}];
-  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Все базы");
-  XLSX.writeFile(wb, `vahtahoz-все-базы-${todayStr()}.xlsx`);
-}
-async function exportOneBaseXlsx(baseId){
-  const b=(_allBasesCache||[]).find(x=>x.id===baseId); if(!b||!b.rows){ toast("Нет данных по базе"); return; }
-  let XLSX; try{ XLSX=await ensureXlsx(); }catch(e){ toast("Не удалось сделать Excel"); return; }
-  const rows=b.rows.map(r=>({ "Тип":_rawTypeLabel(r.type), "Категория":r.category||"", "Наименование":r.name, "Количество":_rowQty(r), "Ед. изм.":r.unit||"", "Мин. запас":(r.min_stock==null?"":Number(r.min_stock)), "Срок годности":r.expiry||"", "Место":_rowLoc(r), "Примечание":r.note||"" }));
-  const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}]));
-  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Остатки");
-  XLSX.writeFile(wb, `vahtahoz-${_fileSafe(b.name)}-${todayStr()}.xlsx`);
-}
 const cloudDirtyKey = (cid)=>`vahtahoz_dirty_${cid}`;
 // удалить все sync-маркеры базы (dirty + снимки подписей) — при удалении/замене базы, чтобы не копить мусор
 function clearBaseSyncKeys(cid){ if(!cid) return; try{ localStorage.removeItem(cloudDirtyKey(cid)); for(const k of ["stock","jr","settings"]) localStorage.removeItem(`vahtahoz_sig_${k}_${cid}`); }catch(_){} }
-// navigator.onLine на iOS standalone-PWA часто ЛОЖНО false сразу после загрузки (пока не пошёл первый
-// запрос), и событие "online" не срабатывает → статус залипал в «оффлайн» при живой сети. Поэтому online
-// считаем подтверждённым, если ЛИБО navigator.onLine!==false, ЛИБО реальный запрос долетел (_netConfirmed).
-let _netConfirmed = false;
-function cloudOnline(){ return _netConfirmed || navigator.onLine!==false; }
-// лёгкая проба сети: любой ДОЛЕТЕВШИЙ ответ (даже 4xx) = сеть есть; только сетевой сбой/таймаут = нет.
-async function netProbe(){
-  try{
-    const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(),6000);
-    try{ await fetch(`${CLOUD_CFG.url}/rest/v1/`, { method:"GET", headers:{ apikey:CLOUD_CFG.anon }, signal:ctrl.signal }); return true; }
-    finally{ clearTimeout(to); }
-  }catch(e){ return false; }
-}
+function cloudOnline(){ return navigator.onLine!==false; }
 /* «ограниченный» пользователь — вошёл в облако и НЕ имеет права на задачи (начальник):
    ему показываем только складскую часть (журнал операций без задач). */
 function isRestrictedUser(){ const m = activeMember(); return !!(m && !m.can_view_tasks); }
-// Кухня нужна повару и управляющим (надзор). Скрываем у хозрабочего/механика/бухгалтерии.
-// Локальная/оффлайн база без облачных ролей — показываем (одиночный режим).
-function canSeeKitchen(){
-  if(cloud.profile && cloud.profile.is_admin) return true;
-  if(canManageBase()) return true;                        // нач.участка+/партийные/глоб. управляющие
-  const m = activeMember();
-  if(m && m.role==="cook") return true;                   // повар
-  const hasCloudRole = !!m || (cloud.orgRoles||[]).some(o=>o.active!==false);
-  return !hasCloudRole;                                    // есть облачная роль, но не повар/управляющий → скрыть
-}
 // блокировка управления базами: либо роль ограничена, либо роль ЕЩЁ НЕ ИЗВЕСТНА (есть сохранённая сессия,
 // но cloud.members не загрузились) → fail-safe: до выяснения роли не даём переключать/плодить базы,
 // иначе на холодном старте начальник успел бы переключиться на локальную базу в обход ограничений.
@@ -4433,7 +4113,6 @@ async function cloudInit(){
   if(cloud._initDone) return; cloud._initDone = true;   // защита от повторного запуска (дубль listener)
   // авто-пуш/синхронизация при возврате сети
   window.addEventListener("online", async ()=>{
-    _netConfirmed = true;   // браузер сообщил о сети — снимаем возможный ложный оффлайн
     if((cloud.session || loadCloudSess()) && cloud.basesLoaded!==true){
       // базы не загрузились — продлеваем токен при необходимости и дозагружаем базы
       try{
@@ -4458,19 +4137,9 @@ async function cloudInit(){
       if(localStorage.getItem(TASKS_DIRTY)) cloudPushTasksNow().catch(()=>{}); else cloudSyncTasks().catch(()=>{});
     }
   });
-  window.addEventListener("offline", ()=>{ _netConfirmed = false; if(cloud.ready && activeCloudId()) setSyncStatus("offline"); });
+  window.addEventListener("offline", ()=>{ if(cloud.ready && activeCloudId()) setSyncStatus("offline"); });
   try{
     await ensureSB();   // клиент нужен для realtime/setSession ниже
-    // iOS ложно-offline при старте: если браузер говорит «нет сети», НЕ блокируем запуск, а фоном пробуем
-    // достучаться. Долетело → сеть есть: снимаем оффлайн и до-запускаем синк (как по событию online).
-    if(navigator.onLine===false){
-      (async()=>{
-        for(let i=0;i<3 && !_netConfirmed;i++){   // до 3 попыток: холодный старт бэкенда мог не уложиться в 6с
-          if(await netProbe()){ if(!_netConfirmed){ _netConfirmed=true; try{ renderHeader(); }catch(_){}; window.dispatchEvent(new Event("online")); } break; }
-          await new Promise(r=>setTimeout(r, 4000));
-        }
-      })().catch(()=>{});
-    }
     let s = loadCloudSess();
     // access-токен живёт ~1ч. Если истёк/истекает в ближайшую минуту — продлеваем ПРЯМЫМ fetch
     // по refresh-токену (не зависим от supabase-клиента, который в standalone мог висеть).
@@ -4656,19 +4325,17 @@ async function cloudOnLogin(session, attempt){
     // 3 независимых запроса — ПАРАЛЛЕЛЬНО (последовательно было бы ~3× дольше на медленной сети).
     // Общий таймаут 25с: зависший PostgREST-запрос не должен оставлять загрузку висеть вечно.
     const tok = session.access_token;
-    const [prof, mem, bs, orgs] = await Promise.race([
+    const [prof, mem, bs] = await Promise.race([
       Promise.all([
         cloudRest(`profiles?select=*&id=eq.${encodeURIComponent(uidv)}`, tok),
         cloudRest(`base_members?select=*&user_id=eq.${encodeURIComponent(uidv)}`, tok),   // ТОЛЬКО мои членства: RLS теперь даёт менеджеру видеть и чужие строки, но cloud.members = «мои права»
-        cloudRest(`bases?select=id,name,party_id`, tok),
-        cloudRest(`org_roles?select=*&user_id=eq.${encodeURIComponent(uidv)}`, tok).catch(()=>[]),   // территориальные/глобальные роли (может отсутствовать на старом бэке → [] )
+        cloudRest(`bases?select=id,name`, tok),
       ]),
       new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания облака")),25000))   // запас под слабый канал/дальний маршрут
     ]);
     cloud.profile = (Array.isArray(prof) && prof[0]) || { id:uidv, username:session.user.email };
     cloud.members = Array.isArray(mem) ? mem : [];
-    cloud.orgRoles = Array.isArray(orgs) ? orgs : [];
-    cloud.bases = {}; cloud._baseParty = {}; (Array.isArray(bs)?bs:[]).forEach(b=>{ cloud.bases[b.id]=b.name; cloud._baseParty[b.id]=b.party_id||null; });
+    cloud.bases = {}; (Array.isArray(bs)?bs:[]).forEach(b=>cloud.bases[b.id]=b.name);
     cloud.ready = true; cloud.basesLoaded = true;   // базы реально получены из облака
     cloud._basesLoading = false; clearTimeout(cloud._basesRetryT);   // цикл загрузки баз завершён успехом
     hideLoginGate();                           // успешный вход — прячем полноэкранный гейт
@@ -4724,39 +4391,17 @@ async function cloudLogout(){
   clearTimeout(cloud.pushTimer); clearTimeout(cloud.retryTimer); clearTimeout(cloud.pullTimer); clearTimeout(cloud.pullRetryT);   // отложенные склад-операции не должны срабатывать после выхода
   // задачи привязаны к аккаунту (owner) — при выходе НЕ оставляем их локально, иначе следующий юзер их увидит/выгрузит
   state.tasks=[]; try{ localStorage.removeItem(TASKS_KEY); localStorage.removeItem(TASKS_DIRTY); }catch(e){}
-  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
+  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
   cloud.tasksChannel=null; cloud.tasksSubUid=null; cloud.tasksBusy=false; cloud.basesLoaded=false;   // сброс задач: иначе после входа другим юзером realtime молчит
-  clearAllBasesCache();   // снимок остатков всех баз не должен пережить выход (утечка на общем устройстве)
-  // ОБЛАЧНЫЕ БАЗЫ привязаны к аккаунту: при выходе удаляем их локальные профили и КЭШ СКЛАДА с устройства —
-  // иначе следующий вошедший (другой человек на общем телефоне) увидит/откроет чужую базу и её данные из
-  // localStorage (рендер идёт из STORE_KEY/слотов, до RLS). Симметрично очистке задач выше.
-  try{
-    const cloudProfs = profiles.list.filter(p=>p.cloudId);
-    if(cloudProfs.length){
-      const activeWasCloud = cloudProfs.some(p=>p.id===profiles.activeId);
-      cloudProfs.forEach(p=>{ try{ localStorage.removeItem(slotKey(p.id)); clearBaseSyncKeys(p.cloudId); }catch(_){} });
-      let locals = profiles.list.filter(p=>!p.cloudId);
-      if(!locals.length){ locals = [{ id: uid(), name: "База 1" }]; }
-      const newActive = activeWasCloud ? locals[0].id : profiles.activeId;
-      if(activeWasCloud){ const raw = localStorage.getItem(slotKey(newActive)); localStorage.setItem(STORE_KEY, raw || JSON.stringify(freshProfileState())); }
-      profiles = { activeId: newActive, list: locals };
-      saveProfiles(profiles);
-    }
-  }catch(_){}
   clearCloudSess();   // чистим своё хранилище сессии, иначе при запуске восстановит вход
   // снимаем флаг «без облака» — при следующем запуске снова покажется вход (нет сессии → гейт)
   try{ localStorage.removeItem("vahtahoz_login_skipped"); }catch(e){}
-  // перезагрузка: гарантирует чистое состояние из STORE_KEY (как switchProfile) и показ логин-гейта без остатков
-  location.reload();
+  renderHeader(); render(); toast("Выход из облака");
 }
 /* привязываем облачные базы к локальным (по имени) или создаём новые; для одной базы — переключаемся */
 async function cloudAutoLink(){
-  // видимые базы = cloud.bases (уже отфильтрован RLS ровно под роль: участник → своя база; нач.партии → базы
-  // своего региона; директор/бухгалтерия/владелец → все). Берём ИХ, а не cloud.members — иначе органичные роли
-  // (нач.партии/директор/бухгалтерия, у которых НЕТ base_members) не получали бы базы вовсе, а участник одной
-  // базы не получит чужие (их нет в его cloud.bases).
-  let myBases = Object.keys(cloud.bases||{});
-  cloud.members.forEach(m=>{ if(m.base_id && !myBases.includes(m.base_id)) myBases.push(m.base_id); });   // подстраховка
+  let myBases = cloud.members.map(m=>m.base_id);
+  if(cloud.profile && cloud.profile.is_admin){ for(const id in cloud.bases) if(!myBases.includes(id)) myBases.push(id); }
   let changed=false, switchTo=null;
   for(const cid of myBases){
     if(profiles.list.some(x=>x.cloudId===cid)) continue;
@@ -5288,11 +4933,6 @@ function cloudGateTasks(){
   const tb = document.querySelector('#navbar .nav-btn[data-nav="tasks"]');
   if(tb) tb.style.display = hideTasks ? "none" : "";
   if(hideTasks && currentView==="tasks") nav("dashboard");
-  // Кухня — только повар/управляющие
-  const hideKitchen = !canSeeKitchen();
-  const kb = document.querySelector('#navbar .nav-btn[data-nav="kitchen"]');
-  if(kb) kb.style.display = hideKitchen ? "none" : "";
-  if(hideKitchen && currentView==="kitchen") nav("dashboard");
 }
 // перечитать ТОЛЬКО свои членства (active/права) — чтобы возврат/снятие со смены подхватились без перезахода
 async function cloudRefreshMyMembership(){
@@ -5300,17 +4940,8 @@ async function cloudRefreshMyMembership(){
     if(cloud.busy) return;   // не переписываем cloud.members посреди идущего синка (push/pull читают права)
     const tok=cloud.session && cloud.session.access_token; const uid=cloud.profile && cloud.profile.id;
     if(!tok || !uid) return;
-    // тянем членства + территориальные роли + карту база→партия одним заходом (иначе canManageBase/myRank
-    // рассинхронятся: партийный управляющий мог бы «потерять» доступ к базе, отсутствующей в _baseParty).
-    const [mem, orgs, bs] = await Promise.all([
-      cloudRest(`base_members?select=*&user_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:20000}),
-      cloudRest(`org_roles?select=*&user_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:20000}).catch(()=>null),
-      cloudRest(`bases?select=id,name,party_id`, tok, {timeout:20000}).catch(()=>null),
-    ]);
-    if(Array.isArray(mem)) cloud.members=mem;
-    if(Array.isArray(orgs)) cloud.orgRoles=orgs;
-    if(Array.isArray(bs)){ cloud.bases={}; cloud._baseParty={}; bs.forEach(b=>{ cloud.bases[b.id]=b.name; cloud._baseParty[b.id]=b.party_id||null; }); }
-    renderHeader();
+    const mem=await cloudRest(`base_members?select=*&user_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:20000});
+    if(Array.isArray(mem)){ cloud.members=mem; renderHeader(); }
   }catch(_){}
 }
 async function cloudSyncNow(){
