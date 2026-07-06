@@ -696,7 +696,8 @@ class _PointFormScreenState extends State<PointFormScreen> {
               Expanded(
                 child: Text(
                   '${measureTypes[m.measureType] ?? m.measureType ?? '—'}: '
-                  'аз. пад. ${_fmtNum(m.dipAzimuth)}° / угол ${_fmtNum(m.dipAngle)}°',
+                  'аз. пад. ${_fmtNum(m.dipAzimuth)}° / угол ${_fmtNum(m.dipAngle)}° '
+                  '· ${m.isTrueAngle ? 'ист.' : 'магн.'}',
                   style: GfText.numberSmall,
                 ),
               ),
@@ -820,7 +821,8 @@ class _PointFormScreenState extends State<PointFormScreen> {
   }
 
   Future<void> _onAddMeasurement() async {
-    final result = await showDialog<({String type, String az, String ang})>(
+    final result =
+        await showDialog<({String type, String az, String ang, bool trueAz})>(
       context: context,
       builder: (_) => const _MeasurementDialog(),
     );
@@ -854,6 +856,7 @@ class _PointFormScreenState extends State<PointFormScreen> {
         dipAzimuth: az,
         dipAngle: ang,
         source: 'manual',
+        isTrueAngle: result.trueAz,
         authorId: widget.authorId,
         createdAt: now,
         modifiedAt: now,
@@ -988,6 +991,9 @@ class _MeasurementDialogState extends State<_MeasurementDialog> {
   final _azCtrl = TextEditingController();
   final _angCtrl = TextEditingController();
   String _type = 'bedding';
+  // По умолчанию МАГНИТНЫЙ: буссоль так и даёт. Истинный — только если геолог
+  // уже поправил на склонение в поле.
+  bool _trueAz = false;
 
   @override
   void dispose() {
@@ -1026,6 +1032,16 @@ class _MeasurementDialogState extends State<_MeasurementDialog> {
             keyboardType: TextInputType.number,
             decoration: _dec('Угол падения, 0–90'),
           ),
+          const SizedBox(height: GfSpace.x12),
+          FieldPicker(
+            label: 'Азимут',
+            options: const [
+              ('magnetic', 'Магнитный (с буссоли)'),
+              ('true', 'Истинный (правлен на склонение)'),
+            ],
+            selected: _trueAz ? 'true' : 'magnetic',
+            onSelected: (v) => setState(() => _trueAz = v == 'true'),
+          ),
         ]),
       ),
       actions: [
@@ -1033,8 +1049,12 @@ class _MeasurementDialogState extends State<_MeasurementDialog> {
             onPressed: () => Navigator.pop(context),
             child: const Text('Отмена')),
         TextButton(
-            onPressed: () => Navigator.pop(
-                context, (type: _type, az: _azCtrl.text, ang: _angCtrl.text)),
+            onPressed: () => Navigator.pop(context, (
+                  type: _type,
+                  az: _azCtrl.text,
+                  ang: _angCtrl.text,
+                  trueAz: _trueAz
+                )),
             child: const Text('Добавить')),
       ],
     );

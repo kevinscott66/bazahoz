@@ -160,6 +160,7 @@ class StructuralMeasurement {
     this.dipAzimuth,
     this.dipAngle,
     this.source, // 'manual' | 'sensor'
+    this.isTrueAngle = false,
     this.note,
     required this.authorId,
     required this.createdAt,
@@ -173,6 +174,12 @@ class StructuralMeasurement {
   final double? dipAzimuth;
   final double? dipAngle;
   final String? source;
+
+  /// false — азимут МАГНИТНЫЙ (компас так и даёт), true — уже ИСТИННЫЙ (правлен
+  /// на склонение). Различать обязательно: магнитный, записанный как истинный,
+  /// искажает структурную картину (склонение для Магадана ~10°+). Поправку по
+  /// модели применяет камералка — поле хранит, ЧТО именно измерено.
+  final bool isTrueAngle;
   final String? note;
   final String authorId;
   final String createdAt;
@@ -186,6 +193,7 @@ class StructuralMeasurement {
         'dip_azimuth': dipAzimuth,
         'dip_angle': dipAngle,
         'source': source,
+        'is_true_angle': isTrueAngle ? 1 : 0,
         'note': note,
         'author_id': authorId,
         'created_at': createdAt,
@@ -201,6 +209,7 @@ class StructuralMeasurement {
         dipAzimuth: m['dip_azimuth'] as double?,
         dipAngle: m['dip_angle'] as double?,
         source: m['source'] as String?,
+        isTrueAngle: (m['is_true_angle'] as int? ?? 0) != 0,
         note: m['note'] as String?,
         authorId: (m['author_id'] as String?) ?? '',
         createdAt: m['created_at'] as String,

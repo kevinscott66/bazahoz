@@ -529,6 +529,7 @@ class _JournalScreenState extends State<JournalScreen> {
             pointById[m.parentId]?.number ?? m.parentId,
             measureTypes[m.measureType] ?? m.measureType,
             m.dipAzimuth,
+            m.isTrueAngle ? 'истинный' : 'магнитный',
             m.dipAngle,
             m.source,
             m.note,

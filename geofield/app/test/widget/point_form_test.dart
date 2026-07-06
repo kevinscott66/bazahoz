@@ -211,7 +211,31 @@ void main() {
     expect(ms, hasLength(1));
     expect(ms.single['measure_type'], 'vein');
     expect(ms.single['dip_azimuth'], 120.0);
+    expect(ms.single['is_true_angle'], 0, reason: 'по умолчанию магнитный');
     expect(find.textContaining('Жила: аз. пад. 120°'), findsOneWidget);
+    expect(find.textContaining('магн.'), findsOneWidget);
+  });
+
+  testWidgets('замер: истинный азимут помечается и виден в списке',
+      (tester) async {
+    final h = await pumpPoint(tester);
+    await tester.ensureVisible(find.text('+ Замер'));
+    await tester.tap(find.text('+ Замер'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+        find.widgetWithText(TextField, 'Азимут падения, 0–359'), '90');
+    await tester.enterText(
+        find.widgetWithText(TextField, 'Угол падения, 0–90'), '30');
+    // Переключить азимут на истинный через шторку-пикер.
+    await tester.tap(find.text('Азимут'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Истинный'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Добавить'));
+    await settleSave(tester);
+    final ms = await h.db.query('structural_measurements');
+    expect(ms.single['is_true_angle'], 1);
+    expect(find.textContaining('ист.'), findsOneWidget);
   });
 
   testWidgets('кнопка датчика честно сообщает о недоступности', (tester) async {
