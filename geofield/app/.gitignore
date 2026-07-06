@@ -4,3 +4,4 @@ build/
 .flutter-plugins-dependencies
 *.iml
 .idea/
+test/goldens/failures/
