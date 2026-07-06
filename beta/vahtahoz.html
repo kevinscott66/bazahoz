@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v140 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v141 · БЕТА</div>
   </div>
 </div>
 
@@ -2917,7 +2917,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v140 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v141 · тестовый канал</div>
   `;
 }
 
@@ -3773,7 +3773,7 @@ async function cloudRefresh(refresh_token){
 async function cloudSessionExpired(reason){
   if(!cloud.session && !cloud.ready) return;   // уже разлогинены — не дублируем
   cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.ready=false; cloud.basesLoaded=false;
-  cloud.bases={};                              // имена баз протухшей сессии не должны висеть в UI/cloudActivate
+  cloud.bases={}; clearAllBasesCache();        // имена баз и снимок остатков протухшей сессии не должны висеть в UI/памяти
   cloud._basesLoading=false; cloud.busy=false; cloud.pushPending=false; cloud.applying=false;   // иначе повторный вход залипнет (cloudOnLogin рано выходит при _basesLoading)
   try{ if(cloud.channel && cloud.sb) cloud.sb.removeChannel(cloud.channel); }catch(_){}
   try{ if(cloud.tasksChannel && cloud.sb) cloud.sb.removeChannel(cloud.tasksChannel); }catch(_){}
@@ -4148,7 +4148,7 @@ async function openOrgRolesSheet(){
     </div>`;
   }).join("") : `<div class="opacity-70 text-sm">Пока никого нет.</div>`;
   openSheet(`<div class="font-bold text-xl mb-3">🗺 Роли по регионам</div>
-    <div class="space-y-2 max-h-80 overflow-y-auto pr-1">${list}</div>
+    <div class="space-y-2 max-h-72 overflow-y-auto pr-1">${list}</div>
     <button class="btn btn-primary w-full mt-3" onclick="openAddOrgMember()">＋ Назначить роль (новый аккаунт)</button>
     <div class="text-xs opacity-60 mt-2">Начальник партии — на выбранный регион; директор, ген. директор и бухгалтерия — на все базы. Назначать можно только роли ниже вашей.</div>
     <button class="btn btn-ghost w-full mt-3" data-close>Закрыть</button>`);
@@ -4220,40 +4220,51 @@ async function orgRoleRemove(uid, role, partyId){
 }
 
 /* ===== Сводка по ВСЕМ базам (бухгалтерия/директора): чтение остатков + экспорт ===== */
-let _allBasesCache = null;
+let _allBasesCache = null;     // [{id,name,rows}] — снимок; чистится при выходе (clearAllBasesCache)
+let _allBasesAt = 0;           // время снимка (для «Обновлено в HH:MM»)
+function clearAllBasesCache(){ _allBasesCache = null; _allBasesAt = 0; }
 const _rawTypeLabel = (t)=>{ const m=(STOCK_TYPES||[]).find(x=>x.key===t); return m?m.short:(t||""); };
+// количество/место считаем КАК В СКЛАДЕ: из батчей, если они есть (колонка qty — производная и может отстать)
+function _rowQty(r){ const b=Array.isArray(r.batches)?r.batches:[]; return b.length ? roundQty(b.reduce((s,x)=>s+roundQty((x&&x.qty)||0),0)) : roundQty(Number(r.qty||0)); }
+function _rowLoc(r){ const b=Array.isArray(r.batches)?r.batches:[]; if(b.length){ return [...new Set(b.map(x=>(x&&x.location)||"").filter(Boolean))].sort().join("; "); } return r.location||""; }
+function _fileSafe(s){ return String(s||"база").replace(/[^0-9A-Za-zА-Яа-яёЁ -]/g,"").trim().replace(/\s+/g,"_")||"база"; }
+// один запрос in.(...) вместо N параллельных: одна поездка, RLS сама отфильтрует видимое, тянем и batches
 async function loadAllBasesStock(){
   const tok=cloud.session && cloud.session.access_token;
-  const entries=Object.entries(cloud.bases||{});
-  return await Promise.all(entries.map(async([id,name])=>{
-    try{
-      const rows=await cloudRest(`stock_items?select=name,category,qty,unit,min_stock,expiry,location,type,note&base_id=eq.${encodeURIComponent(id)}`, tok, {timeout:60000});
-      return { id, name, rows: Array.isArray(rows)?rows:[] };
-    }catch(e){ return { id, name, rows:null }; }
-  }));
+  const ids=Object.keys(cloud.bases||{});
+  if(!ids.length) return [];
+  let rows;
+  try{ rows=await cloudRest(`stock_items?select=base_id,name,category,qty,unit,min_stock,expiry,location,type,note,batches&base_id=in.(${ids.map(encodeURIComponent).join(",")})`, tok, {timeout:90000}); }
+  catch(e){ return ids.map(id=>({ id, name:cloud.bases[id], rows:null })); }   // общий сбой → все базы помечаем «не загружено»
+  const byBase={}; (Array.isArray(rows)?rows:[]).forEach(r=>{ (byBase[r.base_id]=byBase[r.base_id]||[]).push(r); });
+  return ids.map(id=>({ id, name:cloud.bases[id], rows: byBase[id]||[] }));
 }
 async function openAllBasesSheet(){
-  openSheet(`<div class="font-bold text-xl mb-3">🧮 Сводка по всем базам</div><div class="opacity-70 text-sm">Загрузка остатков…</div>`);
+  openSheet(`<div class="font-bold text-xl mb-3">🧮 Сводка по всем базам</div><div class="opacity-70 text-sm">Загрузка остатков по всем базам…<br>это может занять несколько секунд</div>`);
   let data;
-  try{ data=await loadAllBasesStock(); _allBasesCache=data; }
+  try{ data=await loadAllBasesStock(); _allBasesCache=data; _allBasesAt=Date.now(); }
   catch(e){ openSheet(`<div class="font-bold text-xl mb-3">🧮 Сводка по всем базам</div><div class="err-text text-sm">Не удалось загрузить: ${esc(e.message||"нет связи")}</div><button class="btn btn-ghost w-full mt-3" data-close>Закрыть</button>`); return; }
   const rowsHtml = data.length ? data.map(b=>{
     if(b.rows===null) return `<div class="card"><div class="font-semibold truncate">${esc(b.name)}</div><div class="err-text text-xs">Не удалось загрузить эту базу</div></div>`;
-    const total=b.rows.length, inStk=b.rows.filter(r=>Number(r.qty||0)>0).length;
+    const total=b.rows.length, inStk=b.rows.filter(r=>_rowQty(r)>0).length;
     return `<div class="card flex items-center justify-between gap-2">
       <div class="min-w-0"><div class="font-semibold truncate">${esc(b.name)}</div>
         <div class="text-xs opacity-70">Позиций: ${total} · в наличии: ${inStk}</div></div>
-      <button class="btn btn-ghost px-2" onclick="exportOneBaseXlsx('${b.id}')">Excel</button>
+      <button class="btn btn-ghost px-2" aria-label="Excel по этой базе" onclick="exportOneBaseXlsx('${b.id}')">📊</button>
     </div>`;
   }).join("") : `<div class="opacity-70 text-sm">Баз нет.</div>`;
   const totalItems=data.reduce((a,b)=>a+((b.rows||[]).length),0);
   const anyLoaded=data.some(b=>Array.isArray(b.rows));
+  const at=new Date(_allBasesAt).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"});
   openSheet(`<div class="font-bold text-xl mb-3">🧮 Сводка по всем базам</div>
-    <div class="text-xs opacity-70 mb-2">Баз: ${data.length} · позиций всего: ${totalItems}</div>
-    <div class="space-y-2 max-h-80 overflow-y-auto pr-1">${rowsHtml}</div>
+    <div class="text-xs opacity-70 mb-2">Баз: ${data.length} · позиций всего: ${totalItems} · снимок в ${at}</div>
+    <div class="space-y-2 max-h-72 overflow-y-auto pr-1">${rowsHtml}</div>
     ${anyLoaded?`<button class="btn btn-success w-full mt-3" onclick="exportAllBasesXlsx()">📊 Выгрузить ВСЕ базы в Excel</button>`:""}
-    <div class="text-xs opacity-60 mt-2">Остатки по всем базам (только чтение). Для бухгалтерии и директоров.</div>
-    <button class="btn btn-ghost w-full mt-2" data-close>Закрыть</button>`);
+    <div class="text-xs opacity-60 mt-2">Остатки по всем базам на момент снимка (только чтение). Кнопка 📊 у базы — одна база; зелёная — все базы одним файлом. Для бухгалтерии и директоров.</div>
+    <div class="flex gap-2 mt-3">
+      <button class="btn btn-ghost flex-1" onclick="openAllBasesSheet()">🔄 Обновить</button>
+      <button class="btn btn-ghost flex-1" data-close>Закрыть</button>
+    </div>`);
 }
 async function exportAllBasesXlsx(){
   if(!_allBasesCache){ toast("Сначала откройте сводку"); return; }
@@ -4262,8 +4273,8 @@ async function exportAllBasesXlsx(){
   const rows=[];
   _allBasesCache.forEach(b=>{ (b.rows||[]).forEach(r=>{ rows.push({
     "База": b.name, "Тип": _rawTypeLabel(r.type), "Категория": r.category||"", "Наименование": r.name,
-    "Количество": roundQty(Number(r.qty||0)), "Ед. изм.": r.unit||"", "Мин. запас": (r.min_stock==null?"":Number(r.min_stock)),
-    "Срок годности": r.expiry||"", "Место": r.location||"", "Примечание": r.note||"" }); }); });
+    "Количество": _rowQty(r), "Ед. изм.": r.unit||"", "Мин. запас": (r.min_stock==null?"":Number(r.min_stock)),
+    "Срок годности": r.expiry||"", "Место": _rowLoc(r), "Примечание": r.note||"" }); }); });
   const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"База":"","Наименование":""}]));
   ws["!cols"]=[{wch:18},{wch:10},{wch:20},{wch:38},{wch:10},{wch:10},{wch:10},{wch:14},{wch:16},{wch:24}];
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Все базы");
@@ -4272,10 +4283,10 @@ async function exportAllBasesXlsx(){
 async function exportOneBaseXlsx(baseId){
   const b=(_allBasesCache||[]).find(x=>x.id===baseId); if(!b||!b.rows){ toast("Нет данных по базе"); return; }
   let XLSX; try{ XLSX=await ensureXlsx(); }catch(e){ toast("Не удалось сделать Excel"); return; }
-  const rows=b.rows.map(r=>({ "Тип":_rawTypeLabel(r.type), "Категория":r.category||"", "Наименование":r.name, "Количество":roundQty(Number(r.qty||0)), "Ед. изм.":r.unit||"", "Мин. запас":(r.min_stock==null?"":Number(r.min_stock)), "Срок годности":r.expiry||"", "Место":r.location||"", "Примечание":r.note||"" }));
+  const rows=b.rows.map(r=>({ "Тип":_rawTypeLabel(r.type), "Категория":r.category||"", "Наименование":r.name, "Количество":_rowQty(r), "Ед. изм.":r.unit||"", "Мин. запас":(r.min_stock==null?"":Number(r.min_stock)), "Срок годности":r.expiry||"", "Место":_rowLoc(r), "Примечание":r.note||"" }));
   const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}]));
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Остатки");
-  XLSX.writeFile(wb, `vahtahoz-${String(b.name||"база").replace(/[^0-9A-Za-zА-Яа-яёЁ -]/g,"")}-${todayStr()}.xlsx`);
+  XLSX.writeFile(wb, `vahtahoz-${_fileSafe(b.name)}-${todayStr()}.xlsx`);
 }
 const cloudDirtyKey = (cid)=>`vahtahoz_dirty_${cid}`;
 // удалить все sync-маркеры базы (dirty + снимки подписей) — при удалении/замене базы, чтобы не копить мусор
@@ -4613,6 +4624,7 @@ async function cloudLogout(){
   state.tasks=[]; try{ localStorage.removeItem(TASKS_KEY); localStorage.removeItem(TASKS_DIRTY); }catch(e){}
   cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
   cloud.tasksChannel=null; cloud.tasksSubUid=null; cloud.tasksBusy=false; cloud.basesLoaded=false;   // сброс задач: иначе после входа другим юзером realtime молчит
+  clearAllBasesCache();   // снимок остатков всех баз не должен пережить выход (утечка на общем устройстве)
   clearCloudSess();   // чистим своё хранилище сессии, иначе при запуске восстановит вход
   // снимаем флаг «без облака» — при следующем запуске снова покажется вход (нет сессии → гейт)
   try{ localStorage.removeItem("vahtahoz_login_skipped"); }catch(e){}
