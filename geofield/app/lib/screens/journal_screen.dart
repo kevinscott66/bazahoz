@@ -497,6 +497,10 @@ class _JournalScreenState extends State<JournalScreen> {
           id: s.parentId ?? '',
           label: label,
         ),
+        // Точки маршрута — кандидаты для смены привязки (ТЗ §6.7).
+        pointOptions: [
+          for (final p in _points) (p.id, 'Точка № ${p.number}'),
+        ],
       ),
     ));
     await _reload();

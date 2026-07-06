@@ -44,6 +44,7 @@ class SampleCaptureScreen extends StatefulWidget {
     required this.binding,
     this.existing,
     this.photoPicker,
+    this.pointOptions = const [],
   });
 
   final SampleRepository repository;
@@ -55,6 +56,10 @@ class SampleCaptureScreen extends StatefulWidget {
 
   /// Источник снимков — подменяется в тестах; null — камера/галерея.
   final PhotoPicker? photoPicker;
+
+  /// Точки маршрута (id, подпись) для смены привязки. Пусто — привязка
+  /// показывается только для чтения (нечего выбрать).
+  final List<(String id, String label)> pointOptions;
 
   /// Существующая проба — режим редактирования (открытие из журнала, ТЗ §6.7).
   final Sample? existing;
@@ -76,6 +81,11 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
 
   SampleType _type = SampleType.core;
   int _version = 1;
+  // Привязка как ИЗМЕНЯЕМОЕ состояние: смену родителя (проба к другой точке /
+  // отвязку) можно сделать явным действием, а не только при создании.
+  String? _parentType;
+  String? _parentId;
+  String _bindLabel = '';
   // Защита от двойного pop: «Готово» и системный back могут сработать почти
   // одновременно, оба дождутся _saveNow и вызовут pop() — второй pop снял бы
   // лишний экран под формой. Кто первым выставил флаг, тот и закрывает.
@@ -93,12 +103,15 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
   void initState() {
     super.initState();
     final ex = widget.existing;
+    _bindLabel = widget.binding.label;
     if (ex != null) {
       // Режим редактирования: запись уже в базе, версия продолжается.
       _id = ex.id;
       _createdAt = ex.createdAt;
       _persistedOnce = true;
       _version = ex.version;
+      _parentType = ex.parentType;
+      _parentId = ex.parentId;
       _numberCtrl.text = ex.sampleNumber;
       _type = SampleType.fromCode(ex.sampleType);
       if (ex.depthFrom != null) _fromCtrl.text = _fmt(ex.depthFrom!);
@@ -112,6 +125,8 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
     // id пробы создаётся один раз при входе на экран (UUID, офлайн).
     _id = const Uuid().v4();
     _createdAt = nowIso();
+    _parentType = widget.binding.type;
+    _parentId = widget.binding.id;
     _numberCtrl.text = widget.initialNumber;
     // Для керна интервал отбора подтягивается из родительского интервала.
     if (widget.binding.depthFrom != null) {
@@ -140,14 +155,13 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
 
   Sample _current({required int version}) {
     final number = _numberCtrl.text.trim();
-    // У существующей пробы привязка сохраняется как есть (в т.ч. NULL у
-    // свободной): смена привязки — отдельное явное действие, не автосейв.
-    final ex = widget.existing;
     return Sample(
       id: _id,
       projectId: widget.projectId,
-      parentType: ex != null ? ex.parentType : widget.binding.type,
-      parentId: ex != null ? ex.parentId : widget.binding.id,
+      // Привязка — из изменяемого состояния (см. _onRebind): смена родителя
+      // или отвязка сохраняются как обычная правка пробы.
+      parentType: _parentType,
+      parentId: _parentId,
       sampleNumber: number,
       sampleType: _type.code,
       barcode: number.isEmpty ? null : number, // штрихкод из номера
@@ -325,13 +339,73 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
           const Icon(Icons.link, size: 20, color: GfColors.textSecondary),
           const SizedBox(width: GfSpace.x8),
           Expanded(
-            child: Text('Привязано к: ${widget.binding.label}',
-                style: GfText.body),
+            child: Text('Привязано к: $_bindLabel', style: GfText.body),
           ),
+          // Смена привязки доступна, только когда есть из чего выбирать.
+          if (widget.pointOptions.isNotEmpty)
+            TextButton(
+              onPressed: _onRebind,
+              style: TextButton.styleFrom(foregroundColor: GfColors.accent),
+              child: const Text('Изменить'),
+            ),
         ],
       ),
     );
   }
+
+  Future<void> _onRebind() async {
+    final code = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: GfColors.surfaceHi,
+      builder: (_) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.symmetric(vertical: GfSpace.x8),
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(
+                  GfSpace.x16, GfSpace.x8, GfSpace.x16, GfSpace.x8),
+              child: Text('ПРИВЯЗАТЬ К ТОЧКЕ', style: GfText.sectionLabel),
+            ),
+            for (final (id, label) in widget.pointOptions)
+              _rebindRow(id, label, id == _parentId),
+            _rebindRow('', 'Без привязки', _parentId == null),
+          ],
+        ),
+      ),
+    );
+    if (code == null || !mounted) return;
+    setState(() {
+      if (code.isEmpty) {
+        _parentType = null;
+        _parentId = null;
+        _bindLabel = 'без привязки';
+      } else {
+        _parentType = 'point';
+        _parentId = code;
+        _bindLabel = widget.pointOptions.firstWhere((o) => o.$1 == code).$2;
+      }
+    });
+    // Смена привязки — явная правка: дожать сохранение сразу.
+    final r = await _saveNow();
+    if (r == SaveResult.failed) {
+      _snack('Не удалось сохранить привязку — проверьте память устройства');
+    }
+  }
+
+  Widget _rebindRow(String code, String label, bool selected) => InkWell(
+        onTap: () => Navigator.pop(context, code),
+        child: Container(
+          constraints: const BoxConstraints(minHeight: GfTouch.min),
+          padding: const EdgeInsets.symmetric(horizontal: GfSpace.x16),
+          alignment: Alignment.centerLeft,
+          child: Row(children: [
+            Expanded(child: Text(label, style: GfText.body)),
+            if (selected)
+              const Icon(Icons.check, size: 20, color: GfColors.accent),
+          ]),
+        ),
+      );
 
   Widget _typeTiles() {
     return Wrap(

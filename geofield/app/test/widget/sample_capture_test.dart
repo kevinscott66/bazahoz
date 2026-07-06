@@ -8,7 +8,8 @@ import 'helpers.dart';
 
 void main() {
   Future<TestHarness> pumpSample(WidgetTester tester,
-      {Sample? existing}) async {
+      {Sample? existing,
+      List<(String, String)> pointOptions = const []}) async {
     tallPhone(tester);
     final h = await TestHarness.create();
     addTearDown(h.close);
@@ -21,10 +22,53 @@ void main() {
       existing: existing,
       binding:
           const ParentBinding(type: 'point', id: 'pt-1', label: 'Точка № 1'),
+      pointOptions: pointOptions,
     )));
     await settleSave(tester);
     return h;
   }
+
+  testWidgets('смена привязки: проба переезжает на другую точку и отвязывается',
+      (tester) async {
+    final h = await pumpSample(tester, pointOptions: const [
+      ('pt-1', 'Точка № 1'),
+      ('pt-2', 'Точка № 2'),
+    ]);
+    expect(find.text('Привязано к: Точка № 1'), findsOneWidget);
+
+    // Перепривязать на Точку № 2.
+    await tester.tap(find.text('Изменить'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Точка № 2'));
+    await settleSave(tester);
+    var row = (await h.db.query('samples')).single;
+    expect(row['parent_id'], 'pt-2');
+    expect(row['parent_type'], 'point');
+    expect(find.text('Привязано к: Точка № 2'), findsOneWidget);
+    // Смена привязки ушла в журнал: правка склеилась в ещё неотправленный
+    // insert пробы (склейка мутаций), payload несёт новую точку.
+    final log = await h.db.query('change_log',
+        where: "entity_table = 'samples'");
+    expect(log, hasLength(1));
+    expect(log.single['payload'], contains('pt-2'));
+
+    // Отвязать совсем.
+    await tester.tap(find.text('Изменить'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Без привязки'));
+    await settleSave(tester);
+    row = (await h.db.query('samples')).single;
+    expect(row['parent_id'], isNull);
+    expect(row['parent_type'], isNull);
+    expect(find.text('Привязано к: без привязки'), findsOneWidget);
+  });
+
+  testWidgets('без pointOptions привязка только для чтения (нет «Изменить»)',
+      (tester) async {
+    await pumpSample(tester);
+    expect(find.text('Привязано к: Точка № 1'), findsOneWidget);
+    expect(find.text('Изменить'), findsNothing);
+  });
 
   testWidgets('автосохранение при открытии: проба уже в базе с привязкой',
       (tester) async {
