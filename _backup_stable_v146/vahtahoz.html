@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v152</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v146</div>
   </div>
 </div>
 
@@ -278,8 +278,8 @@ function saveState(){
       if(Array.isArray(state.log) && state.log.length>200) state.log = state.log.slice(0,200);
       if(state.journals){
         for(const k of JOURNAL_KEYS){
-          if(Array.isArray(state.journals[k]) && state.journals[k].length>2000)
-            state.journals[k] = state.journals[k].slice(0,2000);   // кап поднят до 2000: помесячный архив хранит историю (~год+); новые — в начале (unshift)
+          if(Array.isArray(state.journals[k]) && state.journals[k].length>500)
+            state.journals[k] = state.journals[k].slice(0,500);   // записи добавляются unshift'ом (новые — в начале) → оставляем СВЕЖИЕ 500, а не старые
         }
       }
       try {
@@ -480,7 +480,7 @@ function openProfilesSheet(){
   openSheet(`
     <div class="font-bold text-xl mb-1">🏠 Базы</div>
     <div class="text-xs opacity-70 mb-3">У каждой базы свой склад, журналы и места хранения. Переключение сохраняет текущую базу и открывает выбранную.</div>
-    <div class="space-y-1 max-h-72 overflow-y-auto" id="profList">${rows||`<div class="opacity-70 text-sm py-2">Баз пока нет</div>`}</div>
+    <div class="space-y-1 max-h-72 overflow-y-auto" id="profList">${rows}</div>
     <div class="flex gap-2 pt-3">
       ${canAddLocalBase()?`<button class="btn btn-primary flex-1" id="profAddBtn">➕ Новая база</button>`:""}
       <button class="btn btn-ghost ${canAddLocalBase()?"":"flex-1"}" data-close>Закрыть</button>
@@ -747,21 +747,6 @@ const STOCK_TYPES = [
 ];
 const STOCK_TYPE_KEYS = STOCK_TYPES.map(t=>t.key);
 const typeMeta = (k) => STOCK_TYPES.find(t=>t.key===k) || STOCK_TYPES[0];
-// доступные типы склада для роли: Механик/Электрик — только инструменты; Повар — без инструментов; остальные — все.
-// (activeMember определён ниже, но объявления функций подняты — на момент рендера всё готово)
-function allowedTypeKeys(){
-  // выравнивание с серверным can_see_type: владелец и любая орг-роль (директор/бухгалтер/нач.партии) → все типы.
-  if(typeof cloud!=="undefined"){
-    if(cloud.profile && cloud.profile.is_admin) return STOCK_TYPE_KEYS.slice();
-    if((cloud.orgRoles||[]).some(o=>o.active!==false)) return STOCK_TYPE_KEYS.slice();
-  }
-  const m = (typeof activeMember==="function") ? activeMember() : null;
-  const role = m && m.role;
-  if(role==="mechanic") return ["tool"];
-  if(role==="cook") return ["product","household"];
-  return STOCK_TYPE_KEYS.slice();
-}
-function visibleStockTypes(){ const a=allowedTypeKeys(); return STOCK_TYPES.filter(t=>a.includes(t.key)); }
 const DEFAULT_CATEGORIES = {
   household: ["Химия","Уборка","Расходники","Прочее"],
   tool: ["Электроинструмент","Ручной инструмент","Крепёж и метизы","Сантехника","Электрика","Спецодежда и СИЗ","Прочее"],
@@ -939,14 +924,8 @@ function logOp(action, detail){
 }
 
 /* ---------- Theme ---------- */
-// тема индивидуальна у пользователя: 'light' | 'dark' | 'system' (по настройке телефона). Хранится локально.
-function themeIsLight(){
-  if(state.theme==="light") return true;
-  if(state.theme==="dark") return false;
-  return !(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);   // system
-}
 function applyTheme(){
-  const light = themeIsLight();
+  const light = state.theme==="light";
   document.documentElement.classList.toggle("light", light);
   document.body.classList.toggle("bg-gray-950", !light);
   document.body.classList.toggle("text-gray-100", !light);
@@ -1176,7 +1155,7 @@ function renderDashboard(){
 
     ${canEditTasks?`<button class="btn btn-primary w-full mt-2" onclick="openTaskEdit()">＋ Задача</button>`:""}
     <div class="grid grid-cols-3 gap-2 mt-2">
-      ${visibleStockTypes().map(t=>`<button class="btn ${t.key==='product'?'btn-success':(t.key==='household'?'btn-warn':'btn-ghost')}" onclick="openStockEdit(null,'${t.key}')">＋ ${t.short}</button>`).join("")}
+      ${STOCK_TYPES.map(t=>`<button class="btn ${t.key==='product'?'btn-success':(t.key==='household'?'btn-warn':'btn-ghost')}" onclick="openStockEdit(null,'${t.key}')">＋ ${t.short}</button>`).join("")}
     </div>
 
     ${showTasks && todayTasks.length?`
@@ -1503,9 +1482,6 @@ const JOURNAL_META = {
 
 function renderStock(){
   const v = document.querySelector('[data-view="stock"]');
-  if(STOCK_TYPE_KEYS.includes(stockTab) && !allowedTypeKeys().includes(stockTab)) stockTab="all";   // роль потеряла доступ к типу
-  const _visTypes = visibleStockTypes();
-  if(_visTypes.length===1) stockTab=_visTypes[0].key;   // один тип (Механик/Электрик) → сразу он, без лишнего чипа «Все»
   const modeTabs = `
     <div class="scroll-x flex gap-2">
       <button class="chip ${stockMode==='stock'?'active':''}" data-stockmode="stock">📦 Остатки</button>
@@ -1518,13 +1494,12 @@ function renderStock(){
 
   // список категорий для фильтра в зависимости от tab
   let cats = [];
-  const allowed = allowedTypeKeys();
   if(STOCK_TYPE_KEYS.includes(stockTab)) cats = state.categories[stockTab] || [];
-  else cats = [...new Set(allowed.flatMap(k=>state.categories[k]||[]))];
+  else cats = [...new Set(STOCK_TYPE_KEYS.flatMap(k=>state.categories[k]||[]))];
 
   // подсчёт по категориям для текущего таба (только позиции в наличии)
   const countByCat = {};
-  const base = state.stock.filter(s=> stockTab==="all" ? allowed.includes(s.type) : s.type===stockTab);
+  const base = state.stock.filter(s=> stockTab==="all" ? true : s.type===stockTab);
   base.forEach(s=>{ if(s.category && inStock(s)){ countByCat[s.category]=(countByCat[s.category]||0)+1; } });
   // счётчики сроков должны совпадать с видимым списком: учитываем категорию и поиск
   const q = stockSearch.trim().toLowerCase();
@@ -1536,12 +1511,12 @@ function renderStock(){
   v.innerHTML = `
     ${modeTabs}
     <div class="grid grid-cols-3 gap-2">
-      ${visibleStockTypes().map(t=>`<button class="btn btn-ghost" onclick="openStockEdit(null,'${t.key}')">＋ ${t.addLabel}</button>`).join("")}
+      ${STOCK_TYPES.map(t=>`<button class="btn btn-ghost" onclick="openStockEdit(null,'${t.key}')">＋ ${t.addLabel}</button>`).join("")}
     </div>
 
     <div class="scroll-x flex gap-2">
-      ${_visTypes.length>1?`<button class="chip ${stockTab==='all'?'active':''}" data-stocktab="all">Все (${state.stock.filter(s=>inStock(s)&&allowed.includes(s.type)).length})</button>`:""}
-      ${_visTypes.map(t=>`<button class="chip ${stockTab===t.key?'active':''}" data-stocktab="${t.key}">${t.icon} ${t.short} (${state.stock.filter(s=>s.type===t.key&&inStock(s)).length})</button>`).join("")}
+      <button class="chip ${stockTab==='all'?'active':''}" data-stocktab="all">Все (${state.stock.filter(inStock).length})</button>
+      ${STOCK_TYPES.map(t=>`<button class="chip ${stockTab===t.key?'active':''}" data-stocktab="${t.key}">${t.icon} ${t.short} (${state.stock.filter(s=>s.type===t.key&&inStock(s)).length})</button>`).join("")}
     </div>
 
     <div class="scroll-x flex gap-2">
@@ -1579,7 +1554,6 @@ function renderStockList(){
   if(!box) return;
   let list = state.stock.slice();
   if(STOCK_TYPE_KEYS.includes(stockTab)) list = list.filter(s=>s.type===stockTab);
-  else list = list.filter(s=>allowedTypeKeys().includes(s.type));   // «Все» = только типы, доступные роли
   if(stockCat) list = list.filter(s=>s.category===stockCat);
   if(stockExpiryFilter==="expired") list = list.filter(s=>inStock(s) && s.expiry && daysLeft(s.expiry)<0);
   else if(stockExpiryFilter==="soon") list = list.filter(s=>{ if(!inStock(s)) return false; const d=s.expiry?daysLeft(s.expiry):null; return d!==null && d>=0 && d<=14; });
@@ -1626,42 +1600,10 @@ function renderStockList(){
   if(moreBtn) moreBtn.addEventListener("click", ()=>{ stockLimit += 200; renderStockList(); });
 }
 
-/* ---------- Journals (операции) + помесячный архив ---------- */
-let journalMonth = null;   // выбранный месяц архива (YYYY-MM); null → последний (текущий)
-const RU_MONTHS3=["янв","фев","мар","апр","май","июн","июл","авг","сен","окт","ноя","дек"];
-const monthKeyOf = (ts)=> (ts||"").slice(0,7);   // ISO → YYYY-MM
-function monthLabel(ym){ if(!ym) return ""; const p=ym.split("-"); return `${RU_MONTHS3[(+p[1])-1]||p[1]} ${p[0]}`; }
-function journalMonths(){   // все месяцы с записями по всем 4 журналам, свежие сверху
-  const set=new Set();
-  for(const k of JOURNAL_KEYS) for(const op of (state.journals[k]||[])){ const mk=monthKeyOf(op.ts); if(mk) set.add(mk); }
-  return [...set].sort().reverse();
-}
-// экспорт всех журналов за выбранный месяц (архив) — 4 листа
-async function exportJournalsMonth(ym){
-  toast("Подготовка файла…");
-  let XLSX; try{ XLSX=await ensureXlsx(); }catch(e){ toast("Не удалось сделать Excel — сохраняем в простом виде"); return; }
-  const wb=XLSX.utils.book_new();
-  for(const k of JOURNAL_KEYS){
-    const meta=JOURNAL_META[k];
-    const rows=(state.journals[k]||[]).filter(op=>monthKeyOf(op.ts)===ym).sort((a,b)=>(a.ts||"").localeCompare(b.ts||"")).map(op=>{
-      const row={ "Дата": op.ts?new Date(op.ts).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"}):"",
-        "Наименование": op.productName||"", "Количество": roundQty(op.qty||0), "Ед. изм.": op.unit||"",
-        "Место": op.batchLocation||"", "Срок": op.batchExpiry?fmtDate(op.batchExpiry):"" };
-      if(k==="order") row["Статус"]=op.status==="received"?"Принят":"Ожидает";
-      row["Примечание"]=op.note||""; return row;
-    });
-    const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Дата":"","Наименование":""}]));
-    ws["!cols"]=[{wch:16},{wch:34},{wch:11},{wch:9},{wch:16},{wch:12},{wch:10},{wch:24}];
-    XLSX.utils.book_append_sheet(wb, ws, meta.label.slice(0,28));
-  }
-  XLSX.writeFile(wb, `vahtahoz-журналы-${ym}-${_fileSafe(activeProfileName())}.xlsx`);
-}
+/* ---------- Journals (операции) ---------- */
 function renderJournal(kind){
   const m = JOURNAL_META[kind];
-  const months = journalMonths();
-  const selMonth = (journalMonth && months.includes(journalMonth)) ? journalMonth : (months[0]||null);
-  let list = [...(state.journals[kind]||[])].sort((a,b)=> (b.ts||"").localeCompare(a.ts||""));
-  if(selMonth) list = list.filter(op=>monthKeyOf(op.ts)===selMonth);
+  const list = [...(state.journals[kind]||[])].sort((a,b)=> (b.ts||"").localeCompare(a.ts||""));
   const rows = list.map(op=>{
     const _dWhen = new Date(op.ts);
     const when = isNaN(_dWhen) ? "—" : _dWhen.toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
@@ -1708,11 +1650,7 @@ function renderJournal(kind){
 
   return `
     <button class="btn ${m.color} w-full mt-3" onclick="openOpEdit('${kind}')">＋ ${m.label}</button>
-    ${months.length ? `<div class="scroll-x flex gap-2 mt-2" id="jrMonthChips">
-      ${months.map(ym=>`<button class="chip ${ym===selMonth?'active':''}" data-jrmonth="${ym}">${monthLabel(ym)}</button>`).join("")}
-    </div>
-    <button class="btn btn-ghost w-full mt-2" onclick="exportJournalsMonth('${selMonth}')">📊 Экспорт всех журналов за ${monthLabel(selMonth)}</button>` : ""}
-    <div class="text-xs opacity-70 mt-2">${selMonth?`Месяц ${monthLabel(selMonth)} · `:""}записей: ${list.length}${sumStr?`  ·  сумма по ед.: ${sumStr}`:""}</div>
+    <div class="text-xs opacity-70 mt-2">Записей: ${list.length}${sumStr?`  ·  сумма по ед.: ${sumStr}`:""}</div>
     <div class="space-y-2 mt-2">${rows}</div>`;
 }
 
@@ -1995,7 +1933,7 @@ function editOp(kind, opId){
       <div>
         <div class="text-sm opacity-70 mb-1">Сменить позицию (опц.)</div>
         <input class="input" id="eopSearch" placeholder="Поиск по складу…" autocomplete="off" />
-        <div id="eopList" class="mt-2 space-y-1 max-h-72 overflow-y-auto list-box"></div>
+        <div id="eopList" class="mt-2 space-y-1 max-h-48 overflow-y-auto list-box"></div>
         <div class="text-xs opacity-60 mt-1" id="eopSel">Текущая: ${esc(op.productName)}${op.productId?" (привязана к складу)":" (вручную)"}</div>
         <input type="hidden" id="eopProdId" value="${esc(op.productId||"")}" />
       </div>
@@ -2297,7 +2235,6 @@ async function quickAdjust(id, sign){
 const UNITS = ["шт","кг","г","л","мл","упаковка","пачка","рулон","метр","кор","уп","меш"];
 
 function openStockEdit(id, typeDefault){
-  if(!id && typeDefault && !allowedTypeKeys().includes(typeDefault)) typeDefault = allowedTypeKeys()[0] || "product";   // роль не может создавать недоступный тип
   const it = id ? state.stock.find(s=>s.id===id)
                : { id:"", type:typeDefault||"product", name:"", qty:"", unit:"шт", minStock:"", expiry:"", location:"", category:"", note:"" };
   if(id && !it){ toast("Позиция изменилась на другом устройстве"); render(); return; }   // удалена/синкнута, пока вкладка была открыта → не падаем на it.type
@@ -2715,7 +2652,7 @@ function openLocationsEdit(){
   openSheet(`
     <div class="font-bold text-xl mb-3">📍 Места хранения</div>
     <div class="flex gap-2 mb-3" id="locTabs">
-      ${visibleStockTypes().map(t=>`<button class="chip ${type===t.key?'active':''}" data-loctab="${t.key}">${t.icon} ${t.label}</button>`).join("")}
+      ${STOCK_TYPES.map(t=>`<button class="chip ${type===t.key?'active':''}" data-loctab="${t.key}">${t.icon} ${t.label}</button>`).join("")}
     </div>
     <div class="space-y-1 max-h-72 overflow-y-auto" id="locList">
       ${list.length===0
@@ -2771,7 +2708,7 @@ function openCategoriesEdit(){
   openSheet(`
     <div class="font-bold text-xl mb-3">Категории</div>
     <div class="space-y-3">
-      ${visibleStockTypes().map((t,i)=>`
+      ${STOCK_TYPES.map((t,i)=>`
         ${i>0?'<div class="divider"></div>':''}
         <div>
           <div class="text-sm opacity-70 mb-1">${t.icon} ${t.short} (${(state.categories[t.key]||[]).length})</div>
@@ -2954,10 +2891,10 @@ function renderMore(){
       <div class="text-xs opacity-70 mt-2">${restricted?"«Экспорт базы» сохраняет вашу базу в файл. Сохраняйте регулярно!":"«Экспорт базы» — только текущая. «Все базы» — один файл со всеми базами (главный бэкап). Импорт принимает оба формата. Сохраняйте регулярно — пригодится, если телефон сбросится!"}</div>
     </div>
 
-    ${(profiles.list.length>1 && !restricted && (cloud.profile && cloud.profile.is_admin)) ? `<div class="card">
+    ${(profiles.list.length>1 && !restricted) ? `<div class="card">
       <div class="font-bold mb-2">🔗 Общий каталог</div>
       <button class="btn btn-ghost w-full" onclick="mergeCatalogs()">Объединить наименования всех баз</button>
-      <div class="text-xs opacity-70 mt-2">Сводит список наименований одинаковым во всех базах: добавляет недостающие позиции с нулём. Остатки, места и сроки у каждой базы остаются свои. Раздел только для владельца.</div>
+      <div class="text-xs opacity-70 mt-2">Сводит список наименований одинаковым во всех базах: добавляет недостающие позиции с нулём. Остатки, места и сроки у каждой базы остаются свои.</div>
     </div>` : ""}
 
     <div class="card">
@@ -2984,12 +2921,7 @@ function renderMore(){
 
     <div class="card">
       <div class="font-bold mb-2">⚙️ Настройки</div>
-      <div class="text-sm opacity-70 mb-1">Тема оформления</div>
-      <div class="grid grid-cols-3 gap-2 mb-2">
-        <button class="btn ${state.theme==="light"?"btn-primary":"btn-ghost"}" onclick="setTheme('light')">☀️ Светлая</button>
-        <button class="btn ${state.theme==="dark"?"btn-primary":"btn-ghost"}" onclick="setTheme('dark')">🌙 Тёмная</button>
-        <button class="btn ${state.theme==="system"?"btn-primary":"btn-ghost"}" onclick="setTheme('system')">📱 Как в телефоне</button>
-      </div>
+      <button class="btn btn-ghost w-full mb-2" onclick="toggleTheme()">Тема: ${state.theme==="light"?"Светлая":"Тёмная"}</button>
       ${activeCloudId()
         ? `<button class="btn btn-ghost w-full" onclick="wipeAll()">🔄 Обновить базу из облака</button>
            <div class="text-xs opacity-70 mt-2">Заменяет локальную копию свежими данными из облака. Данные в облаке не удаляются.</div>`
@@ -2997,7 +2929,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v152</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v146</div>
   `;
 }
 
@@ -3182,7 +3114,7 @@ function exportXlsxFiltered(){
   const sel = (id,label,opts)=>`<label class="block text-sm mb-1 opacity-80">${label}</label><select id="${id}" class="input mb-3">${opts}</select>`;
   openSheet(`
     <div class="font-bold text-lg mb-3">📊 Выгрузка в Excel по фильтрам</div>
-    ${sel("_fType","Тип склада", opt("all","Все")+visibleStockTypes().map(t=>opt(t.key,t.label)).join(""))}
+    ${sel("_fType","Тип склада", opt("all","Все")+STOCK_TYPES.map(t=>opt(t.key,t.label)).join(""))}
     ${sel("_fLoc","Место хранения", opt("all","Все места")+locs.map(l=>opt(l,l)).join(""))}
     <label class="block text-sm mb-1 opacity-80">Категории (можно несколько; пусто = все)</label>
     <div class="flex flex-wrap gap-2 mb-3" id="_fCats">${cats.length?cats.map(c=>`<button class="chip" data-cat="${esc(c)}" onclick="${CHIP_TOGGLE}">${esc(c)}</button>`).join(""):'<span class="text-xs opacity-60">нет категорий</span>'}</div>
@@ -3591,11 +3523,7 @@ async function wipeAll(){
   saveState(); applyTheme();
   if(reseed) location.reload(); else nav("dashboard");
 }
-// циклим: system → light → dark → system (кнопка в шапке); полный выбор — в Настройках.
-function toggleTheme(){ const order=["system","light","dark"]; const i=order.indexOf(state.theme); state.theme = order[(i+1)%order.length]; saveState(); applyTheme(); render(); }
-function setTheme(t){ state.theme=t; saveState(); applyTheme(); render(); }
-// когда выбран режим «Системная» — реагируем на смену темы телефона на лету
-try{ if(window.matchMedia){ window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", ()=>{ if(state.theme==="system") applyTheme(); }); } }catch(_){}
+function toggleTheme(){ state.theme = state.theme==="light"?"dark":"light"; saveState(); applyTheme(); render(); }
 
 /* ---------- Уведомления (срок годности и т.п.) ---------- */
 function notify(title, body){
@@ -3740,8 +3668,6 @@ document.addEventListener("click", e=>{
   if(tabBtn){ stockTab = tabBtn.dataset.stocktab; stockCat=""; stockLimit=100; render(); return; }
   const expBtn = e.target.closest("[data-expfilter]");
   if(expBtn){ stockExpiryFilter = expBtn.dataset.expfilter; stockLimit=100; render(); return; }
-  const jrMonthBtn = e.target.closest("[data-jrmonth]");
-  if(jrMonthBtn){ journalMonth = jrMonthBtn.dataset.jrmonth; render(); return; }
   const catChip = e.target.closest("[data-stockcat]");
   if(catChip){ stockCat = catChip.dataset.stockcat; stockLimit=100; renderStockList(); document.querySelectorAll("[data-stockcat]").forEach(el=>el.classList.toggle("active", el.dataset.stockcat===stockCat)); return; }
   const catAct = e.target.closest("[data-cat-action]");
@@ -3759,14 +3685,12 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   openOpEdit,saveOp,deleteOp,editOp,saveOpEdit,orderReceive,
   openCategoriesEdit,addCategory,renameCategory,deleteCategory,
   openLocationsEdit,addLocation,renameLocation,deleteLocation,
-  openProfilesSheet,switchProfile,addProfile,renameProfile,deleteProfile,exportAllProfiles,mergeCatalogs,
-  toggleCheck,addCheck,resetChecklist,removeCheck,
-  exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,exportJournalsMonth,clearLog,wipeAll,toggleTheme,setTheme,
+  openProfilesSheet,switchProfile,addProfile,renameProfile,deleteProfile,exportAllProfiles,
+  toggleCheck,addCheck,resetChecklist,
+  exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,clearLog,wipeAll,toggleTheme,
   openMove,doMove,
   openMembersSheet,openMemberRole,setMemberRole,memberRotate,memberRemove,openAddMember,openResetPwd,
   openShift,openHandover,doHandover,
-  openOrgRolesSheet,openAddOrgMember,doAddOrgMember,_omToggleParty,openAssignExisting,_aeToggleParty,doAssignExisting,orgRoleRemove,
-  openAllBasesSheet,exportAllBasesXlsx,exportOneBaseXlsx,
   closeSheet,writeoffExpired,openExpiredView,dismissOnboarding,
   cloudLoginPrompt,cloudLogout,cloudSyncNow,requestPasswordReset});
 
@@ -3950,12 +3874,12 @@ function ensureCanEdit(){ if(!canEditStock()){ toast(isOffShift()?"Вы снят
 const MEMBER_ROLES = [
   { key:"worker",       label:"Хозрабочий",        rank:1, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
   { key:"cook",         label:"Повар",             rank:1, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
-  { key:"mechanic",     label:"Механик/Электрик",  rank:1, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
+  { key:"mechanic",     label:"Механик",           rank:1, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
   { key:"site_manager", label:"Начальник участка", rank:2, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:true } },
 ];
 // полная лестница рангов (в т.ч. территориальные/глобальные роли — для подписей и вычисления своего ранга)
 const ROLE_RANK = { owner:6, general_director:5, director:4, party_chief:3, site_manager:2, worker:1, cook:1, mechanic:1, accounting:1 };
-const ROLE_LABELS = { owner:"Владелец", general_director:"Ген. директор", director:"Директор", party_chief:"Начальник партии", site_manager:"Начальник участка", worker:"Хозрабочий", cook:"Повар", mechanic:"Механик/Электрик", accounting:"Бухгалтерия", custom:"Особая" };
+const ROLE_LABELS = { owner:"Владелец", general_director:"Ген. директор", director:"Директор", party_chief:"Начальник партии", site_manager:"Начальник участка", worker:"Хозрабочий", cook:"Повар", mechanic:"Механик", accounting:"Бухгалтерия", custom:"Особая" };
 const rankOf = (k)=> ROLE_RANK[k] || 0;
 const roleLabel = (k)=> (MEMBER_ROLES.find(r=>r.key===k)||{}).label || ROLE_LABELS[k] || k || "—";
 // ранг текущего пользователя: владелец=6, иначе макс по глобальным/партийным (org_roles) и по управляемым базам.
@@ -4038,7 +3962,7 @@ async function openMembersSheet(){
   openSheet(`<div class="font-bold text-xl mb-3">👥 Работники базы</div><div class="opacity-70">Загрузка…</div>`);
   let members;
   try{ members = await cloudLoadBaseMembers(); }
-  catch(e){ console.warn("members load", e); openSheet(`<div class="font-bold text-xl mb-3">👥 Работники базы</div><div class="err-text text-sm">Не удалось загрузить список. Проверьте интернет и попробуйте ещё раз.</div><button class="btn btn-ghost w-full mt-3" data-close>Закрыть</button>`); return; }
+  catch(e){ console.warn("members load", e); openSheet(`<div class="font-bold text-xl mb-3">👥 Работники базы</div><div style="color:#dc2626">Не удалось загрузить список. Проверьте интернет и попробуйте ещё раз.</div><button class="btn btn-ghost w-full mt-3" data-close>Закрыть</button>`); return; }
   finally{ cloud._membersLoading = false; }
   const myId = cloud.profile && cloud.profile.id;
   const rows = members.slice().sort((a,b)=>(a.username||"").localeCompare(b.username||"","ru")).map(m=>{
@@ -4185,7 +4109,7 @@ function openAddMember(){
   const _amRoles = assignableRoles();   // роли строго ниже моего ранга
   openSheet(`<div class="font-bold text-xl mb-3">＋ Новый работник</div>
     <div class="space-y-3">
-      <div><div class="text-sm opacity-70 mb-1">Логин (3–32: англ. буквы, цифры, _)</div>
+      <div><div class="text-sm opacity-70 mb-1">Логин (от 3 до 32: английские буквы, цифры, _)</div>
         <input class="input" id="amu" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="напр. ivanov" /></div>
       <div><div class="text-sm opacity-70 mb-1">Пароль (не короче 6 символов)</div>
         <input class="input" id="amp" type="text" autocapitalize="none" autocorrect="off" placeholder="придумайте пароль" /></div>
@@ -4209,7 +4133,7 @@ async function doAddMember(){
   const password=document.getElementById("amp").value||"";
   const roleEl=document.getElementById("amr"); const role=roleEl?roleEl.value:"";
   if(!role){ toast("Выберите роль"); return; }
-  if(!/^[a-z0-9_]{3,32}$/.test(username)){ toast("Логин: 3–32 символа — англ. буквы, цифры, _"); return; }
+  if(!/^[a-z0-9_]{3,32}$/.test(username)){ toast("Логин: от 3 до 32 символов — английские буквы, цифры, _"); return; }
   if(password.length<6){ toast("Пароль не короче 6 символов"); return; }
   const btn=document.getElementById("amGo"); btn.disabled=true; btn.textContent="Создание…";
   try{
@@ -4289,19 +4213,17 @@ function openAddOrgMember(){
   document.getElementById("omGo").onclick=()=>doAddOrgMember();
   _omToggleParty();
 }
-// общий тумблер поля «регион» для форм орг-ролей (om — новый аккаунт, ae — существующий): показывает поле
-// только для роли scope==='party' и блокирует «Создать/Назначить», если регионов ещё нет.
-function _toggleOrgPartyField(prefix){
-  const sel=document.getElementById(prefix+"r"); if(!sel) return;
+function _omToggleParty(){
+  const sel=document.getElementById("omr"); if(!sel) return;
   const r=ORG_ROLES.find(x=>x.key===sel.value);
   const needParty = !!(r && r.scope==="party");
-  const wrap=document.getElementById(prefix+"PartyWrap");
+  const wrap=document.getElementById("omPartyWrap");
   if(wrap) wrap.style.display = needParty ? "" : "none";
-  const go=document.getElementById(prefix+"Go");
+  // нельзя создать начальника партии, если регионов ещё нет — блокируем «Создать», а не упираемся в toast
+  const go=document.getElementById("omGo");
   if(go){ const block = needParty && !((_orgCache.parties||[]).length);
     go.disabled = block; go.style.opacity = block ? ".5" : ""; go.title = block ? "Сначала создайте регион" : ""; }
 }
-function _omToggleParty(){ _toggleOrgPartyField("om"); }
 async function doAddOrgMember(){
   const username=(document.getElementById("omu").value||"").trim().toLowerCase();
   const password=document.getElementById("omp").value||"";
@@ -4342,7 +4264,14 @@ function openAssignExisting(){
   document.getElementById("aeGo").onclick=()=>doAssignExisting();
   _aeToggleParty();
 }
-function _aeToggleParty(){ _toggleOrgPartyField("ae"); }
+function _aeToggleParty(){
+  const sel=document.getElementById("aer"); if(!sel) return;
+  const r=ORG_ROLES.find(x=>x.key===sel.value);
+  const needParty=!!(r && r.scope==="party");
+  const wrap=document.getElementById("aePartyWrap"); if(wrap) wrap.style.display = needParty ? "" : "none";
+  const go=document.getElementById("aeGo");
+  if(go){ const block=needParty && !((_orgCache.parties||[]).length); go.disabled=block; go.style.opacity=block?".5":""; go.title=block?"Сначала создайте регион":""; }
+}
 async function doAssignExisting(){
   const username=(document.getElementById("aeu").value||"").trim().toLowerCase();
   const role=document.getElementById("aer").value;
@@ -4416,41 +4345,26 @@ async function openAllBasesSheet(){
       <button class="btn btn-ghost flex-1" data-close>Закрыть</button>
     </div>`);
 }
-// бухгалтерский лист: наличие/количество/срок/мин-остаток БЕЗ столбца «Склады»/место. Несколько сроков из
-// партий — через «;». Отдельный лист на каждую базу (разделение по базам, не монолит одним листом).
-const _ACCT_COLS=[{wch:38},{wch:20},{wch:12},{wch:10},{wch:12},{wch:24}];
-function _rowExpiry(r){
-  const b=Array.isArray(r.batches)?r.batches:[];
-  const ex = b.length ? [...new Set(b.map(x=>(x&&x.expiry)||"").filter(Boolean))].sort() : (r.expiry?[r.expiry]:[]);
-  return ex.map(fmtDate).join("; ");
-}
-function _acctRow(r){ return {
-  "Наименование": r.name, "Категория": r.category||"", "Количество": _rowQty(r),
-  "Ед. изм.": r.unit||"", "Мин. остаток": (r.min_stock==null?"":Number(r.min_stock)), "Срок годности": _rowExpiry(r) }; }
-function _sheetName(name, used){
-  let s = String(name||"База").replace(/[\[\]\*\?\/\\:]/g,"").trim().slice(0,28) || "База";
-  let bs=s, i=2; while(used.has(s.toLowerCase())){ s=bs.slice(0,25)+" "+i; i++; } used.add(s.toLowerCase()); return s;
-}
 async function exportAllBasesXlsx(){
   if(!_allBasesCache){ toast("Сначала откройте сводку"); return; }
   toast("Подготовка файла…");
   let XLSX; try{ XLSX=await ensureXlsx(); }catch(e){ toast("Не удалось сделать Excel"); return; }
-  const wb=XLSX.utils.book_new(); const used=new Set();
-  _allBasesCache.forEach(b=>{
-    if(b.rows===null) return;   // недоступную базу пропускаем
-    const rows=(b.rows||[]).map(_acctRow);
-    const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}])); ws["!cols"]=_ACCT_COLS;
-    XLSX.utils.book_append_sheet(wb, ws, _sheetName(b.name, used));   // лист на базу
-  });
-  if(!wb.SheetNames.length){ XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Нет данных"]]), "Пусто"); }
-  XLSX.writeFile(wb, `vahtahoz-по-базам-${todayStr()}.xlsx`);
+  const rows=[];
+  _allBasesCache.forEach(b=>{ (b.rows||[]).forEach(r=>{ rows.push({
+    "База": b.name, "Тип": _rawTypeLabel(r.type), "Категория": r.category||"", "Наименование": r.name,
+    "Количество": _rowQty(r), "Ед. изм.": r.unit||"", "Мин. запас": (r.min_stock==null?"":Number(r.min_stock)),
+    "Срок годности": r.expiry||"", "Место": _rowLoc(r), "Примечание": r.note||"" }); }); });
+  const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"База":"","Наименование":""}]));
+  ws["!cols"]=[{wch:18},{wch:10},{wch:20},{wch:38},{wch:10},{wch:10},{wch:10},{wch:14},{wch:16},{wch:24}];
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Все базы");
+  XLSX.writeFile(wb, `vahtahoz-все-базы-${todayStr()}.xlsx`);
 }
 async function exportOneBaseXlsx(baseId){
   const b=(_allBasesCache||[]).find(x=>x.id===baseId); if(!b||!b.rows){ toast("Нет данных по базе"); return; }
   let XLSX; try{ XLSX=await ensureXlsx(); }catch(e){ toast("Не удалось сделать Excel"); return; }
-  const rows=b.rows.map(_acctRow);
-  const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}])); ws["!cols"]=_ACCT_COLS;
-  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, _sheetName(b.name, new Set()));
+  const rows=b.rows.map(r=>({ "Тип":_rawTypeLabel(r.type), "Категория":r.category||"", "Наименование":r.name, "Количество":_rowQty(r), "Ед. изм.":r.unit||"", "Мин. запас":(r.min_stock==null?"":Number(r.min_stock)), "Срок годности":r.expiry||"", "Место":_rowLoc(r), "Примечание":r.note||"" }));
+  const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}]));
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Остатки");
   XLSX.writeFile(wb, `vahtahoz-${_fileSafe(b.name)}-${todayStr()}.xlsx`);
 }
 const cloudDirtyKey = (cid)=>`vahtahoz_dirty_${cid}`;
@@ -4843,7 +4757,6 @@ async function cloudAutoLink(){
   // базы не получит чужие (их нет в его cloud.bases).
   let myBases = Object.keys(cloud.bases||{});
   cloud.members.forEach(m=>{ if(m.base_id && !myBases.includes(m.base_id)) myBases.push(m.base_id); });   // подстраховка
-  myBases.sort((a,b)=>String(cloud.bases[a]||"").localeCompare(String(cloud.bases[b]||""),"ru"));   // стабильный порядок → предсказуемая база по умолчанию (напр. у нач.партии с 2 базами)
   let changed=false, switchTo=null;
   for(const cid of myBases){
     if(profiles.list.some(x=>x.cloudId===cid)) continue;
@@ -5122,21 +5035,14 @@ async function cloudPushNow(){
     let _suspectWipe=false;   // склад подозрительно усох → не снимаем dirty, не рапортуем «synced» (см. ниже)
     if(perm.can_edit_stock){
       // === СКЛАД (ДЕЛЬТА: только изменённые/удалённые позиции, прямым fetch) ===
-      // синкаем ТОЛЬКО типы, доступные роли (Механик/Электрик — tool, Повар — без tool): иначе push
-      // ограниченной роли попытался бы upsert/удалить чужой тип и упёрся бы в RLS-403. pull всё равно
-      // отдаёт RLS-набор, снимок сбрасывается на него — здесь просто не трогаем скрытые типы.
-      const _at = allowedTypeKeys();
-      const rows = state.stock.filter(s=>_at.includes(s.type)).map(s=>stockToRow(s,cid));
+      const rows = state.stock.map(s=>stockToRow(s,cid));
       const curSig = {}; rows.forEach(r=>{ curSig[r.id]=_sigOf(r); });
       const prevSig = loadSyncSig(cid,"stock");
       const prevCount = Object.keys(prevSig).length;
       // ЗАЩИТА: пустой ИЛИ подозрительно усохший локальный склад НЕ стирает облако.
       // Если осталось <10% от снимка (а снимок крупный) — это похоже на порчу слота,
       // а не на осознанное удаление → пропускаем ВСЮ выгрузку склада (cloud цел, восстановится pull-ом).
-      // НО у ограниченной роли (Механик/Электрик, Повар) rows — законно малое подмножество (тип-фильтр),
-      // а снимок может быть от прежней роли (все типы) → suspectWipe ложно сработал бы и блокировал выгрузку.
-      const _typeRestricted = _at.length < STOCK_TYPE_KEYS.length;
-      const suspectWipe = !_typeRestricted && prevCount>=20 && rows.length < prevCount*0.1;
+      const suspectWipe = prevCount>=20 && rows.length < prevCount*0.1;
       if((rows.length===0 || suspectWipe) && prevCount>0){
         if(suspectWipe) _suspectWipe=true;   // помним: при усыхании НЕ снимаем dirty и не говорим «synced»
         console.warn("cloudPush: склад подозрительно мал ("+rows.length+" из "+prevCount+") — выгрузка склада пропущена (защита от порчи)");
@@ -5404,12 +5310,6 @@ async function cloudRefreshMyMembership(){
     if(Array.isArray(mem)) cloud.members=mem;
     if(Array.isArray(orgs)) cloud.orgRoles=orgs;
     if(Array.isArray(bs)){ cloud.bases={}; cloud._baseParty={}; bs.forEach(b=>{ cloud.bases[b.id]=b.name; cloud._baseParty[b.id]=b.party_id||null; }); }
-    // если появились новые видимые базы (выдали орг-роль/добавили в базу пока сидел в приложении) — привяжем их,
-    // иначе пользователь не увидит новые базы до перезахода (org_roles/base_members без реалтайма).
-    if(Array.isArray(bs)){
-      const linked = new Set(profiles.list.filter(x=>x.cloudId).map(x=>x.cloudId));
-      if(Object.keys(cloud.bases).some(cid=>!linked.has(cid))) await cloudAutoLink();
-    }
     renderHeader();
   }catch(_){}
 }
