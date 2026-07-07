@@ -1,0 +1,39 @@
+name: Build iOS (unsigned)
+on:
+  workflow_dispatch:
+jobs:
+  ios:
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: native
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install deps
+        run: npm install
+      - name: Add iOS platform
+        run: npx cap add ios
+      - name: Sync
+        run: npx cap sync ios
+      - name: Build unsigned archive
+        run: |
+          cd ios/App
+          xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \
+            -sdk iphoneos -archivePath "$PWD/build/App.xcarchive" archive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM=""
+      - name: Package unsigned .ipa
+        run: |
+          cd ios/App/build
+          mkdir -p Payload
+          cp -r App.xcarchive/Products/Applications/App.app Payload/
+          zip -qr vahtahoz-unsigned.ipa Payload
+          ls -la
+      - name: Upload .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: vahtahoz-ios-ipa-unsigned
+          path: native/ios/App/build/vahtahoz-unsigned.ipa
+          if-no-files-found: error
