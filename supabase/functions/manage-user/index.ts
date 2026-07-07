@@ -163,7 +163,7 @@ Deno.serve(async (req) => {
       terrOk = !!(b?.party_id && caps.parties.has(b.party_id));
     }
     if (!terrOk) return json({ error: "База вне вашей территории" }, 403);
-    const email = `${username}@bazahoz.app`;
+    const email = `${username}@razvedchick.ru`;
 
     const { data: cu, error: cerr } = await admin.auth.admin.createUser({
       email, password, email_confirm: true, user_metadata: { username },
@@ -201,7 +201,7 @@ Deno.serve(async (req) => {
       const { data: pp } = await admin.from("parties").select("id").eq("id", partyId).maybeSingle();
       if (!pp) return json({ error: "Регион не найден" }, 400);
     }
-    const email = `${username}@bazahoz.app`;
+    const email = `${username}@razvedchick.ru`;
 
     const { data: cu, error: cerr } = await admin.auth.admin.createUser({
       email, password, email_confirm: true, user_metadata: { username },
