@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+permissions:
+  contents: read
 jobs:
   ios:
     runs-on: macos-14

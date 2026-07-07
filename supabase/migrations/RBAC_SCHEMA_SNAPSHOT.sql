@@ -51,3 +51,27 @@
 -- org_roles: user_id uuid, role text, party_id uuid, active boolean, can_view_stock boolean, can_edit_stock boolean, can_view_tasks boolean, can_edit_tasks boolean, can_manage boolean, can_import boolean, created_at timestamp with time zone
 -- parties: id uuid, name text, created_at timestamp with time zone
 -- profiles: id uuid, username text, display_name text, is_admin boolean, created_at timestamp with time zone
+-- can_see_type (тип-граница склада) — тело из прод:
+CREATE OR REPLACE FUNCTION public.can_see_type(p_base uuid, p_type text)
+ RETURNS boolean
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  select case
+    when exists (select 1 from profiles pr where pr.id = auth.uid() and pr.is_admin) then true            -- владелец
+    when exists (select 1 from org_roles o join bases b on b.id = p_base                                   -- нач.партии/директор/бухгалтер
+                 where o.user_id = auth.uid() and o.active and (o.party_id is null or o.party_id = b.party_id)) then true
+    else coalesce((
+      select case m.role
+        when 'mechanic' then (p_type = 'tool')
+        when 'cook'     then (p_type in ('product','household'))
+        else true                                                                                          -- worker/site_manager и др.
+      end
+      from public.base_members m
+      where m.base_id = p_base and m.user_id = auth.uid() and m.active
+      limit 1
+    ), true)                                                                                               -- нет членства → не ограничиваем (доступ и так режет has_perm)
+  end;
+$function$
+
