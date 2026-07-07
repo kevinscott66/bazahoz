@@ -2,11 +2,13 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../config/features.dart';
 import '../models/observation_point.dart';
 import '../models/sample.dart';
 import '../theme/tokens.dart';
 import '../util/crs.dart';
 import '../util/plot_projection.dart';
+import 'route_map_basemap.dart';
 
 /// Схема маршрута (ТЗ §6.7, шаг к карте §6.2): точки маршрута, разложенные по
 /// их координатам. Без подложки/рельефа — это следующий шаг (UNFINISHED);
@@ -60,11 +62,20 @@ class RouteMapScreen extends StatelessWidget {
                         ),
                       ),
                     )
-                  : _PlotArea(
-                      points: located,
-                      samplesByPoint: samplesByPoint,
-                      onTapPoint: onTapPoint,
-                    ),
+                  // Подложка карты — за флагом (офлайн-тайлы ещё не заготовлены,
+                  // рендер тайлов проверяется на устройстве). По умолчанию —
+                  // честная ENU-схема без пустой подложки.
+                  : AppFeatures.mapBasemap
+                      ? RouteBasemapView(
+                          points: located,
+                          samplesByPoint: samplesByPoint,
+                          onTapPoint: onTapPoint,
+                        )
+                      : _PlotArea(
+                          points: located,
+                          samplesByPoint: samplesByPoint,
+                          onTapPoint: onTapPoint,
+                        ),
             ),
             if (noCoords > 0)
               Padding(
