@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v150 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v151 · БЕТА</div>
   </div>
 </div>
 
@@ -2990,7 +2990,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v150 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v151 · тестовый канал</div>
   `;
 }
 
@@ -5115,7 +5115,11 @@ async function cloudPushNow(){
     let _suspectWipe=false;   // склад подозрительно усох → не снимаем dirty, не рапортуем «synced» (см. ниже)
     if(perm.can_edit_stock){
       // === СКЛАД (ДЕЛЬТА: только изменённые/удалённые позиции, прямым fetch) ===
-      const rows = state.stock.map(s=>stockToRow(s,cid));
+      // синкаем ТОЛЬКО типы, доступные роли (Механик/Электрик — tool, Повар — без tool): иначе push
+      // ограниченной роли попытался бы upsert/удалить чужой тип и упёрся бы в RLS-403. pull всё равно
+      // отдаёт RLS-набор, снимок сбрасывается на него — здесь просто не трогаем скрытые типы.
+      const _at = allowedTypeKeys();
+      const rows = state.stock.filter(s=>_at.includes(s.type)).map(s=>stockToRow(s,cid));
       const curSig = {}; rows.forEach(r=>{ curSig[r.id]=_sigOf(r); });
       const prevSig = loadSyncSig(cid,"stock");
       const prevCount = Object.keys(prevSig).length;
