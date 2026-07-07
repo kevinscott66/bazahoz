@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v151 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v152 · БЕТА</div>
   </div>
 </div>
 
@@ -750,6 +750,11 @@ const typeMeta = (k) => STOCK_TYPES.find(t=>t.key===k) || STOCK_TYPES[0];
 // доступные типы склада для роли: Механик/Электрик — только инструменты; Повар — без инструментов; остальные — все.
 // (activeMember определён ниже, но объявления функций подняты — на момент рендера всё готово)
 function allowedTypeKeys(){
+  // выравнивание с серверным can_see_type: владелец и любая орг-роль (директор/бухгалтер/нач.партии) → все типы.
+  if(typeof cloud!=="undefined"){
+    if(cloud.profile && cloud.profile.is_admin) return STOCK_TYPE_KEYS.slice();
+    if((cloud.orgRoles||[]).some(o=>o.active!==false)) return STOCK_TYPE_KEYS.slice();
+  }
   const m = (typeof activeMember==="function") ? activeMember() : null;
   const role = m && m.role;
   if(role==="mechanic") return ["tool"];
@@ -1499,6 +1504,8 @@ const JOURNAL_META = {
 function renderStock(){
   const v = document.querySelector('[data-view="stock"]');
   if(STOCK_TYPE_KEYS.includes(stockTab) && !allowedTypeKeys().includes(stockTab)) stockTab="all";   // роль потеряла доступ к типу
+  const _visTypes = visibleStockTypes();
+  if(_visTypes.length===1) stockTab=_visTypes[0].key;   // один тип (Механик/Электрик) → сразу он, без лишнего чипа «Все»
   const modeTabs = `
     <div class="scroll-x flex gap-2">
       <button class="chip ${stockMode==='stock'?'active':''}" data-stockmode="stock">📦 Остатки</button>
@@ -1533,8 +1540,8 @@ function renderStock(){
     </div>
 
     <div class="scroll-x flex gap-2">
-      <button class="chip ${stockTab==='all'?'active':''}" data-stocktab="all">Все (${state.stock.filter(s=>inStock(s)&&allowed.includes(s.type)).length})</button>
-      ${visibleStockTypes().map(t=>`<button class="chip ${stockTab===t.key?'active':''}" data-stocktab="${t.key}">${t.icon} ${t.short} (${state.stock.filter(s=>s.type===t.key&&inStock(s)).length})</button>`).join("")}
+      ${_visTypes.length>1?`<button class="chip ${stockTab==='all'?'active':''}" data-stocktab="all">Все (${state.stock.filter(s=>inStock(s)&&allowed.includes(s.type)).length})</button>`:""}
+      ${_visTypes.map(t=>`<button class="chip ${stockTab===t.key?'active':''}" data-stocktab="${t.key}">${t.icon} ${t.short} (${state.stock.filter(s=>s.type===t.key&&inStock(s)).length})</button>`).join("")}
     </div>
 
     <div class="scroll-x flex gap-2">
@@ -2990,7 +2997,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v151 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v152 · тестовый канал</div>
   `;
 }
 
@@ -3752,8 +3759,8 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   openOpEdit,saveOp,deleteOp,editOp,saveOpEdit,orderReceive,
   openCategoriesEdit,addCategory,renameCategory,deleteCategory,
   openLocationsEdit,addLocation,renameLocation,deleteLocation,
-  openProfilesSheet,switchProfile,addProfile,renameProfile,deleteProfile,exportAllProfiles,
-  toggleCheck,addCheck,resetChecklist,
+  openProfilesSheet,switchProfile,addProfile,renameProfile,deleteProfile,exportAllProfiles,mergeCatalogs,
+  toggleCheck,addCheck,resetChecklist,removeCheck,
   exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,exportJournalsMonth,clearLog,wipeAll,toggleTheme,setTheme,
   openMove,doMove,
   openMembersSheet,openMemberRole,setMemberRole,memberRotate,memberRemove,openAddMember,openResetPwd,
@@ -5126,7 +5133,10 @@ async function cloudPushNow(){
       // ЗАЩИТА: пустой ИЛИ подозрительно усохший локальный склад НЕ стирает облако.
       // Если осталось <10% от снимка (а снимок крупный) — это похоже на порчу слота,
       // а не на осознанное удаление → пропускаем ВСЮ выгрузку склада (cloud цел, восстановится pull-ом).
-      const suspectWipe = prevCount>=20 && rows.length < prevCount*0.1;
+      // НО у ограниченной роли (Механик/Электрик, Повар) rows — законно малое подмножество (тип-фильтр),
+      // а снимок может быть от прежней роли (все типы) → suspectWipe ложно сработал бы и блокировал выгрузку.
+      const _typeRestricted = _at.length < STOCK_TYPE_KEYS.length;
+      const suspectWipe = !_typeRestricted && prevCount>=20 && rows.length < prevCount*0.1;
       if((rows.length===0 || suspectWipe) && prevCount>0){
         if(suspectWipe) _suspectWipe=true;   // помним: при усыхании НЕ снимаем dirty и не говорим «synced»
         console.warn("cloudPush: склад подозрительно мал ("+rows.length+" из "+prevCount+") — выгрузка склада пропущена (защита от порчи)");
