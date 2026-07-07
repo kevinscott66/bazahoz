@@ -4,6 +4,10 @@
   "webDir": "www",
   "server": {
     "url": "https://vahta.razvedchick.ru/vahtahoz.html",
-    "androidScheme": "https"
+    "androidScheme": "https",
+    "allowNavigation": [
+      "vahta.razvedchick.ru",
+      "*.supabase.co"
+    ]
   }
 }

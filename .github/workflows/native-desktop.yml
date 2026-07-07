@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+permissions:
+  contents: read
 jobs:
   desktop:
     strategy:
@@ -20,7 +22,7 @@ jobs:
         with:
           node-version: '20'
       - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Linux deps
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -30,7 +32,7 @@ jobs:
         working-directory: native-desktop
         run: npm install
       - name: Build (Tauri)
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         with:
           projectPath: native-desktop
       - name: Upload bundles
@@ -42,7 +44,5 @@ jobs:
             native-desktop/src-tauri/target/release/bundle/**/*.app
             native-desktop/src-tauri/target/release/bundle/**/*.deb
             native-desktop/src-tauri/target/release/bundle/**/*.AppImage
-            native-desktop/src-tauri/target/release/bundle/**/*.rpm
-            native-desktop/src-tauri/target/release/bundle/**/*.msi
             native-desktop/src-tauri/target/release/bundle/**/*.exe
           if-no-files-found: warn
