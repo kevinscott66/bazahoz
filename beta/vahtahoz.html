@@ -108,6 +108,14 @@
   /* текст ошибок: читаемый красный на тёмном шите и на белом (светлая тема) */
   .err-text{ color:#f87171; }
   .light .err-text{ color:#dc2626; }
+  /* утилиты, не попавшие в JIT-сборку Tailwind (используются в динамической разметке) */
+  .border-gray-800{ border-color:var(--color-gray-800,#1f2937); }
+  .opacity-40{ opacity:.4; }
+  .cursor-pointer{ cursor:pointer; }
+  .py-2{ padding-top:.5rem; padding-bottom:.5rem; }
+  .pt-3{ padding-top:.75rem; }
+  .pt-1{ padding-top:.25rem; }
+  .mt-0\.5{ margin-top:.125rem; }
   /* логин-гейт всегда на тёмном градиенте — в светлой теме текст/кнопки не должны наследовать тёмные цвета */
   #loginGate{ color:#f1f5f9; }
   .light #loginGate .btn-ghost{ background:rgba(255,255,255,.08); color:#f1f5f9; }
@@ -185,7 +193,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v152 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v153 · БЕТА</div>
   </div>
 </div>
 
@@ -2997,7 +3005,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v152 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v153 · тестовый канал</div>
   `;
 }
 
@@ -4373,10 +4381,8 @@ async function orgRoleRemove(uid, role, partyId){
 let _allBasesCache = null;     // [{id,name,rows}] — снимок; чистится при выходе (clearAllBasesCache)
 let _allBasesAt = 0;           // время снимка (для «Обновлено в HH:MM»)
 function clearAllBasesCache(){ _allBasesCache = null; _allBasesAt = 0; }
-const _rawTypeLabel = (t)=>{ const m=(STOCK_TYPES||[]).find(x=>x.key===t); return m?m.short:(t||""); };
-// количество/место считаем КАК В СКЛАДЕ: из батчей, если они есть (колонка qty — производная и может отстать)
+// количество считаем КАК В СКЛАДЕ: из батчей, если они есть (колонка qty — производная и может отстать)
 function _rowQty(r){ const b=Array.isArray(r.batches)?r.batches:[]; return b.length ? roundQty(b.reduce((s,x)=>s+roundQty((x&&x.qty)||0),0)) : roundQty(Number(r.qty||0)); }
-function _rowLoc(r){ const b=Array.isArray(r.batches)?r.batches:[]; if(b.length){ return [...new Set(b.map(x=>(x&&x.location)||"").filter(Boolean))].sort().join("; "); } return r.location||""; }
 function _fileSafe(s){ return String(s||"база").replace(/[^0-9A-Za-zА-Яа-яёЁ -]/g,"").trim().replace(/\s+/g,"_")||"база"; }
 // один запрос in.(...) вместо N параллельных: одна поездка, RLS сама отфильтрует видимое, тянем и batches
 async function loadAllBasesStock(){
