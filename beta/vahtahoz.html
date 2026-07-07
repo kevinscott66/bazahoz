@@ -193,7 +193,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v154 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v154</div>
   </div>
 </div>
 
@@ -314,7 +314,8 @@ const CLOUD_CFG = {
   anon: "sb_publishable_UxWs9yx1r4fbo4KJJZqYLA_ndNyVgT0",
 };
 // суффикс логина = домен почты. При переезде на свой домен (razvedchick.online/.ru) меняется ТУТ + миграция email аккаунтов.
-const LOGIN_DOMAIN = "@bazahoz.app";
+const LOGIN_DOMAIN = "@razvedchick.ru";        // домен логина = корпоративный (почта восстановления на своём сервере)
+const LEGACY_LOGIN_DOMAIN = "@bazahoz.app";    // старый домен: вход толерантен к нему на время миграции auth.users
 const cloud = {
   sb:null, session:null, profile:null, members:[], bases:{},
   orgRoles:[], _baseParty:{},   // территориальные/глобальные роли + карта база→партия (RBAC v2)
@@ -3005,7 +3006,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v154 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v154</div>
   `;
 }
 
@@ -4701,17 +4702,29 @@ async function cloudLogin(email, password){
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), 35000);
   // логин можно вводить без домена: «worker» → worker + LOGIN_DOMAIN
-  let em2 = (email||"").trim();
-  if(em2 && !em2.includes("@")) em2 += LOGIN_DOMAIN;
-  let d;
-  try{
+  const raw = (email||"").trim();
+  const hasAt = raw.includes("@");
+  const primary = hasAt ? raw : raw + LOGIN_DOMAIN;
+  async function _attempt(em){
     const r = await fetch(`${CLOUD_CFG.url}/auth/v1/token?grant_type=password`, {
       method:"POST", signal:ctrl.signal,
       headers:{ "apikey":CLOUD_CFG.anon, "Content-Type":"application/json" },
-      body: JSON.stringify({ email:em2, password })
+      body: JSON.stringify({ email:em, password })
     });
-    d = await r.json().catch(()=>({}));
-    if(!r.ok || !d.access_token) throw new Error("Неверный логин или пароль");
+    const dd = await r.json().catch(()=>({}));
+    return { ok: !!(r.ok && dd.access_token), d: dd };
+  }
+  let d;
+  try{
+    let res = await _attempt(primary);
+    // толерантность к домену на время миграции @bazahoz.app→@razvedchick.ru: если логин без @ не прошёл
+    // на новом домене — пробуем старый (аккаунт мог быть ещё не мигрирован). Порядок миграции не важен.
+    if(!res.ok && !hasAt && LEGACY_LOGIN_DOMAIN!==LOGIN_DOMAIN){
+      const alt = await _attempt(raw + LEGACY_LOGIN_DOMAIN);
+      if(alt.ok) res = alt;
+    }
+    if(!res.ok) throw new Error("Неверный логин или пароль");
+    d = res.d;
   }catch(e){
     if(e.name==="AbortError") throw new Error("превышено время ожидания сети");
     throw e;
