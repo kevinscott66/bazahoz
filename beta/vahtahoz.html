@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v149 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v150 · БЕТА</div>
   </div>
 </div>
 
@@ -278,8 +278,8 @@ function saveState(){
       if(Array.isArray(state.log) && state.log.length>200) state.log = state.log.slice(0,200);
       if(state.journals){
         for(const k of JOURNAL_KEYS){
-          if(Array.isArray(state.journals[k]) && state.journals[k].length>500)
-            state.journals[k] = state.journals[k].slice(0,500);   // записи добавляются unshift'ом (новые — в начале) → оставляем СВЕЖИЕ 500, а не старые
+          if(Array.isArray(state.journals[k]) && state.journals[k].length>2000)
+            state.journals[k] = state.journals[k].slice(0,2000);   // кап поднят до 2000: помесячный архив хранит историю (~год+); новые — в начале (unshift)
         }
       }
       try {
@@ -1619,10 +1619,42 @@ function renderStockList(){
   if(moreBtn) moreBtn.addEventListener("click", ()=>{ stockLimit += 200; renderStockList(); });
 }
 
-/* ---------- Journals (операции) ---------- */
+/* ---------- Journals (операции) + помесячный архив ---------- */
+let journalMonth = null;   // выбранный месяц архива (YYYY-MM); null → последний (текущий)
+const RU_MONTHS3=["янв","фев","мар","апр","май","июн","июл","авг","сен","окт","ноя","дек"];
+const monthKeyOf = (ts)=> (ts||"").slice(0,7);   // ISO → YYYY-MM
+function monthLabel(ym){ if(!ym) return ""; const p=ym.split("-"); return `${RU_MONTHS3[(+p[1])-1]||p[1]} ${p[0]}`; }
+function journalMonths(){   // все месяцы с записями по всем 4 журналам, свежие сверху
+  const set=new Set();
+  for(const k of JOURNAL_KEYS) for(const op of (state.journals[k]||[])){ const mk=monthKeyOf(op.ts); if(mk) set.add(mk); }
+  return [...set].sort().reverse();
+}
+// экспорт всех журналов за выбранный месяц (архив) — 4 листа
+async function exportJournalsMonth(ym){
+  toast("Подготовка файла…");
+  let XLSX; try{ XLSX=await ensureXlsx(); }catch(e){ toast("Не удалось сделать Excel — сохраняем в простом виде"); return; }
+  const wb=XLSX.utils.book_new();
+  for(const k of JOURNAL_KEYS){
+    const meta=JOURNAL_META[k];
+    const rows=(state.journals[k]||[]).filter(op=>monthKeyOf(op.ts)===ym).sort((a,b)=>(a.ts||"").localeCompare(b.ts||"")).map(op=>{
+      const row={ "Дата": op.ts?new Date(op.ts).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"}):"",
+        "Наименование": op.productName||"", "Количество": roundQty(op.qty||0), "Ед. изм.": op.unit||"",
+        "Место": op.batchLocation||"", "Срок": op.batchExpiry?fmtDate(op.batchExpiry):"" };
+      if(k==="order") row["Статус"]=op.status==="received"?"Принят":"Ожидает";
+      row["Примечание"]=op.note||""; return row;
+    });
+    const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Дата":"","Наименование":""}]));
+    ws["!cols"]=[{wch:16},{wch:34},{wch:11},{wch:9},{wch:16},{wch:12},{wch:10},{wch:24}];
+    XLSX.utils.book_append_sheet(wb, ws, meta.label.slice(0,28));
+  }
+  XLSX.writeFile(wb, `vahtahoz-журналы-${ym}-${_fileSafe(activeProfileName())}.xlsx`);
+}
 function renderJournal(kind){
   const m = JOURNAL_META[kind];
-  const list = [...(state.journals[kind]||[])].sort((a,b)=> (b.ts||"").localeCompare(a.ts||""));
+  const months = journalMonths();
+  const selMonth = (journalMonth && months.includes(journalMonth)) ? journalMonth : (months[0]||null);
+  let list = [...(state.journals[kind]||[])].sort((a,b)=> (b.ts||"").localeCompare(a.ts||""));
+  if(selMonth) list = list.filter(op=>monthKeyOf(op.ts)===selMonth);
   const rows = list.map(op=>{
     const _dWhen = new Date(op.ts);
     const when = isNaN(_dWhen) ? "—" : _dWhen.toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
@@ -1669,7 +1701,11 @@ function renderJournal(kind){
 
   return `
     <button class="btn ${m.color} w-full mt-3" onclick="openOpEdit('${kind}')">＋ ${m.label}</button>
-    <div class="text-xs opacity-70 mt-2">Записей: ${list.length}${sumStr?`  ·  сумма по ед.: ${sumStr}`:""}</div>
+    ${months.length ? `<div class="scroll-x flex gap-2 mt-2" id="jrMonthChips">
+      ${months.map(ym=>`<button class="chip ${ym===selMonth?'active':''}" data-jrmonth="${ym}">${monthLabel(ym)}</button>`).join("")}
+    </div>
+    <button class="btn btn-ghost w-full mt-2" onclick="exportJournalsMonth('${selMonth}')">📊 Экспорт всех журналов за ${monthLabel(selMonth)}</button>` : ""}
+    <div class="text-xs opacity-70 mt-2">${selMonth?`Месяц ${monthLabel(selMonth)} · `:""}записей: ${list.length}${sumStr?`  ·  сумма по ед.: ${sumStr}`:""}</div>
     <div class="space-y-2 mt-2">${rows}</div>`;
 }
 
@@ -2954,7 +2990,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v149 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v150 · тестовый канал</div>
   `;
 }
 
@@ -3697,6 +3733,8 @@ document.addEventListener("click", e=>{
   if(tabBtn){ stockTab = tabBtn.dataset.stocktab; stockCat=""; stockLimit=100; render(); return; }
   const expBtn = e.target.closest("[data-expfilter]");
   if(expBtn){ stockExpiryFilter = expBtn.dataset.expfilter; stockLimit=100; render(); return; }
+  const jrMonthBtn = e.target.closest("[data-jrmonth]");
+  if(jrMonthBtn){ journalMonth = jrMonthBtn.dataset.jrmonth; render(); return; }
   const catChip = e.target.closest("[data-stockcat]");
   if(catChip){ stockCat = catChip.dataset.stockcat; stockLimit=100; renderStockList(); document.querySelectorAll("[data-stockcat]").forEach(el=>el.classList.toggle("active", el.dataset.stockcat===stockCat)); return; }
   const catAct = e.target.closest("[data-cat-action]");
@@ -3716,7 +3754,7 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   openLocationsEdit,addLocation,renameLocation,deleteLocation,
   openProfilesSheet,switchProfile,addProfile,renameProfile,deleteProfile,exportAllProfiles,
   toggleCheck,addCheck,resetChecklist,
-  exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,clearLog,wipeAll,toggleTheme,setTheme,
+  exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,exportJournalsMonth,clearLog,wipeAll,toggleTheme,setTheme,
   openMove,doMove,
   openMembersSheet,openMemberRole,setMemberRole,memberRotate,memberRemove,openAddMember,openResetPwd,
   openShift,openHandover,doHandover,
