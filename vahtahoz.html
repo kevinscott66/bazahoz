@@ -108,6 +108,14 @@
   /* текст ошибок: читаемый красный на тёмном шите и на белом (светлая тема) */
   .err-text{ color:#f87171; }
   .light .err-text{ color:#dc2626; }
+  /* утилиты, не попавшие в JIT-сборку Tailwind (используются в динамической разметке) */
+  .border-gray-800{ border-color:var(--color-gray-800,#1f2937); }
+  .opacity-40{ opacity:.4; }
+  .cursor-pointer{ cursor:pointer; }
+  .py-2{ padding-top:.5rem; padding-bottom:.5rem; }
+  .pt-3{ padding-top:.75rem; }
+  .pt-1{ padding-top:.25rem; }
+  .mt-0\.5{ margin-top:.125rem; }
   /* логин-гейт всегда на тёмном градиенте — в светлой теме текст/кнопки не должны наследовать тёмные цвета */
   #loginGate{ color:#f1f5f9; }
   .light #loginGate .btn-ghost{ background:rgba(255,255,255,.08); color:#f1f5f9; }
@@ -185,7 +193,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v152</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v154</div>
   </div>
 </div>
 
@@ -2997,7 +3005,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v152</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v154</div>
   `;
 }
 
@@ -4181,14 +4189,23 @@ async function memberRemove(uid){
     toast("Убран из базы"); await openMembersSheet();
   }catch(e){ toast("Не удалось: "+(e.message||"Проверьте интернет и повторите")); }
 }
+/* общие поля/валидация форм создания аккаунта и назначения ролей (устраняет дубль в 3 формах) */
+const _loginFieldHTML = (prefix, label)=>`<div><div class="text-sm opacity-70 mb-1">${label}</div>
+  <input class="input" id="${prefix}u" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="напр. petrov" /></div>`;
+const _pwdFieldHTML = (prefix)=>`<div><div class="text-sm opacity-70 mb-1">Пароль (не короче 6 символов)</div>
+  <input class="input" id="${prefix}p" type="text" autocapitalize="none" autocorrect="off" placeholder="придумайте пароль" /></div>`;
+const _hintFieldHTML = (prefix, tail)=>`<div class="text-xs opacity-60 mt-2">${tail}Логин: <span id="${prefix}Hint">…${LOGIN_DOMAIN}</span>. Передайте работнику логин${prefix==='ae'?"":" и пароль"}.</div>`;
+function _wireLoginHint(prefix){ const u=document.getElementById(prefix+"u"); if(!u) return; u.addEventListener("input",()=>{ const h=document.getElementById(prefix+"Hint"); if(h) h.textContent=((u.value.trim().toLowerCase())||"…")+LOGIN_DOMAIN; }); }
+// валидация: возвращает true и показывает toast при ошибке
+function _badLogin(u){ if(!/^[a-z0-9_]{3,32}$/.test(u)){ toast("Логин: 3–32 символа — англ. буквы, цифры, _"); return true; } return false; }
+function _badPwd(p){ if(p.length<6){ toast("Пароль не короче 6 символов"); return true; } return false; }
+
 function openAddMember(){
   const _amRoles = assignableRoles();   // роли строго ниже моего ранга
   openSheet(`<div class="font-bold text-xl mb-3">＋ Новый работник</div>
     <div class="space-y-3">
-      <div><div class="text-sm opacity-70 mb-1">Логин (3–32: англ. буквы, цифры, _)</div>
-        <input class="input" id="amu" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="напр. ivanov" /></div>
-      <div><div class="text-sm opacity-70 mb-1">Пароль (не короче 6 символов)</div>
-        <input class="input" id="amp" type="text" autocapitalize="none" autocorrect="off" placeholder="придумайте пароль" /></div>
+      ${_loginFieldHTML("am","Логин (3–32: англ. буквы, цифры, _)")}
+      ${_pwdFieldHTML("am")}
       <div><div class="text-sm opacity-70 mb-1">Роль</div>
         ${_amRoles.length
           ? `<select class="input" id="amr">${_amRoles.map(r=>`<option value="${r.key}">${esc(r.label)}</option>`).join("")}</select>`
@@ -4198,9 +4215,8 @@ function openAddMember(){
       <button class="btn btn-ghost flex-1" data-close>Отмена</button>
       ${_amRoles.length?`<button class="btn btn-success flex-1" id="amGo">Создать</button>`:``}
     </div>
-    <div class="text-xs opacity-60 mt-2">Логин будет: <span id="amHint">…${LOGIN_DOMAIN}</span>. Передайте работнику этот логин и пароль, который задали выше — он войдёт по ним.</div>`);
-  const u=document.getElementById("amu");
-  u.addEventListener("input",()=>{ document.getElementById("amHint").textContent=((u.value.trim().toLowerCase())||"…")+LOGIN_DOMAIN; });
+    ${_hintFieldHTML("am","")}`);
+  _wireLoginHint("am");
   const go=document.getElementById("amGo"); if(go) go.onclick=()=>doAddMember();
 }
 async function doAddMember(){
@@ -4209,8 +4225,8 @@ async function doAddMember(){
   const password=document.getElementById("amp").value||"";
   const roleEl=document.getElementById("amr"); const role=roleEl?roleEl.value:"";
   if(!role){ toast("Выберите роль"); return; }
-  if(!/^[a-z0-9_]{3,32}$/.test(username)){ toast("Логин: 3–32 символа — англ. буквы, цифры, _"); return; }
-  if(password.length<6){ toast("Пароль не короче 6 символов"); return; }
+  if(_badLogin(username)) return;
+  if(_badPwd(password)) return;
   const btn=document.getElementById("amGo"); btn.disabled=true; btn.textContent="Создание…";
   try{
     const d=await cloudCallFn("create_member", { base_id:cid, username, password, role });
@@ -4270,10 +4286,8 @@ function openAddOrgMember(){
   const partyOpts = parties.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("");
   openSheet(`<div class="font-bold text-xl mb-3">＋ Назначить роль</div>
     <div class="space-y-3">
-      <div><div class="text-sm opacity-70 mb-1">Логин (3–32: англ. буквы, цифры, _)</div>
-        <input class="input" id="omu" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="напр. petrov" /></div>
-      <div><div class="text-sm opacity-70 mb-1">Пароль (не короче 6 символов)</div>
-        <input class="input" id="omp" type="text" autocapitalize="none" autocorrect="off" placeholder="придумайте пароль" /></div>
+      ${_loginFieldHTML("om","Логин (3–32: англ. буквы, цифры, _)")}
+      ${_pwdFieldHTML("om")}
       <div><div class="text-sm opacity-70 mb-1">Роль</div>
         <select class="input" id="omr" onchange="_omToggleParty()">${roleOpts}</select></div>
       <div id="omPartyWrap"><div class="text-sm opacity-70 mb-1">Регион</div>
@@ -4283,9 +4297,8 @@ function openAddOrgMember(){
       <button class="btn btn-ghost flex-1" data-close>Отмена</button>
       <button class="btn btn-success flex-1" id="omGo">Создать</button>
     </div>
-    <div class="text-xs opacity-60 mt-2">Будет создан новый аккаунт. Логин: <span id="omHint">…${LOGIN_DOMAIN}</span>. Передайте работнику логин и пароль.</div>`);
-  const u=document.getElementById("omu");
-  u.addEventListener("input",()=>{ document.getElementById("omHint").textContent=((u.value.trim().toLowerCase())||"…")+LOGIN_DOMAIN; });
+    ${_hintFieldHTML("om","Будет создан новый аккаунт. ")}`);
+  _wireLoginHint("om");
   document.getElementById("omGo").onclick=()=>doAddOrgMember();
   _omToggleParty();
 }
@@ -4308,8 +4321,8 @@ async function doAddOrgMember(){
   const role=document.getElementById("omr").value;
   const r=ORG_ROLES.find(x=>x.key===role);
   if(!r){ toast("Выберите роль"); return; }
-  if(!/^[a-z0-9_]{3,32}$/.test(username)){ toast("Логин: 3–32 символа — англ. буквы, цифры, _"); return; }
-  if(password.length<6){ toast("Пароль не короче 6 символов"); return; }
+  if(_badLogin(username)) return;
+  if(_badPwd(password)) return;
   let party_id=null;
   if(r.scope==="party"){ const ps=document.getElementById("omParty"); party_id=ps?ps.value:""; if(!party_id){ toast("Выберите регион"); return; } }
   const btn=document.getElementById("omGo"); btn.disabled=true; btn.textContent="Создание…";
@@ -4327,8 +4340,7 @@ function openAssignExisting(){
   const partyOpts=parties.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("");
   openSheet(`<div class="font-bold text-xl mb-3">Назначить роль существующему</div>
     <div class="space-y-3">
-      <div><div class="text-sm opacity-70 mb-1">Логин работника (уже есть аккаунт)</div>
-        <input class="input" id="aeu" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="напр. petrov" /></div>
+      ${_loginFieldHTML("ae","Логин работника (уже есть аккаунт)")}
       <div><div class="text-sm opacity-70 mb-1">Роль</div>
         <select class="input" id="aer" onchange="_aeToggleParty()">${roleOpts}</select></div>
       <div id="aePartyWrap"><div class="text-sm opacity-70 mb-1">Регион</div>
@@ -4348,7 +4360,7 @@ async function doAssignExisting(){
   const role=document.getElementById("aer").value;
   const r=ORG_ROLES.find(x=>x.key===role);
   if(!r){ toast("Выберите роль"); return; }
-  if(!/^[a-z0-9_]{3,32}$/.test(username)){ toast("Логин: 3–32 символа — англ. буквы, цифры, _"); return; }
+  if(_badLogin(username)) return;
   let party_id=null;
   if(r.scope==="party"){ const ps=document.getElementById("aeParty"); party_id=ps?ps.value:""; if(!party_id){ toast("Выберите регион"); return; } }
   const btn=document.getElementById("aeGo"); btn.disabled=true; btn.textContent="Назначение…";
@@ -4373,10 +4385,8 @@ async function orgRoleRemove(uid, role, partyId){
 let _allBasesCache = null;     // [{id,name,rows}] — снимок; чистится при выходе (clearAllBasesCache)
 let _allBasesAt = 0;           // время снимка (для «Обновлено в HH:MM»)
 function clearAllBasesCache(){ _allBasesCache = null; _allBasesAt = 0; }
-const _rawTypeLabel = (t)=>{ const m=(STOCK_TYPES||[]).find(x=>x.key===t); return m?m.short:(t||""); };
-// количество/место считаем КАК В СКЛАДЕ: из батчей, если они есть (колонка qty — производная и может отстать)
+// количество считаем КАК В СКЛАДЕ: из батчей, если они есть (колонка qty — производная и может отстать)
 function _rowQty(r){ const b=Array.isArray(r.batches)?r.batches:[]; return b.length ? roundQty(b.reduce((s,x)=>s+roundQty((x&&x.qty)||0),0)) : roundQty(Number(r.qty||0)); }
-function _rowLoc(r){ const b=Array.isArray(r.batches)?r.batches:[]; if(b.length){ return [...new Set(b.map(x=>(x&&x.location)||"").filter(Boolean))].sort().join("; "); } return r.location||""; }
 function _fileSafe(s){ return String(s||"база").replace(/[^0-9A-Za-zА-Яа-яёЁ -]/g,"").trim().replace(/\s+/g,"_")||"база"; }
 // один запрос in.(...) вместо N параллельных: одна поездка, RLS сама отфильтрует видимое, тянем и batches
 async function loadAllBasesStock(){
