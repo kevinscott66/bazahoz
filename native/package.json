@@ -1,0 +1,14 @@
+{
+  "name": "vahtahoz-native",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Нативная обёртка ВахтаХоз (загружает vahta.razvedchick.ru)",
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2"
+  },
+  "dependencies": {
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/ios": "^6.1.2"
+  }
+}
