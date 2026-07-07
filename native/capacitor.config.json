@@ -1,0 +1,9 @@
+{
+  "appId": "ru.razvedchick.vahta",
+  "appName": "ВахтаХоз",
+  "webDir": "www",
+  "server": {
+    "url": "https://vahta.razvedchick.ru/vahtahoz.html",
+    "androidScheme": "https"
+  }
+}
