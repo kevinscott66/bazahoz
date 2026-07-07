@@ -1,6 +1,9 @@
 name: Build iOS (unsigned)
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 jobs:
   ios:
     runs-on: macos-14
