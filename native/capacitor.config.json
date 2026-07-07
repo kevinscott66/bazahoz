@@ -6,8 +6,7 @@
     "url": "https://vahta.razvedchick.ru/vahtahoz.html",
     "androidScheme": "https",
     "allowNavigation": [
-      "vahta.razvedchick.ru",
-      "*.supabase.co"
+      "vahta.razvedchick.ru"
     ]
   }
 }
