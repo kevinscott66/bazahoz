@@ -10,7 +10,7 @@ import '../models/observation_point.dart';
 import '../models/sample.dart' show SyncStatus;
 import '../theme/tokens.dart';
 import '../util/crs.dart';
-import 'route_map_screen.dart' show sk42Georef;
+import '../util/route_geo.dart' show sk42Georef;
 
 /// Растровая ПОДЛОЖКА карты под схемой маршрута (за флагом `mapBasemap`,
 /// UNFINISHED.md). Точки, трек и георефер СК-42 ложатся поверх тайлов. Тайлы —
@@ -78,6 +78,11 @@ class RouteBasemapView extends StatelessWidget {
             initialCenter:
                 coords.isEmpty ? const LatLng(62.78, 148.16) : coords.first,
             initialZoom: 11,
+            // Камера подгоняется под весь маршрут ОДИН РАЗ при открытии
+            // (flutter_map применяет initialCameraFit единожды за жизнь карты).
+            // Экран открывается снимком точек из журнала, поэтому этого хватает.
+            // Когда карта станет живой (текущий GPS, добавление точек на месте),
+            // понадобится MapController + повторный fit — следующий заход.
             initialCameraFit: coords.isEmpty
                 ? null
                 : CameraFit.coordinates(
@@ -110,6 +115,7 @@ class RouteBasemapView extends StatelessWidget {
                   child: _PointDot(
                     key: ValueKey('map-pt-${located[i].id}'),
                     point: located[i],
+                    samples: samplesByPoint[located[i].id] ?? 0,
                     onTap: () => onTapPoint(located[i]),
                   ),
                 ),
@@ -136,9 +142,18 @@ class RouteBasemapView extends StatelessWidget {
 /// Точка на карте: кольцо статуса синхронизации + заливка (черновик/акцент),
 /// теми же цветами, что в ENU-схеме и журнале.
 class _PointDot extends StatelessWidget {
-  const _PointDot({super.key, required this.point, required this.onTap});
+  const _PointDot({
+    super.key,
+    required this.point,
+    required this.samples,
+    required this.onTap,
+  });
 
   final ObservationPoint point;
+
+  /// Число проб на точке — маленький бейдж, чтобы точка с пробами отличалась
+  /// от пустой (паритет с ENU-схемой, где у точки подписано «· Nп»).
+  final int samples;
   final VoidCallback onTap;
 
   @override
@@ -153,22 +168,44 @@ class _PointDot extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
-      child: Center(
-        child: Container(
-          width: 18,
-          height: 18,
-          decoration: BoxDecoration(
-            color: ring,
-            shape: BoxShape.circle,
-          ),
-          child: Center(
-            child: Container(
-              width: 12,
-              height: 12,
-              decoration: BoxDecoration(color: fill, shape: BoxShape.circle),
+      child: Stack(
+        alignment: Alignment.center,
+        clipBehavior: Clip.none,
+        children: [
+          Container(
+            width: 18,
+            height: 18,
+            decoration: BoxDecoration(color: ring, shape: BoxShape.circle),
+            child: Center(
+              child: Container(
+                width: 12,
+                height: 12,
+                decoration: BoxDecoration(color: fill, shape: BoxShape.circle),
+              ),
             ),
           ),
-        ),
+          if (samples > 0)
+            Positioned(
+              right: 0,
+              top: 0,
+              child: Container(
+                constraints: const BoxConstraints(minWidth: 14, minHeight: 14),
+                padding: const EdgeInsets.symmetric(horizontal: 3),
+                decoration: BoxDecoration(
+                  color: GfColors.surfaceHi,
+                  shape: BoxShape.rectangle,
+                  borderRadius: BorderRadius.circular(7),
+                  border: Border.all(color: GfColors.bg, width: 1),
+                ),
+                child: Text(
+                  '$samples',
+                  textAlign: TextAlign.center,
+                  style: GfText.hint.copyWith(
+                      fontSize: 10, color: GfColors.textPrimary, height: 1.2),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -189,6 +226,10 @@ class _GeorefBadge extends StatelessWidget {
     final minLon = lons.reduce((a, b) => a < b ? a : b);
     final maxLon = lons.reduce((a, b) => a > b ? a : b);
     final degenerate = minLat == maxLat && minLon == maxLon;
+    // Зона берётся из ПОЛНОГО трансформа (а не дешёвого gkZone по WGS-долготе)
+    // намеренно: так зона в шапке совпадает с зоной, зашитой в Y угловых
+    // подписей (датум-сдвиг у границы зоны может дать другую зону). Считается
+    // один раз при открытии экрана, не на жест — в бюджете.
     final zones = {for (final p in points) wgs84ToSk42Gk(p.lat!, p.lon!).zone};
     final text = sk42Georef(
       nwLat: maxLat,

@@ -25,13 +25,14 @@ void main() {
       );
 
   Future<void> pumpMap(WidgetTester tester, List<ObservationPoint> points,
-      {void Function(ObservationPoint)? onTap}) async {
+      {void Function(ObservationPoint)? onTap,
+      Map<String, int> samplesByPoint = const {}}) async {
     tallPhone(tester);
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
         body: RouteBasemapView(
           points: points,
-          samplesByPoint: const {},
+          samplesByPoint: samplesByPoint,
           onTapPoint: onTap ?? (_) {},
           tileCacheDir: null, // офлайн-тайлов нет — прозрачные плитки
         ),
@@ -53,6 +54,16 @@ void main() {
     // Георефер СК-42 и честная метка отсутствующих тайлов.
     expect(find.textContaining('СК-42'), findsOneWidget);
     expect(find.textContaining('Офлайн-тайлы не загружены'), findsOneWidget);
+  });
+
+  testWidgets('точка с пробами несёт бейдж-счётчик, без проб — нет',
+      (tester) async {
+    await pumpMap(tester, [
+      pt('p1', 62.781, 148.150),
+      pt('p2', 62.784, 148.160),
+    ], samplesByPoint: const {'p1': 3});
+    // Паритет с ENU-схемой: точка с пробами отличается от пустой.
+    expect(find.text('3'), findsOneWidget);
   });
 
   testWidgets('тап по маркеру открывает его точку', (tester) async {

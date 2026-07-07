@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:geofield/screens/route_map_screen.dart';
 import 'package:geofield/util/crs.dart';
+import 'package:geofield/util/route_geo.dart';
 
 /// Чистые помощники схемы маршрута: метрическая сетка и георефер СК-42.
 /// (Сама отрисовка проверяется голденом; здесь — математика подписей.)
