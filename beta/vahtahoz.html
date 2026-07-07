@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v147 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v148 · БЕТА</div>
   </div>
 </div>
 
@@ -747,6 +747,16 @@ const STOCK_TYPES = [
 ];
 const STOCK_TYPE_KEYS = STOCK_TYPES.map(t=>t.key);
 const typeMeta = (k) => STOCK_TYPES.find(t=>t.key===k) || STOCK_TYPES[0];
+// доступные типы склада для роли: Механик/Электрик — только инструменты; Повар — без инструментов; остальные — все.
+// (activeMember определён ниже, но объявления функций подняты — на момент рендера всё готово)
+function allowedTypeKeys(){
+  const m = (typeof activeMember==="function") ? activeMember() : null;
+  const role = m && m.role;
+  if(role==="mechanic") return ["tool"];
+  if(role==="cook") return ["product","household"];
+  return STOCK_TYPE_KEYS.slice();
+}
+function visibleStockTypes(){ const a=allowedTypeKeys(); return STOCK_TYPES.filter(t=>a.includes(t.key)); }
 const DEFAULT_CATEGORIES = {
   household: ["Химия","Уборка","Расходники","Прочее"],
   tool: ["Электроинструмент","Ручной инструмент","Крепёж и метизы","Сантехника","Электрика","Спецодежда и СИЗ","Прочее"],
@@ -924,8 +934,14 @@ function logOp(action, detail){
 }
 
 /* ---------- Theme ---------- */
+// тема индивидуальна у пользователя: 'light' | 'dark' | 'system' (по настройке телефона). Хранится локально.
+function themeIsLight(){
+  if(state.theme==="light") return true;
+  if(state.theme==="dark") return false;
+  return !(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);   // system
+}
 function applyTheme(){
-  const light = state.theme==="light";
+  const light = themeIsLight();
   document.documentElement.classList.toggle("light", light);
   document.body.classList.toggle("bg-gray-950", !light);
   document.body.classList.toggle("text-gray-100", !light);
@@ -1155,7 +1171,7 @@ function renderDashboard(){
 
     ${canEditTasks?`<button class="btn btn-primary w-full mt-2" onclick="openTaskEdit()">＋ Задача</button>`:""}
     <div class="grid grid-cols-3 gap-2 mt-2">
-      ${STOCK_TYPES.map(t=>`<button class="btn ${t.key==='product'?'btn-success':(t.key==='household'?'btn-warn':'btn-ghost')}" onclick="openStockEdit(null,'${t.key}')">＋ ${t.short}</button>`).join("")}
+      ${visibleStockTypes().map(t=>`<button class="btn ${t.key==='product'?'btn-success':(t.key==='household'?'btn-warn':'btn-ghost')}" onclick="openStockEdit(null,'${t.key}')">＋ ${t.short}</button>`).join("")}
     </div>
 
     ${showTasks && todayTasks.length?`
@@ -1482,6 +1498,7 @@ const JOURNAL_META = {
 
 function renderStock(){
   const v = document.querySelector('[data-view="stock"]');
+  if(STOCK_TYPE_KEYS.includes(stockTab) && !allowedTypeKeys().includes(stockTab)) stockTab="all";   // роль потеряла доступ к типу
   const modeTabs = `
     <div class="scroll-x flex gap-2">
       <button class="chip ${stockMode==='stock'?'active':''}" data-stockmode="stock">📦 Остатки</button>
@@ -1494,12 +1511,13 @@ function renderStock(){
 
   // список категорий для фильтра в зависимости от tab
   let cats = [];
+  const allowed = allowedTypeKeys();
   if(STOCK_TYPE_KEYS.includes(stockTab)) cats = state.categories[stockTab] || [];
-  else cats = [...new Set(STOCK_TYPE_KEYS.flatMap(k=>state.categories[k]||[]))];
+  else cats = [...new Set(allowed.flatMap(k=>state.categories[k]||[]))];
 
   // подсчёт по категориям для текущего таба (только позиции в наличии)
   const countByCat = {};
-  const base = state.stock.filter(s=> stockTab==="all" ? true : s.type===stockTab);
+  const base = state.stock.filter(s=> stockTab==="all" ? allowed.includes(s.type) : s.type===stockTab);
   base.forEach(s=>{ if(s.category && inStock(s)){ countByCat[s.category]=(countByCat[s.category]||0)+1; } });
   // счётчики сроков должны совпадать с видимым списком: учитываем категорию и поиск
   const q = stockSearch.trim().toLowerCase();
@@ -1511,12 +1529,12 @@ function renderStock(){
   v.innerHTML = `
     ${modeTabs}
     <div class="grid grid-cols-3 gap-2">
-      ${STOCK_TYPES.map(t=>`<button class="btn btn-ghost" onclick="openStockEdit(null,'${t.key}')">＋ ${t.addLabel}</button>`).join("")}
+      ${visibleStockTypes().map(t=>`<button class="btn btn-ghost" onclick="openStockEdit(null,'${t.key}')">＋ ${t.addLabel}</button>`).join("")}
     </div>
 
     <div class="scroll-x flex gap-2">
-      <button class="chip ${stockTab==='all'?'active':''}" data-stocktab="all">Все (${state.stock.filter(inStock).length})</button>
-      ${STOCK_TYPES.map(t=>`<button class="chip ${stockTab===t.key?'active':''}" data-stocktab="${t.key}">${t.icon} ${t.short} (${state.stock.filter(s=>s.type===t.key&&inStock(s)).length})</button>`).join("")}
+      <button class="chip ${stockTab==='all'?'active':''}" data-stocktab="all">Все (${state.stock.filter(s=>inStock(s)&&allowed.includes(s.type)).length})</button>
+      ${visibleStockTypes().map(t=>`<button class="chip ${stockTab===t.key?'active':''}" data-stocktab="${t.key}">${t.icon} ${t.short} (${state.stock.filter(s=>s.type===t.key&&inStock(s)).length})</button>`).join("")}
     </div>
 
     <div class="scroll-x flex gap-2">
@@ -1554,6 +1572,7 @@ function renderStockList(){
   if(!box) return;
   let list = state.stock.slice();
   if(STOCK_TYPE_KEYS.includes(stockTab)) list = list.filter(s=>s.type===stockTab);
+  else list = list.filter(s=>allowedTypeKeys().includes(s.type));   // «Все» = только типы, доступные роли
   if(stockCat) list = list.filter(s=>s.category===stockCat);
   if(stockExpiryFilter==="expired") list = list.filter(s=>inStock(s) && s.expiry && daysLeft(s.expiry)<0);
   else if(stockExpiryFilter==="soon") list = list.filter(s=>{ if(!inStock(s)) return false; const d=s.expiry?daysLeft(s.expiry):null; return d!==null && d>=0 && d<=14; });
@@ -2235,6 +2254,7 @@ async function quickAdjust(id, sign){
 const UNITS = ["шт","кг","г","л","мл","упаковка","пачка","рулон","метр","кор","уп","меш"];
 
 function openStockEdit(id, typeDefault){
+  if(!id && typeDefault && !allowedTypeKeys().includes(typeDefault)) typeDefault = allowedTypeKeys()[0] || "product";   // роль не может создавать недоступный тип
   const it = id ? state.stock.find(s=>s.id===id)
                : { id:"", type:typeDefault||"product", name:"", qty:"", unit:"шт", minStock:"", expiry:"", location:"", category:"", note:"" };
   if(id && !it){ toast("Позиция изменилась на другом устройстве"); render(); return; }   // удалена/синкнута, пока вкладка была открыта → не падаем на it.type
@@ -2652,7 +2672,7 @@ function openLocationsEdit(){
   openSheet(`
     <div class="font-bold text-xl mb-3">📍 Места хранения</div>
     <div class="flex gap-2 mb-3" id="locTabs">
-      ${STOCK_TYPES.map(t=>`<button class="chip ${type===t.key?'active':''}" data-loctab="${t.key}">${t.icon} ${t.label}</button>`).join("")}
+      ${visibleStockTypes().map(t=>`<button class="chip ${type===t.key?'active':''}" data-loctab="${t.key}">${t.icon} ${t.label}</button>`).join("")}
     </div>
     <div class="space-y-1 max-h-72 overflow-y-auto" id="locList">
       ${list.length===0
@@ -2708,7 +2728,7 @@ function openCategoriesEdit(){
   openSheet(`
     <div class="font-bold text-xl mb-3">Категории</div>
     <div class="space-y-3">
-      ${STOCK_TYPES.map((t,i)=>`
+      ${visibleStockTypes().map((t,i)=>`
         ${i>0?'<div class="divider"></div>':''}
         <div>
           <div class="text-sm opacity-70 mb-1">${t.icon} ${t.short} (${(state.categories[t.key]||[]).length})</div>
@@ -2891,10 +2911,10 @@ function renderMore(){
       <div class="text-xs opacity-70 mt-2">${restricted?"«Экспорт базы» сохраняет вашу базу в файл. Сохраняйте регулярно!":"«Экспорт базы» — только текущая. «Все базы» — один файл со всеми базами (главный бэкап). Импорт принимает оба формата. Сохраняйте регулярно — пригодится, если телефон сбросится!"}</div>
     </div>
 
-    ${(profiles.list.length>1 && !restricted) ? `<div class="card">
+    ${(profiles.list.length>1 && !restricted && (cloud.profile && cloud.profile.is_admin)) ? `<div class="card">
       <div class="font-bold mb-2">🔗 Общий каталог</div>
       <button class="btn btn-ghost w-full" onclick="mergeCatalogs()">Объединить наименования всех баз</button>
-      <div class="text-xs opacity-70 mt-2">Сводит список наименований одинаковым во всех базах: добавляет недостающие позиции с нулём. Остатки, места и сроки у каждой базы остаются свои.</div>
+      <div class="text-xs opacity-70 mt-2">Сводит список наименований одинаковым во всех базах: добавляет недостающие позиции с нулём. Остатки, места и сроки у каждой базы остаются свои. Раздел только для владельца.</div>
     </div>` : ""}
 
     <div class="card">
@@ -2921,7 +2941,12 @@ function renderMore(){
 
     <div class="card">
       <div class="font-bold mb-2">⚙️ Настройки</div>
-      <button class="btn btn-ghost w-full mb-2" onclick="toggleTheme()">Тема: ${state.theme==="light"?"Светлая":"Тёмная"}</button>
+      <div class="text-sm opacity-70 mb-1">Тема оформления</div>
+      <div class="grid grid-cols-3 gap-2 mb-2">
+        <button class="btn ${state.theme==="light"?"btn-primary":"btn-ghost"}" onclick="setTheme('light')">☀️ Светлая</button>
+        <button class="btn ${state.theme==="dark"?"btn-primary":"btn-ghost"}" onclick="setTheme('dark')">🌙 Тёмная</button>
+        <button class="btn ${state.theme==="system"?"btn-primary":"btn-ghost"}" onclick="setTheme('system')">📱 Как в телефоне</button>
+      </div>
       ${activeCloudId()
         ? `<button class="btn btn-ghost w-full" onclick="wipeAll()">🔄 Обновить базу из облака</button>
            <div class="text-xs opacity-70 mt-2">Заменяет локальную копию свежими данными из облака. Данные в облаке не удаляются.</div>`
@@ -2929,7 +2954,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v147 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v148 · тестовый канал</div>
   `;
 }
 
@@ -3114,7 +3139,7 @@ function exportXlsxFiltered(){
   const sel = (id,label,opts)=>`<label class="block text-sm mb-1 opacity-80">${label}</label><select id="${id}" class="input mb-3">${opts}</select>`;
   openSheet(`
     <div class="font-bold text-lg mb-3">📊 Выгрузка в Excel по фильтрам</div>
-    ${sel("_fType","Тип склада", opt("all","Все")+STOCK_TYPES.map(t=>opt(t.key,t.label)).join(""))}
+    ${sel("_fType","Тип склада", opt("all","Все")+visibleStockTypes().map(t=>opt(t.key,t.label)).join(""))}
     ${sel("_fLoc","Место хранения", opt("all","Все места")+locs.map(l=>opt(l,l)).join(""))}
     <label class="block text-sm mb-1 opacity-80">Категории (можно несколько; пусто = все)</label>
     <div class="flex flex-wrap gap-2 mb-3" id="_fCats">${cats.length?cats.map(c=>`<button class="chip" data-cat="${esc(c)}" onclick="${CHIP_TOGGLE}">${esc(c)}</button>`).join(""):'<span class="text-xs opacity-60">нет категорий</span>'}</div>
@@ -3523,7 +3548,11 @@ async function wipeAll(){
   saveState(); applyTheme();
   if(reseed) location.reload(); else nav("dashboard");
 }
-function toggleTheme(){ state.theme = state.theme==="light"?"dark":"light"; saveState(); applyTheme(); render(); }
+// циклим: system → light → dark → system (кнопка в шапке); полный выбор — в Настройках.
+function toggleTheme(){ const order=["system","light","dark"]; const i=order.indexOf(state.theme); state.theme = order[(i+1)%order.length]; saveState(); applyTheme(); render(); }
+function setTheme(t){ state.theme=t; saveState(); applyTheme(); render(); }
+// когда выбран режим «Системная» — реагируем на смену темы телефона на лету
+try{ if(window.matchMedia){ window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", ()=>{ if(state.theme==="system") applyTheme(); }); } }catch(_){}
 
 /* ---------- Уведомления (срок годности и т.п.) ---------- */
 function notify(title, body){
@@ -3687,10 +3716,12 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   openLocationsEdit,addLocation,renameLocation,deleteLocation,
   openProfilesSheet,switchProfile,addProfile,renameProfile,deleteProfile,exportAllProfiles,
   toggleCheck,addCheck,resetChecklist,
-  exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,clearLog,wipeAll,toggleTheme,
+  exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,clearLog,wipeAll,toggleTheme,setTheme,
   openMove,doMove,
   openMembersSheet,openMemberRole,setMemberRole,memberRotate,memberRemove,openAddMember,openResetPwd,
   openShift,openHandover,doHandover,
+  openOrgRolesSheet,openAddOrgMember,doAddOrgMember,_omToggleParty,openAssignExisting,_aeToggleParty,doAssignExisting,orgRoleRemove,
+  openAllBasesSheet,exportAllBasesXlsx,exportOneBaseXlsx,
   closeSheet,writeoffExpired,openExpiredView,dismissOnboarding,
   cloudLoginPrompt,cloudLogout,cloudSyncNow,requestPasswordReset});
 
@@ -3874,12 +3905,12 @@ function ensureCanEdit(){ if(!canEditStock()){ toast(isOffShift()?"Вы снят
 const MEMBER_ROLES = [
   { key:"worker",       label:"Хозрабочий",        rank:1, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
   { key:"cook",         label:"Повар",             rank:1, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
-  { key:"mechanic",     label:"Механик",           rank:1, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
+  { key:"mechanic",     label:"Механик/Электрик",  rank:1, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:false} },
   { key:"site_manager", label:"Начальник участка", rank:2, perm:{can_view_stock:true, can_edit_stock:true,  can_view_tasks:true,  can_edit_tasks:true,  can_manage:true } },
 ];
 // полная лестница рангов (в т.ч. территориальные/глобальные роли — для подписей и вычисления своего ранга)
 const ROLE_RANK = { owner:6, general_director:5, director:4, party_chief:3, site_manager:2, worker:1, cook:1, mechanic:1, accounting:1 };
-const ROLE_LABELS = { owner:"Владелец", general_director:"Ген. директор", director:"Директор", party_chief:"Начальник партии", site_manager:"Начальник участка", worker:"Хозрабочий", cook:"Повар", mechanic:"Механик", accounting:"Бухгалтерия", custom:"Особая" };
+const ROLE_LABELS = { owner:"Владелец", general_director:"Ген. директор", director:"Директор", party_chief:"Начальник партии", site_manager:"Начальник участка", worker:"Хозрабочий", cook:"Повар", mechanic:"Механик/Электрик", accounting:"Бухгалтерия", custom:"Особая" };
 const rankOf = (k)=> ROLE_RANK[k] || 0;
 const roleLabel = (k)=> (MEMBER_ROLES.find(r=>r.key===k)||{}).label || ROLE_LABELS[k] || k || "—";
 // ранг текущего пользователя: владелец=6, иначе макс по глобальным/партийным (org_roles) и по управляемым базам.
