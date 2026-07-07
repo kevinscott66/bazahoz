@@ -185,7 +185,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v148 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v149 · БЕТА</div>
   </div>
 </div>
 
@@ -2954,7 +2954,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v148 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v149 · тестовый канал</div>
   `;
 }
 
@@ -4371,26 +4371,41 @@ async function openAllBasesSheet(){
       <button class="btn btn-ghost flex-1" data-close>Закрыть</button>
     </div>`);
 }
+// бухгалтерский лист: наличие/количество/срок/мин-остаток БЕЗ столбца «Склады»/место. Несколько сроков из
+// партий — через «;». Отдельный лист на каждую базу (разделение по базам, не монолит одним листом).
+const _ACCT_COLS=[{wch:38},{wch:20},{wch:12},{wch:10},{wch:12},{wch:24}];
+function _rowExpiry(r){
+  const b=Array.isArray(r.batches)?r.batches:[];
+  const ex = b.length ? [...new Set(b.map(x=>(x&&x.expiry)||"").filter(Boolean))].sort() : (r.expiry?[r.expiry]:[]);
+  return ex.map(fmtDate).join("; ");
+}
+function _acctRow(r){ return {
+  "Наименование": r.name, "Категория": r.category||"", "Количество": _rowQty(r),
+  "Ед. изм.": r.unit||"", "Мин. остаток": (r.min_stock==null?"":Number(r.min_stock)), "Срок годности": _rowExpiry(r) }; }
+function _sheetName(name, used){
+  let s = String(name||"База").replace(/[\[\]\*\?\/\\:]/g,"").trim().slice(0,28) || "База";
+  let bs=s, i=2; while(used.has(s.toLowerCase())){ s=bs.slice(0,25)+" "+i; i++; } used.add(s.toLowerCase()); return s;
+}
 async function exportAllBasesXlsx(){
   if(!_allBasesCache){ toast("Сначала откройте сводку"); return; }
   toast("Подготовка файла…");
   let XLSX; try{ XLSX=await ensureXlsx(); }catch(e){ toast("Не удалось сделать Excel"); return; }
-  const rows=[];
-  _allBasesCache.forEach(b=>{ (b.rows||[]).forEach(r=>{ rows.push({
-    "База": b.name, "Тип": _rawTypeLabel(r.type), "Категория": r.category||"", "Наименование": r.name,
-    "Количество": _rowQty(r), "Ед. изм.": r.unit||"", "Мин. запас": (r.min_stock==null?"":Number(r.min_stock)),
-    "Срок годности": r.expiry||"", "Место": _rowLoc(r), "Примечание": r.note||"" }); }); });
-  const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"База":"","Наименование":""}]));
-  ws["!cols"]=[{wch:18},{wch:10},{wch:20},{wch:38},{wch:10},{wch:10},{wch:10},{wch:14},{wch:16},{wch:24}];
-  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Все базы");
-  XLSX.writeFile(wb, `vahtahoz-все-базы-${todayStr()}.xlsx`);
+  const wb=XLSX.utils.book_new(); const used=new Set();
+  _allBasesCache.forEach(b=>{
+    if(b.rows===null) return;   // недоступную базу пропускаем
+    const rows=(b.rows||[]).map(_acctRow);
+    const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}])); ws["!cols"]=_ACCT_COLS;
+    XLSX.utils.book_append_sheet(wb, ws, _sheetName(b.name, used));   // лист на базу
+  });
+  if(!wb.SheetNames.length){ XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Нет данных"]]), "Пусто"); }
+  XLSX.writeFile(wb, `vahtahoz-по-базам-${todayStr()}.xlsx`);
 }
 async function exportOneBaseXlsx(baseId){
   const b=(_allBasesCache||[]).find(x=>x.id===baseId); if(!b||!b.rows){ toast("Нет данных по базе"); return; }
   let XLSX; try{ XLSX=await ensureXlsx(); }catch(e){ toast("Не удалось сделать Excel"); return; }
-  const rows=b.rows.map(r=>({ "Тип":_rawTypeLabel(r.type), "Категория":r.category||"", "Наименование":r.name, "Количество":_rowQty(r), "Ед. изм.":r.unit||"", "Мин. запас":(r.min_stock==null?"":Number(r.min_stock)), "Срок годности":r.expiry||"", "Место":_rowLoc(r), "Примечание":r.note||"" }));
-  const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}]));
-  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Остатки");
+  const rows=b.rows.map(_acctRow);
+  const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}])); ws["!cols"]=_ACCT_COLS;
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, _sheetName(b.name, new Set()));
   XLSX.writeFile(wb, `vahtahoz-${_fileSafe(b.name)}-${todayStr()}.xlsx`);
 }
 const cloudDirtyKey = (cid)=>`vahtahoz_dirty_${cid}`;
