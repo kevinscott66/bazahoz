@@ -121,7 +121,7 @@
   #loginGate{ color:#f1f5f9; }
   .light #loginGate .btn-ghost{ background:rgba(255,255,255,.08); color:#f1f5f9; }
   /* косметика: тап-зона у раскрывающихся секций (details/summary) — палец попадает уверенно */
-  details > summary{ padding:8px 0; min-height:32px; display:flex; align-items:center; }
+  details > summary{ padding:8px 0; min-height:44px; display:flex; align-items:center; }   /* тап-таргет ≥44px (WCAG) */
 </style>
 <!-- Supabase клиент (self-hosted, тот же origin → кешируется SW, работает офлайн после 1й загрузки) -->
 <script src="./supabase.js"></script>
@@ -194,7 +194,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v160</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v161</div>
   </div>
 </div>
 
@@ -3012,7 +3012,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v160</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v161</div>
   `;
 }
 
@@ -4769,6 +4769,15 @@ async function cloudLogin(email, password){
   // «Вход…» висит до общего 55-секундного таймаута. Поэтому каждую — со своим таймаутом.
   cloud.session = { access_token:d.access_token, refresh_token:d.refresh_token, user:d.user };
   saveCloudSess(d);   // СИНХРОННО: переживёт reload от cloudAutoLink (один вход, не повторный)
+  // Общий вахтовый телефон: если облачными базами на этом устройстве владел ДРУГОЙ человек (предыдущий не вышел
+  // кнопкой, его сессия истекла → показался гейт, входит новый) — вычищаем чужие облачные профили/склады ДО загрузки,
+  // иначе новый увидит/экспортирует чужой склад из localStorage (до RLS). Тот же uid (сам переистёк, вошёл собой) —
+  // НЕ трогаем (офлайн-правки целы). Сессия уже сохранена → reload даёт cloudInit восстановить НОВОГО начисто.
+  try{
+    const prevOwner = localStorage.getItem(NS+"vahtahoz_cloud_owner");
+    localStorage.setItem(NS+"vahtahoz_cloud_owner", d.user.id);
+    if(prevOwner && prevOwner !== d.user.id && profiles.list.some(p=>p.cloudId)){ purgeCloudProfiles(); location.reload(); return; }
+  }catch(_){}
   // setSession (для прав и realtime) — в фоне, не держим кнопку (промис нигде не ждём)
   Promise.race([
     sb.auth.setSession({ access_token:d.access_token, refresh_token:d.refresh_token }).catch(e=>console.warn("setSession", e)),   // свой catch: поздний реджект не станет unhandled
@@ -4859,6 +4868,23 @@ async function cloudOnLogin(session, attempt){
     }
   }
 }
+// Удаляет с устройства ЛОКАЛЬНЫЕ профили/слоты/подписи ОБЛАЧНЫХ баз (их данные привязаны к аккаунту).
+// Нужна и при выходе, и при входе ДРУГИМ человеком на общем вахтовом телефоне: иначе рендер/экспорт идёт
+// из STORE_KEY/слотов ДО RLS → новый увидел бы чужой склад. Тот же uid НЕ трогаем (не теряем офлайн-правки).
+function purgeCloudProfiles(){
+  try{
+    const cloudProfs = profiles.list.filter(p=>p.cloudId);
+    if(!cloudProfs.length) return;
+    const activeWasCloud = cloudProfs.some(p=>p.id===profiles.activeId);
+    cloudProfs.forEach(p=>{ try{ localStorage.removeItem(slotKey(p.id)); clearBaseSyncKeys(p.cloudId); }catch(_){} });
+    let locals = profiles.list.filter(p=>!p.cloudId);
+    if(!locals.length){ locals = [{ id: uid(), name: "База 1" }]; }
+    const newActive = activeWasCloud ? locals[0].id : profiles.activeId;
+    if(activeWasCloud){ const raw = localStorage.getItem(slotKey(newActive)); localStorage.setItem(STORE_KEY, raw || JSON.stringify(freshProfileState())); }
+    profiles = { activeId: newActive, list: locals };
+    saveProfiles(profiles);
+  }catch(_){}
+}
 async function cloudLogout(){
   try{ if(cloud.channel) await cloud.sb.removeChannel(cloud.channel); }catch(e){}
   try{ if(cloud.tasksChannel) await cloud.sb.removeChannel(cloud.tasksChannel); }catch(e){}   // снимаем и канал задач
@@ -4874,19 +4900,7 @@ async function cloudLogout(){
   // ОБЛАЧНЫЕ БАЗЫ привязаны к аккаунту: при выходе удаляем их локальные профили и КЭШ СКЛАДА с устройства —
   // иначе следующий вошедший (другой человек на общем телефоне) увидит/откроет чужую базу и её данные из
   // localStorage (рендер идёт из STORE_KEY/слотов, до RLS). Симметрично очистке задач выше.
-  try{
-    const cloudProfs = profiles.list.filter(p=>p.cloudId);
-    if(cloudProfs.length){
-      const activeWasCloud = cloudProfs.some(p=>p.id===profiles.activeId);
-      cloudProfs.forEach(p=>{ try{ localStorage.removeItem(slotKey(p.id)); clearBaseSyncKeys(p.cloudId); }catch(_){} });
-      let locals = profiles.list.filter(p=>!p.cloudId);
-      if(!locals.length){ locals = [{ id: uid(), name: "База 1" }]; }
-      const newActive = activeWasCloud ? locals[0].id : profiles.activeId;
-      if(activeWasCloud){ const raw = localStorage.getItem(slotKey(newActive)); localStorage.setItem(STORE_KEY, raw || JSON.stringify(freshProfileState())); }
-      profiles = { activeId: newActive, list: locals };
-      saveProfiles(profiles);
-    }
-  }catch(_){}
+  purgeCloudProfiles();
   clearCloudSess();   // чистим своё хранилище сессии, иначе при запуске восстановит вход
   // снимаем флаг «без облака» — при следующем запуске снова покажется вход (нет сессии → гейт)
   try{ localStorage.removeItem(NS+"vahtahoz_login_skipped"); }catch(e){}
@@ -4957,7 +4971,15 @@ async function cloudActivate(cid, attempt){
   attempt = attempt||0;
   if(!cid || !cloud.ready) return;
   if(!cloudOnline()){ setSyncStatus("offline"); return; }
-  if(isOffShift(cid)){ setSyncStatus("error","Вы сейчас не на смене на этой базе — изменения в общую базу не уйдут"); return; }   // нет доступа по RLS → не пушим/пуллим (без «REST 403»)
+  if(isOffShift(cid)){   // нет доступа по RLS → не пушим/пуллим (без «REST 403»)
+    // вахта: если есть НЕсинхронизированные правки (копил офлайн, а на сервере сняли со смены) — явно предупреждаем
+    // о риске потери и советуем экспорт, а не молчим. RLS всё равно не примет его записи (403).
+    const hasDirty = !!localStorage.getItem(cloudDirtyKey(cid));
+    setSyncStatus("error", hasDirty
+      ? "Вы сняты со смены. Несохранённые операции НЕ уйдут в общую базу — сделайте экспорт (⚙️ → Экспорт данных) и передайте начальнику"
+      : "Вы сейчас не на смене на этой базе — изменения в общую базу не уйдут");
+    return;
+  }
   if(cloud.busy) return;          // уже идёт синхронизация/диалог конфликта — второй заход НЕ запускаем
   cloud.busy=true;                // ставим ДО await: иначе pull во время открытого диалога конфликта затёр бы локальное
   try{
