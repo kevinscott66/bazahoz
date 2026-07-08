@@ -194,7 +194,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v162</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v161</div>
   </div>
 </div>
 
@@ -218,10 +218,6 @@ if(typeof structuredClone!=="function"){
    ротация refresh-токена в одной копии роняла сессию другой («refresh_token_not_found» → «вход устарел»).
    На стабильной NS="" (ключи не меняются, данные целы); на бете NS="beta_" (полностью отдельный инстанс). */
 const NS = (location.pathname.indexOf("/beta/") !== -1) ? "beta_" : "";
-// 3-стороннее слияние количества склада при конкурентной правке одной позиции с двух устройств
-// (merged = local + cloud − снимок, CRDT-счётчик). Только для позиций БЕЗ партий (у партийных qty = сумма партий,
-// слепое слияние сломало бы инвариант). ПОКА только на бете — включить в стабильной после теста на двух устройствах.
-const STOCK_MERGE = (NS === "beta_");
 const STORE_KEY = NS+"vahtahoz:v1";
 const JOURNAL_KEYS = ["receipt","issue","writeoff","order"];  // виды журналов движений
 // onclick выбора чипа: снять active со всех соседних чипов и подсветить нажатый (был продублирован 7×)
@@ -289,44 +285,23 @@ function loadState(){
     return merged;
   }catch(e){ return structuredClone(defaultState); }
 }
-let _quotaBlocked=false;   // показали ли блокирующее предупреждение о переполнении памяти (чтобы не спамить каждым saveState)
-function _quotaBlock(){
-  if(_quotaBlocked) return; _quotaBlocked=true;
-  try{ toast("⛔ Память телефона переполнена — последние записи НЕ сохранены!"); }catch(_){}
-  // блокирующий модал с предложением экспорта — через setTimeout, чтобы не мешать текущему кадру render/сохранения
-  setTimeout(async()=>{
-    try{
-      const go = await confirmSheet("Память телефона переполнена — последние операции могут НЕ сохраниться при перезагрузке.\n\nСделайте резервную копию (экспорт), затем удалите ненужные базы или очистите старые журналы.", { yes:"Экспорт данных", no:"Позже", title:"⛔ Память переполнена" });
-      if(go && typeof exportData==="function") exportData();
-    }catch(_){}
-  }, 50);
-}
 function saveState(){
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); _quotaBlocked=false; }   // успех — снимаем флаг переполнения (память освободилась)
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
   catch(e){
     if(e && (e.name==="QuotaExceededError" || e.code===22)){
-      // Уровень 1: режем лог и журналы до 2000 (архив есть в облаке при синке; новые — в начале)
       if(Array.isArray(state.log) && state.log.length>200) state.log = state.log.slice(0,200);
       if(state.journals){
         for(const k of JOURNAL_KEYS){
-          if(Array.isArray(state.journals[k]) && state.journals[k].length>2000) state.journals[k] = state.journals[k].slice(0,2000);
+          if(Array.isArray(state.journals[k]) && state.journals[k].length>2000)
+            state.journals[k] = state.journals[k].slice(0,2000);   // кап поднят до 2000: помесячный архив хранит историю (~год+); новые — в начале (unshift)
         }
       }
       try {
-        localStorage.setItem(STORE_KEY, JSON.stringify(state)); _quotaBlocked=false;
+        localStorage.setItem(STORE_KEY, JSON.stringify(state));
         try{ toast("Память телефона заполнена — старые записи журнала удалены"); }catch(_){}
       } catch(e2){
-        // Уровень 2: режем журналы ЖЁСТКО (до 500) и лог почти полностью — только бы сохранить текущие остатки
-        if(state.journals){ for(const k of JOURNAL_KEYS){ if(Array.isArray(state.journals[k]) && state.journals[k].length>500) state.journals[k]=state.journals[k].slice(0,500); } }
-        if(Array.isArray(state.log) && state.log.length>50) state.log=state.log.slice(0,50);
-        try {
-          localStorage.setItem(STORE_KEY, JSON.stringify(state)); _quotaBlocked=false;
-          try{ toast("Память почти заполнена — часть старых записей удалена. Сделайте экспорт"); }catch(_){}
-        } catch(e3){
-          // Последняя операция НЕ легла на диск → потеряется при перезагрузке. НЕ молчим — блокирующее предупреждение + экспорт.
-          console.error("saveState escalated failure:", e3);
-          _quotaBlock();
-        }
+        console.error("saveState retry failed:", e2);
+        try{ toast("Память телефона заполнена — удалите лишние базы или сохраните резервную копию"); }catch(_){}
       }
     } else { console.error("saveState error:", e); }
   }
@@ -846,17 +821,7 @@ function ensureTomb(){
   if(!Array.isArray(state.delJr)) state.delJr=[];   // надгробия ЯВНО удалённых журнальных записей (id) — чтобы удаление доехало до облака и не воскресало pull-ом
 }
 // пометить журнальную запись удалённой (append-only облако удаляет только помеченные — усечение квоты надгробий НЕ ставит)
-// Кап — АВАРИЙНЫЙ клапан от неограниченного роста (высокий: доставленные надгробия снимаются на синке, см. dropDeliveredTombstones,
-// поэтому в норме delJr держит лишь НЕдоставленные — их дропать нельзя, иначе удалённая запись воскреснет на pull).
-function tombJr(id){ if(!id) return; ensureTomb(); if(!state.delJr.includes(id)){ state.delJr.push(id); if(state.delJr.length>12000) state.delJr=state.delJr.slice(-10000); } }
-// после ПОДТВЕРЖДЁННОГО удаления из облака надгробие больше не нужно (запись там уже мертва и на pull не придёт) —
-// убираем из delJr, чтобы он не рос и слепой кап не выбросил ЕЩЁ НЕ доставленные надгробия.
-function dropDeliveredTombstones(ids){
-  if(!Array.isArray(state.delJr) || !ids || !ids.length) return;
-  const done=new Set(ids); const before=state.delJr.length;
-  state.delJr = state.delJr.filter(id=>!done.has(id));
-  if(state.delJr.length!==before){ const _w=cloud.applying; cloud.applying=true; try{ saveState(); }finally{ cloud.applying=_w; } }
-}
+function tombJr(id){ if(!id) return; ensureTomb(); if(!state.delJr.includes(id)){ state.delJr.push(id); if(state.delJr.length>3000) state.delJr=state.delJr.slice(-2000); } }
 function tombAdd(map,type,name){ ensureTomb(); const a=map[type]; if(name && !a.includes(name)) a.push(name); }      // удалили имя → в надгробия
 function tombRevive(map,type,name){ ensureTomb(); const i=(map[type]||[]).indexOf(name); if(i>=0) map[type].splice(i,1); } // снова добавили/переименовали в это имя → снимаем надгробие
 /* state.locations — пользовательские места хранения. При первом запуске сидим из дефолтов.
@@ -1690,23 +1655,10 @@ function journalMonths(){   // все месяцы с записями по вс
 async function exportJournalsMonth(ym){
   toast("Подготовка файла…");
   let XLSX; try{ XLSX=await ensureXlsx(); }catch(e){ toast("Не удалось сделать Excel — сохраняем в простом виде"); return; }
-  // Источник: ОБЛАКО (полный архив за месяц), если онлайн и база облачная — локально журнал усечён до 500 на вид,
-  // а в облаке архив полный. Фолбэк на локальное при офлайне/сбое/локальной базе.
-  let byKind = null; const cid = activeCloudId();
-  if(cid && cloud.ready && cloudOnline() && cloud.session && cloud.session.access_token){
-    try{
-      const rows = await cloudRest(`journal_entries?select=kind,data&base_id=eq.${encodeURIComponent(cid)}&data->>ts=like.${encodeURIComponent(ym)}*`, cloud.session.access_token);
-      if(Array.isArray(rows)){
-        byKind={}; for(const k of JOURNAL_KEYS) byKind[k]=[];
-        rows.forEach(r=>{ if(r && r.data && byKind[r.kind]) byKind[r.kind].push(r.data); });
-      }
-    }catch(e){ console.warn("export month cloud → фолбэк на локальное", e); byKind=null; }
-  }
   const wb=XLSX.utils.book_new();
   for(const k of JOURNAL_KEYS){
     const meta=JOURNAL_META[k];
-    const src = byKind ? byKind[k] : (state.journals[k]||[]);
-    const rows=(src||[]).filter(op=>monthKeyOf(op.ts)===ym).sort((a,b)=>(a.ts||"").localeCompare(b.ts||"")).map(op=>{
+    const rows=(state.journals[k]||[]).filter(op=>monthKeyOf(op.ts)===ym).sort((a,b)=>(a.ts||"").localeCompare(b.ts||"")).map(op=>{
       const row={ "Дата": op.ts?new Date(op.ts).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"}):"",
         "Наименование": op.productName||"", "Количество": roundQty(op.qty||0), "Ед. изм.": op.unit||"",
         "Место": op.batchLocation||"", "Срок": op.batchExpiry?fmtDate(op.batchExpiry):"" };
@@ -3060,7 +3012,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v162</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v161</div>
   `;
 }
 
@@ -5063,7 +5015,7 @@ async function cloudActivate(cid, attempt){
         [ { label:"Оставить общую базу бригады (данные с телефона сохраним копией)", value:"cloud", color:"btn-primary" },
           { label:"Отправить данные с телефона (станут общими для бригады)", value:"local", color:"btn-ghost" } ]);
       if(choice==="local"){
-        saveStockSig(cid,{}); saveSyncSig(cid,"jr",{});   // локальное — источник: полная выгрузка поверх облака
+        saveSyncSig(cid,"stock",{}); saveSyncSig(cid,"jr",{});   // локальное — источник: полная выгрузка поверх облака
         try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){}   // dirty ДО push: при сбое выгрузки pull не затрёт выбранное юзером локальное (как в ветке ниже)
         await cloudPushNow();
         return;
@@ -5086,7 +5038,7 @@ async function cloudActivate(cid, attempt){
       // локальное — источник (первый раз или были оффлайн-правки).
       // dirty снимает САМ cloudPushNow и ТОЛЬКО при успехе — здесь снимать нельзя,
       // иначе при сбое выгрузки маркер «не синхронизировано» потеряется и pull затрёт правки.
-      if(cloudEmpty){ saveStockSig(cid,{}); saveSyncSig(cid,"jr",{}); try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){} }   // облако пусто → ПОЛНАЯ выгрузка; dirty ДО push: при сбое сети маркер «не синхронизировано» не потеряется (push повторится)
+      if(cloudEmpty){ saveSyncSig(cid,"stock",{}); saveSyncSig(cid,"jr",{}); try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){} }   // облако пусто → ПОЛНАЯ выгрузка; dirty ДО push: при сбое сети маркер «не синхронизировано» не потеряется (push повторится)
       await cloudPushNow();
     } else {
       await cloudPull(cid);
@@ -5157,7 +5109,7 @@ async function cloudPull(cid){
     // снимок подписей = только что загруженное из облака → следующий push пойдёт ДЕЛЬТОЙ (не вся база)
     try{
       const stSig={}; state.stock.forEach(s=>{ stSig[s.id]=_sigOf(stockToRow(s,cid)); });
-      saveStockSig(cid,stSig);
+      saveSyncSig(cid,"stock",stSig);
       const jSig={}; for(const k of JOURNAL_KEYS) for(const op of (state.journals[k]||[])) jSig[op.id]=_sigOf({kind:k,data:op});
       saveSyncSig(cid,"jr",jSig);
     }catch(_){}
@@ -5201,38 +5153,6 @@ function _stableStr(o){
 function _sigOf(obj){ const s=_stableStr(obj); let h1=0x811c9dc5, h2=0; for(let i=0;i<s.length;i++){ const c=s.charCodeAt(i); h1=(h1^c)>>>0; h1=Math.imul(h1,0x01000193)>>>0; h2=(h2*131+c)|0; } return h1.toString(36)+h2.toString(36)+":"+s.length; }
 function loadSyncSig(cid, kind){ try{ return JSON.parse(localStorage.getItem(`${NS}vahtahoz_sig_${kind}_${cid}`)||"{}"); }catch(_){ return {}; } }
 function saveSyncSig(cid, kind, map){ try{ localStorage.setItem(`${NS}vahtahoz_sig_${kind}_${cid}`, JSON.stringify(map)); }catch(_){} }
-// счётчики позиций склада ПО ТИПАМ — чтобы suspectWipe работал и для ограниченных ролей (Механик/Повар):
-// сравниваем с ожиданием ПО ДОСТУПНЫМ типам (per-type корректно даже если снимок от прежней, более широкой роли).
-function stockTypeCounts(){ const c={}; for(const k of STOCK_TYPE_KEYS) c[k]=0; for(const s of (state.stock||[])){ if(c[s.type]!=null) c[s.type]++; } return c; }
-// снимок КОЛИЧЕСТВ по позициям (id→qty) на момент синка — база для 3-стороннего слияния (STOCK_MERGE).
-function stockValsSnap(){ const v={}; for(const s of (state.stock||[])) v[s.id]=Number(s.qty)||0; return v; }
-function saveStockSig(cid, map){ saveSyncSig(cid,"stock",map); saveSyncSig(cid,"stockCounts", stockTypeCounts()); saveSyncSig(cid,"stockVals", stockValsSnap()); }
-// 3-стороннее слияние количества ПЕРЕД выгрузкой изменённых позиций: правит upsert-строки, curSig и локальный
-// state.stock так, чтобы конкурентные списания с двух устройств складывались (merged = local + cloud − снимок).
-// Только позиции БЕЗ партий; партийные при расхождении не трогаем (qty=Σпартий) — предупреждаем о ручной сверке.
-async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
-  try{
-    const ids = upsert.map(r=>r.id); if(!ids.length) return;
-    const cloudRows = await cloudRest(`stock_items?select=id,qty,batches&base_id=eq.${encodeURIComponent(cid)}&id=in.(${ids.map(encodeURIComponent).join(",")})`, tok);
-    if(!Array.isArray(cloudRows) || !cloudRows.length) return;
-    const cloudById={}; cloudRows.forEach(cr=>cloudById[cr.id]=cr);
-    const snap = loadSyncSig(cid,"stockVals");   // {id: qty} на момент последнего синка
-    let localChanged=false, conflictBatched=0;
-    for(const r of upsert){
-      const cr=cloudById[r.id]; if(!cr) continue;                          // в облаке нет — новая позиция
-      const snapQty=Number(snap[r.id]); if(!isFinite(snapQty)) continue;   // нет базы для 3-way
-      const cloudQty=Number(cr.qty)||0;
-      if(cloudQty===snapQty) continue;                                     // облако не менялось с снимка → конфликта нет, local победит
-      const batched = (Array.isArray(r.batches)&&r.batches.length) || (Array.isArray(cr.batches)&&cr.batches.length);
-      if(batched){ conflictBatched++; continue; }                          // партийные не сливаем (инвариант) — предупредим
-      const merged = Math.max(0, roundQty((Number(r.qty)||0) + cloudQty - snapQty));   // 3-way CRDT-счётчик
-      r.qty = merged; curSig[r.id]=_sigOf(r);                              // упсертим merged; снимок = merged (local сойдётся с cloud)
-      const it=state.stock.find(s=>s.id===r.id); if(it && Number(it.qty)!==merged){ it.qty=merged; localChanged=true; }
-    }
-    if(localChanged){ const _w=cloud.applying; cloud.applying=true; try{ saveState(); }finally{ cloud.applying=_w; } try{ render(); }catch(_){} }
-    if(conflictBatched){ try{ toast(`Расхождение остатков по ${conflictBatched} позиц. с партиями — проверьте вручную и при необходимости сверьте экспортом`); }catch(_){} }
-  }catch(e){ console.warn("stock 3-way merge → без слияния (прежнее LWW)", e); }   // при сбое — прежнее поведение, без потери доступности
-}
 // ОБЪЕДИНЕНИЕ настроек (места/категории) с облаком — union списков по каждому типу.
 // Так одновременная выгрузка двух устройств НЕ затирает чужие добавления (последний-победил
 // заменился бы на сложение). Удаление РАСПРОСТРАНЯЕТСЯ через надгробия (deletedLocations/Categories):
@@ -5291,21 +5211,12 @@ async function cloudPushNow(){
       const prevSig = loadSyncSig(cid,"stock");
       const prevCount = Object.keys(prevSig).length;
       // ЗАЩИТА: пустой ИЛИ подозрительно усохший локальный склад НЕ стирает облако.
-      // Если осталось <10% от снимка (а снимок крупный) — это похоже на порчу слота, а не на осознанное
-      // удаление → пропускаем ВСЮ выгрузку склада (cloud цел, восстановится pull-ом).
-      // Для ограниченных ролей (Механик/Повар) сравниваем с ожиданием ПО ДОСТУПНЫМ ТИПАМ (per-type снимок
-      // stockCounts) — корректно даже если снимок от прежней, более широкой роли. Без per-type снимка (первый
-      // запуск после обновления) — прежнее поведение (защита только для полного доступа, без ложных срабатываний).
-      const prevCounts = loadSyncSig(cid,"stockCounts");
-      const haveCounts = prevCounts && Object.keys(prevCounts).length>0;
+      // Если осталось <10% от снимка (а снимок крупный) — это похоже на порчу слота,
+      // а не на осознанное удаление → пропускаем ВСЮ выгрузку склада (cloud цел, восстановится pull-ом).
+      // НО у ограниченной роли (Механик/Электрик, Повар) rows — законно малое подмножество (тип-фильтр),
+      // а снимок может быть от прежней роли (все типы) → suspectWipe ложно сработал бы и блокировал выгрузку.
       const _typeRestricted = _at.length < STOCK_TYPE_KEYS.length;
-      let suspectWipe;
-      if(haveCounts){
-        const expectedAllowed = _at.reduce((s,t)=> s + (Number(prevCounts[t])||0), 0);
-        suspectWipe = expectedAllowed>=20 && rows.length < expectedAllowed*0.1;
-      } else {
-        suspectWipe = !_typeRestricted && prevCount>=20 && rows.length < prevCount*0.1;
-      }
+      const suspectWipe = !_typeRestricted && prevCount>=20 && rows.length < prevCount*0.1;
       if((rows.length===0 || suspectWipe) && prevCount>0){
         if(suspectWipe) _suspectWipe=true;   // помним: при усыхании НЕ снимаем dirty и не говорим «synced»
         console.warn("cloudPush: склад подозрительно мал ("+rows.length+" из "+prevCount+") — выгрузка склада пропущена (защита от порчи)");
@@ -5313,9 +5224,8 @@ async function cloudPushNow(){
         const upsert = rows.filter(r=> curSig[r.id] !== prevSig[r.id]);   // новое/изменённое
         const del = Object.keys(prevSig).filter(id=> !(id in curSig));    // удалённое локально
         if(del.length) await cloudRestDelete("stock_items", del, tok);
-        if(STOCK_MERGE && upsert.length) await mergeStockQtyBeforePush(cid, tok, upsert, curSig);   // 3-way слияние qty (конкурентные списания с 2 устройств)
         if(upsert.length) await cloudRestUpsert("stock_items", upsert, tok, (d,t)=>{ if(t>20) setSyncStatus("syncing",`Выгрузка ${d}/${t}`); });
-        saveStockSig(cid,curSig);   // снимок = текущее (следующий push будет дельтой)
+        saveSyncSig(cid,"stock",curSig);   // снимок = текущее (следующий push будет дельтой)
         // === НАСТРОЙКИ (места/категории) — СВОЯ дельта, НЕ на каждое изменение склада ===
         // Шлём ТОЛЬКО если списки реально менялись (иначе смена количества зря переписывала
         // блоб и могла затереть чужие правки). При выгрузке ОБЪЕДИНЯЕМ с облаком (union) —
@@ -5355,13 +5265,12 @@ async function cloudPushNow(){
       if(!(jrows.length===0 && Object.keys(prevJSig).length>0)){
         const jup = jrows.filter(r=> curJSig[r.id]!==prevJSig[r.id]);
         if(jup.length) await cloudRestUpsert("journal_entries", jup, tok);
-        if(jrToDel.length){ await cloudRestDelete("journal_entries", jrToDel, tok); dropDeliveredTombstones(jrToDel); }
+        if(jrToDel.length) await cloudRestDelete("journal_entries", jrToDel, tok);
         saveSyncSig(cid,"jr",curJSig);
       } else if(jrToDel.length){
         // wipe-защита пропустила выгрузку (журнал локально «опустел»), но ЯВНЫЕ надгробия всё равно
         // доставляем: пользователь удалил последние записи — они должны уйти и из облака.
         await cloudRestDelete("journal_entries", jrToDel, tok);
-        dropDeliveredTombstones(jrToDel);
         const trimmed = { ...prevJSig }; jrToDel.forEach(id=>{ delete trimmed[id]; });
         saveSyncSig(cid,"jr",trimmed);
       }
