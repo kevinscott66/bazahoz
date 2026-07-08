@@ -194,7 +194,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v159</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v160</div>
   </div>
 </div>
 
@@ -3012,7 +3012,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v159</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v160</div>
   `;
 }
 
@@ -3835,7 +3835,7 @@ async function cloudRest(path, token, opts, _retried){
       let perm=false;
       const newTok = await cloudDoRefresh().catch(e=>{ if(e && e.permanent) perm=true; return null; });
       if(newTok) return await cloudRest(path, newTok, opts, true);
-      if(perm){ cloudSessionExpired("Вход устарел — войдите снова"); }   // аккаунт удалён/убран из базы/сменили пароль → не зацикливаемся, просим вход
+      if(perm && cloudOnline()){ cloudSessionExpired("Вход устарел — войдите снова"); }   // разлогин ТОЛЬКО при подтверждённом отказе токена И живой сети (аккаунт удалён/сменили пароль). Офлайн — держим сессию
     }
     if(!r.ok){
       const detail=(await r.text().catch(()=>"")).slice(0,120);
@@ -3879,10 +3879,15 @@ async function cloudRefresh(refresh_token){
     });
     const d = await r.json().catch(()=>({}));
     if(!r.ok || !d.access_token){
-      const e=new Error("Не удалось продлить сессию");
-      // GoTrue ОТВЕТИЛ отказом по токену — не сетевой сбой: токен отозван / аккаунт удалён / пароль сменили → ПОСТОЯННЫЙ сбой.
-      // 429 (rate-limit) и прочее НЕ считаем постоянным — это временное.
-      if(r.status===400 || r.status===401 || r.status===403) e.permanent=true;
+      const e=new Error("Не удалось продлить сессию"); e.status=r.status;
+      // permanent (=единственное основание разлогинить) ТОЛЬКО при НАСТОЯЩЕМ отказе GoTrue по токену:
+      // JSON-тело с кодом ошибки об отозванном/несуществующем refresh-токене. На вахте плохой интернет —
+      // каптив-порталы, прокси, «глушилки», DPI тоже отдают 400/401/403, но HTML/пусто → d без error_code →
+      // это НЕ permanent (сессию НЕ рушим, работаем офлайн, продлимся позже). Ложный permanent = разлогин в
+      // поле, где заново войти почти невозможно. 429/5xx/сетевые — тоже временные.
+      const errStr = String(d.error_code||d.error||d.msg||d.error_description||"").toLowerCase();
+      const genuineTokenReject = !!errStr && /refresh_token|invalid.?grant|invalid.?token|token.?not.?found|revoked|already.?used|user.?not.?found|user.?banned|session.?not.?found|bad_jwt/.test(errStr);
+      if((r.status===400 || r.status===401 || r.status===403) && genuineTokenReject) e.permanent=true;
       throw e;
     }
     return d;
@@ -4572,7 +4577,7 @@ async function cloudInit(){
       }catch(e){
         console.warn("online-reload", e);
         // постоянный отказ токена (пароль сменили/аккаунт удалён) — иначе вечный тупик «ждём сеть» при живой сети
-        if(e && e.permanent) cloudSessionExpired("Вход устарел — войдите снова");
+        if(e && e.permanent && cloudOnline()) cloudSessionExpired("Вход устарел — войдите снова");
       }
       return;
     }
