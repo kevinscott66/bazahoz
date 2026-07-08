@@ -21,19 +21,22 @@
      а не к системной — иначе при «тёмный телефон + светлая тема» дата/иконка календаря светлые на белом */
   :root{ color-scheme: dark; }
   .light{ color-scheme: light; }
+  /* Фирменный акцент — тил-петроль (инженерно-спокойный, не дефолтный синий). Единый бренд с «Почта Разведчик». */
+  :root{ --accent:#2DAEB8; --accent-press:#46C0C9; --accent-weak:rgba(45,174,184,.16); --on-accent:#06282C; }
+  .light{ --accent:#0E7C86; --accent-press:#0A6068; --accent-weak:#E1F0F1; --on-accent:#ffffff; }
   body{ font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif; padding-bottom:env(safe-area-inset-bottom); }
   .safe-top{ padding-top:env(safe-area-inset-top); }
   .safe-bot{ padding-bottom:calc(88px + env(safe-area-inset-bottom)); }
   .btn{ min-height:52px; border-radius:14px; font-weight:600; font-size:17px; display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:0 18px; transition:transform .06s ease, background .15s; user-select:none; }
   .btn:active{ transform:scale(.97); }
-  .btn-primary{ background:#2563eb; color:#fff; }
-  .btn-primary:active{ background:#1d4ed8; }
+  .btn-primary{ background:var(--accent); color:var(--on-accent); }
+  .btn-primary:active{ background:var(--accent-press); }
   .btn-ghost{ background:rgba(255,255,255,.06); color:inherit; }
   .btn-danger{ background:#dc2626; color:#fff; }
   .btn-success{ background:#16a34a; color:#fff; }
   .btn-warn{ background:#d97706; color:#fff; }
   .input{ width:100%; min-height:52px; padding:12px 14px; border-radius:14px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.1); color:inherit; font-size:17px; outline:none; }
-  .input:focus{ border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.15); }
+  .input:focus{ border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-weak); }
   .card{ background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08); border-radius:18px; padding:16px; box-shadow:0 1px 2px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.04); }
   .light .card{ background:#fff; border-color:#e5e7eb; box-shadow:0 1px 3px rgba(0,0,0,.06); }
   .light .btn-ghost{ background:#f3f4f6; }
@@ -41,13 +44,11 @@
   .light .input::placeholder{ color:#6b7280; opacity:1; }   /* дефолтный плейсхолдер ~3.5:1 на белом — поднимаем до AA */
   .chip{ padding:8px 14px; border-radius:999px; font-size:14px; font-weight:600; background:rgba(255,255,255,.06); white-space:nowrap; transition:transform .06s ease, background .15s; }
   .chip:active{ transform:scale(.96); }
-  .chip.active{ background:#2563eb; color:#fff; }
+  .chip.active{ background:var(--accent); color:var(--on-accent); }
   .light .chip{ background:#f3f4f6; color:#111827; }
-  .light .chip.active{ background:#2563eb; color:#fff; }
   .nav-btn{ flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; padding:8px 4px; font-size:11px; color:#9ca3af; }
-  .nav-btn.active{ color:#60a5fa; position:relative; }
+  .nav-btn.active{ color:var(--accent); position:relative; }
   .light .nav-btn{ color:#6b7280; }
-  .light .nav-btn.active{ color:#2563eb; }
   .badge{ font-size:11px; font-weight:700; padding:3px 8px; border-radius:999px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; }
   .badge-red{ background:#dc2626; color:#fff; }
   .badge-yellow{ background:#92400e; color:#fff; }   /* было #b45309 (~4.0:1) → #92400e (~5.9:1) для AA на мелком тексте */
@@ -55,8 +56,27 @@
   .light .badge-green{ background:#15803d; }
   .badge-gray{ background:#374151; color:#e5e7eb; }
   .light .badge-gray{ background:#e5e7eb; color:#374151; }
+  /* Сгруппированные секции экрана «Ещё» (iOS inset-list): секция = UPPERCASE-заголовок + строки на приподнятой поверхности */
+  .set-group{ margin-bottom:22px; }
+  .set-head{ font-size:12px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:#8a8a82; padding:0 6px 8px; }
+  .set-list{ background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08); border-radius:16px; overflow:hidden; }
+  .light .set-list{ background:#fff; border-color:#e5e7eb; box-shadow:0 1px 2px rgba(20,20,18,.05); }
+  .set-row{ display:flex; align-items:center; gap:10px; width:100%; min-height:54px; padding:13px 16px; background:transparent; color:inherit; text-align:left; border:none; border-top:1px solid rgba(255,255,255,.07); font-size:16px; font-weight:500; }
+  .light .set-row{ border-top-color:#ececea; }
+  .set-row:first-child{ border-top:none; }
+  .set-row:active{ background:rgba(255,255,255,.06); }
+  .light .set-row:active{ background:#f4f4f2; }
+  .set-row .sr-t{ flex:1; min-width:0; }
+  .set-row .sr-sub{ font-size:12px; font-weight:400; color:#8a8a82; margin-top:2px; white-space:normal; }
+  .set-row .sr-v{ color:#8a8a82; font-size:14px; white-space:nowrap; }
+  .set-row .sr-ch{ color:#8a8a82; opacity:.5; font-size:20px; line-height:1; flex:none; }
+  .set-row.danger{ color:#f87171; }
+  .light .set-row.danger{ color:#c0362c; }
+  .set-dot{ width:9px; height:9px; border-radius:50%; flex:none; }
+  .prof-hd{ display:flex; align-items:center; gap:12px; padding:4px 6px 18px; }
+  .prof-av{ width:44px; height:44px; border-radius:12px; background:var(--accent); color:var(--on-accent); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:19px; flex:none; }
   .light .badge-gray.opacity-50{ opacity:1; color:#9ca3af; }
-  .sheet{ position:fixed; inset:0; z-index:60; display:none; }
+  .sheet{ position:fixed; inset:0; z-index:100; display:none; }   /* модалка — поверх всего, включая логин-гейт (z-90): чтобы юр-страницы открывались и до входа */
   .sheet.open{ display:flex; }
   .sheet-bg{ position:absolute; inset:0; background:rgba(0,0,0,.6); }
   .sheet-body{ position:relative; margin-top:auto; width:100%; max-width:560px; margin-left:auto; margin-right:auto; background:#0b1220; border-radius:24px 24px 0 0; padding:20px; max-height:92vh; overflow-y:auto; padding-bottom:calc(24px + env(safe-area-inset-bottom)); }
@@ -88,7 +108,7 @@
   .select-none{ user-select:none; -webkit-user-select:none; }
   .break-words{ overflow-wrap:break-word; word-break:break-word; }
   /* видимый фокус только при навигации с клавиатуры — тач/мышь не затрагивает */
-  .btn:focus-visible, .chip:focus-visible, .nav-btn:focus-visible, .input:focus-visible{ outline:2px solid #2563eb; outline-offset:2px; }
+  .btn:focus-visible, .chip:focus-visible, .nav-btn:focus-visible, .input:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
   /* косметика: кнопки в 3-колоночной сетке (типы склада) — компактнее, чтобы подписи не обрезались на узком iPhone */
   .grid-cols-3 > .btn{ padding:0 6px; font-size:15px; gap:4px; min-width:0; }
   @media (max-width:360px){ .grid-cols-3 > .btn{ font-size:13px; padding:0 4px; } }
@@ -193,7 +213,10 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v164 · БЕТА</div>
+    <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
+      <a onclick="openTermsSheet()" style="color:#93c5fd;cursor:pointer">Условия</a> и
+      <a onclick="openPrivacySheet()" style="color:#93c5fd;cursor:pointer">Политику конфиденциальности</a></div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v165 · БЕТА</div>
   </div>
 </div>
 
@@ -2956,113 +2979,148 @@ function resetChecklist(){
 }
 
 /* ---------- More ---------- */
+// цвет статус-точки облака: зелёный=синхронизировано, янтарь=ждёт выгрузки, серый=офлайн/не подключено
+function cloudStatusColor(){
+  if(!activeCloudId()) return "#8a8a82";
+  if(!cloudOnline()) return "#b45309";
+  try{ if(localStorage.getItem(cloudDirtyKey(activeCloudId()))) return "#b45309"; }catch(_){}
+  return cloud.ready ? "#15803d" : "#8a8a82";
+}
 function renderMore(){
   const v = document.querySelector('[data-view="more"]');
-  const restricted = isRestrictedUser();   // начальник: скрываем управление базами/каталог/полный бэкап
-  const baseLocked = roleBaseLocked();     // роль ограничена ИЛИ ещё не известна (гонка) → без переключения баз
+  const restricted = isRestrictedUser();
+  const baseLocked = roleBaseLocked();
   const nBases = visibleProfiles().length;
+  const isOwner = !!(cloud.profile && cloud.profile.is_admin);
+  const bn = activeProfileName()||"База";
+  const ch = '<span class="sr-ch">›</span>';
+  const row = (title, onclick, opts) => { opts=opts||{}; return `<button class="set-row ${opts.cls||''}" ${onclick?`onclick="${onclick}"`:''}>
+      <span class="sr-t"><div>${esc(title)}</div>${opts.sub?`<div class="sr-sub">${esc(opts.sub)}</div>`:''}</span>
+      ${opts.val?`<span class="sr-v">${esc(opts.val)}</span>`:''}${opts.right||ch}</button>`; };
+  const group = (head, rows) => rows.length ? `<div class="set-group"><div class="set-head">${esc(head)}</div><div class="set-list">${rows.join("")}</div></div>` : "";
+
+  const acc = [];
+  if(!baseLocked && nBases>1) acc.push(row("Сменить базу","openProfilesSheet()",{val:String(nBases)}));
+  acc.push(row("Синхронизация с облаком","openCloudSheet()",{ right:`<span class="set-dot" style="background:${cloudStatusColor()}"></span>${ch}` }));
+  if(canManageBase()) acc.push(row("Работники и роли","openMembersSheet()"));
+  if(canManageOrgRoles()) acc.push(row("Роли по регионам","openOrgRolesSheet()"));
+  if(canSeeAllBases()) acc.push(row("Сводка по всем базам","openAllBasesSheet()"));
+  if(isOwner) acc.push(row("Рассылка уведомлений","openBroadcastSheet()"));
+
+  const data = [];
+  if(canEditStock()){ data.push(row("Места хранения","openLocationsEdit()")); data.push(row("Категории","openCategoriesEdit()")); }
+  data.push(row("Экспорт в Excel","openExportSheet()"));
+  data.push(row("Резервная копия","openBackupSheet()"));
+  if(profiles.list.length>1 && !restricted && isOwner) data.push(row("Общий каталог баз","mergeCatalogs()"));
+  data.push(row("Журнал операций","openJournalSheet()"));
+
+  const about = [
+    row("О программе","openAboutSheet()"),
+    row("Помощь и частые вопросы","openFaqSheet()"),
+    row("Конфиденциальность","openPrivacySheet()"),
+    row("Условия использования","openTermsSheet()"),
+    activeCloudId() ? row("Обновить базу из облака","wipeAll()") : row("Сбросить все данные","wipeAll()",{cls:"danger"}),
+  ];
+
   v.innerHTML = `
-    <div class="card">
-      <div class="flex items-center justify-between gap-2">
-        <div>
-          <div class="font-bold">🏠 База: ${esc(activeProfileName())}</div>
-          <div class="text-xs opacity-70 mt-0.5">${baseLocked?"Ваша база":`Баз: ${nBases}`}</div>
-        </div>
-        ${(!baseLocked && nBases>1)?`<button class="btn btn-primary" onclick="openProfilesSheet()">Сменить базу</button>`:""}
-      </div>
-      ${restricted?"":`<div class="text-xs opacity-70 mt-2">У каждой базы свой склад, журналы и места хранения. Данные других баз сохраняются.</div>`}
+    <div class="prof-hd">
+      <div class="prof-av">${esc((bn.trim()[0]||"Б").toUpperCase())}</div>
+      <div style="min-width:0"><div class="font-bold text-lg truncate">${esc(bn)}</div>
+      <div class="text-xs opacity-70">${baseLocked?"Ваша база":`Баз на устройстве: ${nBases}`}</div></div>
     </div>
-
-    ${(typeof cloudCardHtml==="function")?cloudCardHtml():""}
-
-    ${canManageBase()?`<div class="card">
-      <div class="font-bold mb-2">👥 Работники и роли</div>
-      <button class="btn btn-ghost w-full" onclick="openMembersSheet()">Управление работниками базы</button>
-      <div class="text-xs opacity-70 mt-2">Добавляйте работников, выдавайте логин и роль, оформляйте пересменку. Раздел виден только тем, кто управляет базой.</div>
-    </div>`:""}
-
-    ${canManageOrgRoles()?`<div class="card">
-      <div class="font-bold mb-2">🗺 Роли по регионам</div>
-      <button class="btn btn-ghost w-full" onclick="openOrgRolesSheet()">Начальники партий, директора, бухгалтерия</button>
-      <div class="text-xs opacity-70 mt-2">Назначайте начальника партии на регион, директоров и бухгалтерию — на все базы. Только роли ниже вашей.</div>
-    </div>`:""}
-
-    ${canSeeAllBases()?`<div class="card">
-      <div class="font-bold mb-2">🧮 Сводка по всем базам</div>
-      <button class="btn btn-ghost w-full" onclick="openAllBasesSheet()">Остатки всех баз + выгрузка в Excel</button>
-      <div class="text-xs opacity-70 mt-2">Чтение остатков по всем базам и общий экспорт. Для бухгалтерии и директоров.</div>
-    </div>`:""}
-
-    ${canEditStock()?`<div class="card">
-      <div class="font-bold mb-2">📍 Места и категории</div>
-      <div class="grid grid-cols-2 gap-2">
-        <button class="btn btn-ghost" onclick="openLocationsEdit()">📍 Места хранения</button>
-        <button class="btn btn-ghost" onclick="openCategoriesEdit()">⚙️ Категории</button>
+    ${group("Аккаунт и база", acc)}
+    ${group("Данные", data)}
+    <div class="set-group"><div class="set-head">Внешний вид</div>
+      <div class="grid grid-cols-3 gap-2">
+        <button class="btn ${state.theme==="light"?"btn-primary":"btn-ghost"}" onclick="setTheme('light')">Светлая</button>
+        <button class="btn ${state.theme==="dark"?"btn-primary":"btn-ghost"}" onclick="setTheme('dark')">Тёмная</button>
+        <button class="btn ${state.theme==="system"?"btn-primary":"btn-ghost"}" onclick="setTheme('system')">Системная</button>
       </div>
-      <div class="text-xs opacity-70 mt-2">Добавляйте, переименовывайте и удаляйте места хранения и категории товаров. То же доступно в разделе «Склад».</div>
-    </div>`:""}
-
-
-    <div class="card">
-      <div class="font-bold mb-2">💾 Бэкап</div>
-      <div class="grid grid-cols-2 gap-2">
-        <button class="btn btn-primary" onclick="exportData()">Экспорт базы</button>
-        <label class="btn btn-ghost">
-          Импорт JSON
-          <input type="file" accept="application/json" class="hidden" onchange="importData(event)">
-        </label>
-      </div>
-      ${restricted?"":`<button class="btn btn-success w-full mt-2" onclick="exportAllProfiles()">🗄 Резервная копия ВСЕХ баз</button>`}
-      <div class="text-xs opacity-70 mt-2">${restricted?"«Экспорт базы» сохраняет вашу базу в файл. Сохраняйте регулярно!":"«Экспорт базы» — только текущая. «Все базы» — один файл со всеми базами (главный бэкап). Импорт принимает оба формата. Сохраняйте регулярно — пригодится, если телефон сбросится!"}</div>
     </div>
-
-    ${(profiles.list.length>1 && !restricted && (cloud.profile && cloud.profile.is_admin)) ? `<div class="card">
-      <div class="font-bold mb-2">🔗 Общий каталог</div>
-      <button class="btn btn-ghost w-full" onclick="mergeCatalogs()">Объединить наименования всех баз</button>
-      <div class="text-xs opacity-70 mt-2">Сводит список наименований одинаковым во всех базах: добавляет недостающие позиции с нулём. Остатки, места и сроки у каждой базы остаются свои. Раздел только для владельца.</div>
-    </div>` : ""}
-
-    <div class="card">
-      <div class="font-bold mb-2">📊 Экспорт в Excel</div>
-      <div class="grid grid-cols-2 gap-2">
-        <button class="btn btn-success" onclick="exportXlsx()">.xlsx (все листы)</button>
-        <button class="btn btn-ghost" onclick="exportCsv()">.csv (только склад)</button>
-      </div>
-      <button class="btn btn-ghost w-full mt-2" onclick="exportXlsxFiltered()">📊 Выгрузка по фильтрам…</button>
-      <div class="text-xs opacity-70 mt-2">xlsx = склад + 4 журнала на отдельных листах. «По фильтрам» — срез склада: по месту, категории, сроку (просрочка/скоро/без просрочки), наличию. Работает оффлайн.</div>
-    </div>
-
-    <div class="card">
-      <div class="font-bold mb-2">📜 Журнал операций</div>
-      ${(()=>{ const _log = visibleLog(); return _log.length
-        ? `<div class="space-y-1 max-h-72 overflow-y-auto pr-1">${_log.slice(0,50).map(l=>`
-          <div class="text-sm flex justify-between gap-2 py-1 border-b border-white/5">
-            <span>${esc(l.action)} — ${esc(l.detail||"")}</span>
-            <span class="opacity-60 shrink-0">${new Date(l.ts).toLocaleString("ru-RU",{hour:"2-digit",minute:"2-digit",day:"2-digit",month:"2-digit"})}</span>
-          </div>`).join("")}</div>
-          <button class="btn btn-ghost mt-2 w-full" onclick="clearLog()">Очистить журнал</button>`
-        : `<div class="opacity-70 text-sm">Пусто</div>`; })()}
-    </div>
-
-    <div class="card">
-      <div class="font-bold mb-2">⚙️ Настройки</div>
-      <div class="text-sm opacity-70 mb-1">Тема оформления</div>
-      <div class="grid grid-cols-3 gap-2 mb-2">
-        <button class="btn ${state.theme==="light"?"btn-primary":"btn-ghost"}" onclick="setTheme('light')">☀️ Светлая</button>
-        <button class="btn ${state.theme==="dark"?"btn-primary":"btn-ghost"}" onclick="setTheme('dark')">🌙 Тёмная</button>
-        <button class="btn ${state.theme==="system"?"btn-primary":"btn-ghost"}" onclick="setTheme('system')">📱 Как в телефоне</button>
-      </div>
-      ${activeCloudId()
-        ? `<button class="btn btn-ghost w-full" onclick="wipeAll()">🔄 Обновить базу из облака</button>
-           <div class="text-xs opacity-70 mt-2">Заменяет локальную копию свежими данными из облака. Данные в облаке не удаляются.</div>`
-        : `<button class="btn btn-danger w-full" onclick="wipeAll()">Сбросить все данные</button>
-           <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
-    </div>
-
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v164 · тестовый канал</div>
+    ${group("О программе", about)}
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v165 · тестовый канал</div>
   `;
 }
 
+/* ---------- Экран «Ещё»: шиты разделов и официальные страницы ---------- */
+function openCloudSheet(){ try{ openSheet(`<div class="font-bold text-xl mb-3">Облако и синхронизация</div>${(typeof cloudCardHtml==="function")?cloudCardHtml():""}`); }catch(_){ toast("Недоступно"); } }
+function openExportSheet(){ openSheet(`
+  <div class="font-bold text-xl mb-3">Экспорт в Excel</div>
+  <div class="space-y-2">
+    <button class="btn btn-success w-full" onclick="closeSheet();exportXlsx()">Скачать .xlsx — все листы</button>
+    <button class="btn btn-ghost w-full" onclick="closeSheet();exportCsv()">Скачать .csv — только склад</button>
+    <button class="btn btn-ghost w-full" onclick="closeSheet();exportXlsxFiltered()">Выгрузка по фильтрам…</button>
+  </div>
+  <div class="text-xs opacity-60 mt-3">xlsx — склад и 4 журнала на отдельных листах. «По фильтрам» — срез склада по месту, категории, сроку и наличию. Работает офлайн.</div>`); }
+function openBackupSheet(){ const restricted=isRestrictedUser(); openSheet(`
+  <div class="font-bold text-xl mb-3">Резервная копия</div>
+  <div class="space-y-2">
+    <button class="btn btn-primary w-full" onclick="closeSheet();exportData()">Экспорт текущей базы (JSON)</button>
+    ${restricted?"":`<button class="btn btn-success w-full" onclick="closeSheet();exportAllProfiles()">Резервная копия всех баз</button>`}
+    <label class="btn btn-ghost w-full">Импорт из файла<input type="file" accept="application/json" class="hidden" onchange="closeSheet();importData(event)"></label>
+  </div>
+  <div class="text-xs opacity-60 mt-3">${restricted?"Сохраняет вашу базу в файл. Делайте копию регулярно — пригодится, если телефон сбросится.":"«Текущая» — только эта база. «Все базы» — один файл со всеми (главный бэкап). Импорт принимает оба формата. Сохраняйте регулярно!"}</div>`); }
+function openJournalSheet(){ const _log=(typeof visibleLog==="function")?visibleLog():[]; openSheet(`
+  <div class="font-bold text-xl mb-3">Журнал операций</div>
+  ${_log.length?`<div class="space-y-1" style="max-height:60vh;overflow-y:auto;padding-right:4px">${_log.slice(0,200).map(l=>`
+    <div class="text-sm flex justify-between gap-2 py-1 border-b border-white/5">
+      <span>${esc(l.action)} — ${esc(l.detail||"")}</span>
+      <span class="opacity-60 shrink-0">${new Date(l.ts).toLocaleString("ru-RU",{hour:"2-digit",minute:"2-digit",day:"2-digit",month:"2-digit"})}</span>
+    </div>`).join("")}</div>
+    <button class="btn btn-ghost w-full mt-3" onclick="clearLog();closeSheet()">Очистить журнал</button>`
+    :`<div class="opacity-70 text-sm">Пока пусто.</div>`}`); }
+function openBroadcastSheet(){ openSheet(`
+  <div class="font-bold text-xl mb-3">Рассылка уведомлений</div>
+  <div class="text-xs opacity-70 mb-3">Уведомление уйдёт на почту (@razvedchick.ru) всем пользователям от «Почта Разведчик».</div>
+  <input id="bcSubj" class="input mb-2" placeholder="Тема" maxlength="200">
+  <textarea id="bcBody" class="input mb-2" style="min-height:120px;resize:vertical;padding-top:12px" placeholder="Текст уведомления" maxlength="5000"></textarea>
+  <button class="btn btn-primary w-full" onclick="sendBroadcast()">Отправить всем</button>`); }
+async function sendBroadcast(){
+  const s=(document.getElementById("bcSubj").value||"").trim();
+  const b=(document.getElementById("bcBody").value||"").trim();
+  if(!s||!b){ toast("Укажите тему и текст"); return; }
+  if(!await confirmSheet(`Отправить уведомление «${esc(s)}» всем пользователям на почту?`,{yes:"Отправить",title:"Рассылка"})) return;
+  toast("Отправка…");
+  try{ const d=await cloudCallFn("broadcast",{subject:s,body:b}); toast(`Отправлено: ${d.sent||0} из ${d.total||0}`); }
+  catch(e){ toast("Не удалось: "+(e.message||"проверьте интернет")); }
+}
+function openAboutSheet(){ openSheet(`
+  <div class="font-bold text-xl mb-3">О программе</div>
+  <div class="text-sm space-y-2" style="line-height:1.5">
+    <div><b>ВахтаХоз</b> — складской учёт для вахтовых объектов. Работает офлайн (PWA), синхронизируется с облаком.</div>
+    <div class="opacity-70">Сборка v165 · оффлайн PWA</div>
+    <div class="opacity-70">Правообладатель: ООО «Разведчик».</div>
+    <div class="opacity-70">Сайт и поддержка: <a href="https://vahta.razvedchick.ru" style="color:var(--accent)">vahta.razvedchick.ru</a></div>
+  </div>`); }
+function openFaqSheet(){ const q=(t,a)=>`<details class="border-b border-white/5"><summary class="font-semibold">${t}</summary><div class="text-sm opacity-80 pb-2" style="line-height:1.5">${a}</div></details>`;
+  openSheet(`<div class="font-bold text-xl mb-3">Помощь и частые вопросы</div>
+  <div style="max-height:64vh;overflow-y:auto">
+  ${q("Работает ли без интернета?","Да. Операции сохраняются на телефоне и уходят в облако автоматически, когда появляется сеть. Сессия не сбрасывается офлайн.")}
+  ${q("Что будет с данными, если сброшу телефон?","Данные, уже ушедшие в облако, вернутся после входа. Несинхронизированные (пока были офлайн) — только на телефоне. Делайте резервную копию: «Данные → Резервная копия».")}
+  ${q("Как выгрузить в Excel?","«Данные → Экспорт в Excel». Файл .xlsx содержит склад и журналы. Работает офлайн.")}
+  ${q("Как передать смену?","Управляющий базой: «Аккаунт и база → Работники и роли → Передать смену». Нужен интернет.")}
+  ${q("Почему меня не видно в другой базе?","Доступ к базам выдаёт начальник участка или партии. Каждый видит только свои базы.")}
+  ${q("Забыл пароль","На экране входа нажмите «Забыли пароль?» — ссылка придёт на привязанную почту @razvedchick.ru.")}
+  </div>`); }
+function openPrivacySheet(){ openSheet(`<div class="font-bold text-xl mb-3">Политика конфиденциальности</div>
+  <div class="text-sm space-y-2" style="line-height:1.5;max-height:62vh;overflow-y:auto">
+   <p>Оператор персональных данных — ООО «Разведчик» (далее «Оператор»).</p>
+   <p><b>Какие данные обрабатываются.</b> Логин, роль, принадлежность к базе и вводимые данные складского учёта (наименования, количества, места, сроки, журналы). Пароль хранится в виде необратимого хэша.</p>
+   <p><b>Цель.</b> Работа складского учёта, синхронизация между устройствами и сотрудниками, восстановление доступа.</p>
+   <p><b>Хранение.</b> На защищённом сервере и локально на устройстве (для офлайн-работы). Доступ ограничен ролью пользователя.</p>
+   <p><b>Передача третьим лицам.</b> Не осуществляется, кроме поставщика серверной инфраструктуры и случаев, предусмотренных законом.</p>
+   <p><b>Ваши права.</b> Запрос, исправление и удаление данных — через начальника участка или Оператора.</p>
+   <p class="opacity-60">Редакция от июля 2026 г.</p>
+  </div>`); }
+function openTermsSheet(){ openSheet(`<div class="font-bold text-xl mb-3">Условия использования</div>
+  <div class="text-sm space-y-2" style="line-height:1.5;max-height:62vh;overflow-y:auto">
+   <p>Приложение «ВахтаХоз» предоставляется ООО «Разведчик» для служебного учёта на вахтовых объектах.</p>
+   <p>Доступ выдаётся уполномоченным лицом. Учётные данные личные; передача их третьим лицам запрещена.</p>
+   <p>Пользователь отвечает за достоверность вводимых данных и за сохранность доступа к своему устройству.</p>
+   <p>Приложение поставляется «как есть»; Оператор не отвечает за убытки от неверно введённых данных или утери устройства. Регулярно делайте резервные копии.</p>
+   <p>Продолжая использование, вы принимаете настоящие Условия и Политику конфиденциальности.</p>
+   <p class="opacity-60">Редакция от июля 2026 г.</p>
+  </div>`); }
 /* ---------- Excel / CSV экспорт ---------- */
 function ensureXlsx(){
   if(window.XLSX) return Promise.resolve(window.XLSX);
@@ -3824,6 +3882,8 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   openProfilesSheet,switchProfile,addProfile,renameProfile,deleteProfile,exportAllProfiles,mergeCatalogs,
   toggleCheck,addCheck,resetChecklist,removeCheck,
   exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,exportJournalsMonth,clearLog,wipeAll,toggleTheme,setTheme,
+  openCloudSheet,openExportSheet,openBackupSheet,openJournalSheet,openBroadcastSheet,sendBroadcast,
+  openAboutSheet,openFaqSheet,openPrivacySheet,openTermsSheet,
   openMove,doMove,
   openMembersSheet,openMemberRole,setMemberRole,memberRotate,memberRemove,openAddMember,openResetPwd,
   openShift,openHandover,doHandover,
@@ -4591,7 +4651,7 @@ function setSyncStatus(kind, text){
   clearTimeout(_syncHideT);
   if(kind==="hidden" || !cloud.ready || !activeCloudId()){ bar.classList.add("hidden"); bar.classList.remove("busy"); chip.classList.add("hidden"); return; }
   const M = {
-    syncing:{ bg:"#2563eb", icon:"↻", chip:"↻", txt:text||"Сохранение в облако…" },
+    syncing:{ bg:"#0E7C86", icon:"↻", chip:"↻", txt:text||"Сохранение в облако…" },
     offline:{ bg:"#92400e", icon:"🔴", chip:"⏳", txt:text||"Нет интернета — данные уйдут в облако, когда он появится" },   /* #b45309 (~4.0:1) → #92400e (~5.9:1): AA для мелкого (12px) текста syncBar, как у .badge-yellow */
     synced: { bg:"#15803d", icon:"✓", chip:"✓", txt:text||"Сохранено в облаке" },
     error:  { bg:"#b91c1c", icon:"⚠", chip:"⚠", txt:text||"Не удалось сохранить — пробуем снова" },
