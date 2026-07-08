@@ -215,7 +215,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v167 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v168 · БЕТА</div>
   </div>
 </div>
 
@@ -3037,7 +3037,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v167 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v168 · тестовый канал</div>
   `;
 }
 
@@ -3087,7 +3087,7 @@ function openAboutSheet(){ openSheet(`
   <div class="font-bold text-xl mb-3">О программе</div>
   <div class="text-sm space-y-2" style="line-height:1.5">
     <div><b>ВахтаХоз</b> — складской учёт для вахтовых объектов. Работает офлайн (PWA), синхронизируется с облаком.</div>
-    <div class="opacity-70">Сборка v167 · оффлайн PWA</div>
+    <div class="opacity-70">Сборка v168 · оффлайн PWA</div>
     <div class="opacity-70">Правообладатель: ООО «Разведчик».</div>
     <div class="opacity-70">Сайт и поддержка: <a href="https://vahta.razvedchick.ru" style="color:var(--accent)">vahta.razvedchick.ru</a></div>
   </div>`); }
@@ -4932,7 +4932,6 @@ async function cloudOnLogin(session, attempt){
     cloud.ready = true; cloud.basesLoaded = true;   // базы реально получены из облака
     cloud._basesLoading = false; clearTimeout(cloud._basesRetryT);   // цикл загрузки баз завершён успехом
     hideLoginGate();                           // успешный вход — прячем полноэкранный гейт
-    try{ localStorage.removeItem(NS+"vahtahoz_login_skipped"); }catch(e){}
     const reloaded = await cloudAutoLink();
     if(reloaded) return;                       // switchProfile перезагрузит страницу
     renderHeader(); render();
@@ -4956,7 +4955,6 @@ async function cloudOnLogin(session, attempt){
     if(!cloud.profile) cloud.profile = { id:uidv, username:uemail.split("@")[0] };
     cloud.ready = true; cloud.basesLoaded = false;   // базы НЕ загрузились
     hideLoginGate();
-    try{ localStorage.removeItem(NS+"vahtahoz_login_skipped"); }catch(_){}
     renderHeader(); render();
     if(attempt===0) toast("Вход выполнен, загружаем базы…");
     // НАСТОЙЧИВО грузим базы — НЕ оставляем пользователя с «ничего». Пока онлайн — ретраим с backoff,
@@ -5011,7 +5009,6 @@ async function cloudLogout(){
   purgeCloudProfiles();
   clearCloudSess();   // чистим своё хранилище сессии, иначе при запуске восстановит вход
   // снимаем флаг «без облака» — при следующем запуске снова покажется вход (нет сессии → гейт)
-  try{ localStorage.removeItem(NS+"vahtahoz_login_skipped"); }catch(e){}
   // перезагрузка: гарантирует чистое состояние из STORE_KEY (как switchProfile) и показ логин-гейта без остатков
   location.reload();
 }
