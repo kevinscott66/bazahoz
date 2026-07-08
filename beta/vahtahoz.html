@@ -75,6 +75,7 @@
   .set-dot{ width:9px; height:9px; border-radius:50%; flex:none; }
   .prof-hd{ display:flex; align-items:center; gap:12px; padding:4px 6px 18px; }
   .prof-av{ width:44px; height:44px; border-radius:12px; background:var(--accent); color:var(--on-accent); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:19px; flex:none; }
+  @media (max-width:340px){ .set-row{ gap:6px; padding:12px 13px; font-size:15px; } .set-row .sr-v{ font-size:13px; } }
   .light .badge-gray.opacity-50{ opacity:1; color:#9ca3af; }
   .sheet{ position:fixed; inset:0; z-index:100; display:none; }   /* модалка — поверх всего, включая логин-гейт (z-90): чтобы юр-страницы открывались и до входа */
   .sheet.open{ display:flex; }
@@ -212,9 +213,9 @@
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
-      <a onclick="openTermsSheet()" style="color:#93c5fd;cursor:pointer">Условия</a> и
-      <a onclick="openPrivacySheet()" style="color:#93c5fd;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v166 · БЕТА</div>
+      <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
+      <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v167 · БЕТА</div>
   </div>
 </div>
 
@@ -1210,7 +1211,7 @@ function renderDashboard(){
 
   const showOnboarding = !state.stock.length && !(state.tasks||[]).length && !localStorage.getItem(NS+"vahtahoz_onboarded");
   v.innerHTML = `
-    ${showOnboarding?`<div class="card" style="border:1px solid rgba(37,99,235,.45)">
+    ${showOnboarding?`<div class="card" style="border:1px solid var(--accent-weak)">
       <div class="font-bold mb-1">👋 С чего начать</div>
       <div class="text-sm opacity-80" style="line-height:1.6">
         1. Откройте <b>«📦 Склад»</b> внизу и нажмите <b>＋</b> — добавьте первую позицию (название, количество, срок годности).<br>
@@ -3036,7 +3037,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v166 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v167 · тестовый канал</div>
   `;
 }
 
@@ -3077,7 +3078,7 @@ async function sendBroadcast(){
   const s=(document.getElementById("bcSubj").value||"").trim();
   const b=(document.getElementById("bcBody").value||"").trim();
   if(!s||!b){ toast("Укажите тему и текст"); return; }
-  if(!await confirmSheet(`Отправить уведомление «${esc(s)}» всем пользователям на почту?`,{yes:"Отправить",title:"Рассылка"})) return;
+  if(!await confirmSheet(`Отправить уведомление «${s}» всем пользователям на почту?`,{yes:"Отправить",title:"Рассылка"})) return;
   toast("Отправка…");
   try{ const d=await cloudCallFn("broadcast",{subject:s,body:b}); toast(`Отправлено: ${d.sent||0} из ${d.total||0}`); }
   catch(e){ toast("Не удалось: "+(e.message||"проверьте интернет")); }
@@ -3086,7 +3087,7 @@ function openAboutSheet(){ openSheet(`
   <div class="font-bold text-xl mb-3">О программе</div>
   <div class="text-sm space-y-2" style="line-height:1.5">
     <div><b>ВахтаХоз</b> — складской учёт для вахтовых объектов. Работает офлайн (PWA), синхронизируется с облаком.</div>
-    <div class="opacity-70">Сборка v166 · оффлайн PWA</div>
+    <div class="opacity-70">Сборка v167 · оффлайн PWA</div>
     <div class="opacity-70">Правообладатель: ООО «Разведчик».</div>
     <div class="opacity-70">Сайт и поддержка: <a href="https://vahta.razvedchick.ru" style="color:var(--accent)">vahta.razvedchick.ru</a></div>
   </div>`); }
@@ -3101,7 +3102,7 @@ function openFaqSheet(){ const q=(t,a)=>`<details class="border-b border-white/5
   ${q("Забыл пароль","На экране входа нажмите «Забыли пароль?» — ссылка придёт на привязанную почту @razvedchick.ru.")}
   </div>`); }
 function openPrivacySheet(){ openSheet(`<div class="font-bold text-xl mb-3">Политика конфиденциальности</div>
-  <div class="text-sm space-y-2" style="line-height:1.5;max-height:62vh;overflow-y:auto">
+  <div class="text-sm space-y-2" style="line-height:1.6;max-height:70vh;overflow-y:auto">
    <p>Оператор персональных данных — ООО «Разведчик» (далее «Оператор»).</p>
    <p><b>Какие данные обрабатываются.</b> Логин, роль, принадлежность к базе и вводимые данные складского учёта (наименования, количества, места, сроки, журналы). Пароль хранится в виде необратимого хэша.</p>
    <p><b>Цель.</b> Работа складского учёта, синхронизация между устройствами и сотрудниками, восстановление доступа.</p>
@@ -3111,7 +3112,7 @@ function openPrivacySheet(){ openSheet(`<div class="font-bold text-xl mb-3">По
    <p class="opacity-60">Редакция от июля 2026 г.</p>
   </div>`); }
 function openTermsSheet(){ openSheet(`<div class="font-bold text-xl mb-3">Условия использования</div>
-  <div class="text-sm space-y-2" style="line-height:1.5;max-height:62vh;overflow-y:auto">
+  <div class="text-sm space-y-2" style="line-height:1.6;max-height:70vh;overflow-y:auto">
    <p>Приложение «ВахтаХоз» предоставляется ООО «Разведчик» для служебного учёта на вахтовых объектах.</p>
    <p>Доступ выдаётся уполномоченным лицом. Учётные данные личные; передача их третьим лицам запрещена.</p>
    <p>Пользователь отвечает за достоверность вводимых данных и за сохранность доступа к своему устройству.</p>
