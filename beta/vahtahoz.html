@@ -45,7 +45,7 @@
   .light .chip{ background:#f3f4f6; color:#111827; }
   .light .chip.active{ background:#2563eb; color:#fff; }
   .nav-btn{ flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; padding:8px 4px; font-size:11px; color:#9ca3af; }
-  .nav-btn.active{ color:#60a5fa; }
+  .nav-btn.active{ color:#60a5fa; position:relative; }
   .light .nav-btn{ color:#6b7280; }
   .light .nav-btn.active{ color:#2563eb; }
   .badge{ font-size:11px; font-weight:700; padding:3px 8px; border-radius:999px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; }
@@ -94,8 +94,7 @@
   @media (max-width:360px){ .grid-cols-3 > .btn{ font-size:13px; padding:0 4px; } }
   /* iPhone SE / очень узкие: подписи в 3-колоночной сетке (типы склада, выбор темы) переносим, а не обрезаем */
   @media (max-width:340px){ .grid-cols-3 > .btn{ font-size:11px; padding:2px; line-height:1.15; white-space:normal; height:auto; min-height:40px; } }
-  /* активная вкладка нижней навигации — подчёркивание для ясности */
-  .nav-btn.active{ position:relative; }
+  /* активная вкладка нижней навигации — подчёркивание для ясности (position:relative задан выше на .nav-btn.active) */
   .nav-btn.active::after{ content:""; position:absolute; top:0; left:50%; transform:translateX(-50%); width:22px; height:3px; border-radius:0 0 3px 3px; background:currentColor; }
   /* косметика: светлая тема — видимые границы/контраст; disabled-кнопки; тап-зона узких кнопок */
   .light #dateStr{ color:#6b7280; }
@@ -194,7 +193,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v163 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v164 · БЕТА</div>
   </div>
 </div>
 
@@ -3060,7 +3059,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v163 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v164 · тестовый канал</div>
   `;
 }
 
