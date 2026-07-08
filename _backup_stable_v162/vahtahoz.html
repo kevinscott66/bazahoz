@@ -179,7 +179,7 @@
 </div>
 
 <!-- Toast -->
-<div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[80] hidden px-4 py-3 rounded-xl bg-gray-800 text-white text-sm shadow-xl" style="max-width:90vw;text-align:center;overflow-wrap:break-word;word-break:break-word"></div>
+<div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[80] hidden px-4 py-3 rounded-xl bg-gray-800 text-white text-sm shadow-xl"></div>
 
 <!-- Полноэкранный вход (показывается при первом заходе без сессии; интерфейс скрыт) -->
 <div id="loginGate" class="hidden" style="position:fixed;inset:0;z-index:90;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:28px;background:radial-gradient(120% 90% at 50% 0%, #1e293b 0%, #0b1220 60%);">
@@ -194,7 +194,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v163</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v162</div>
   </div>
 </div>
 
@@ -3060,7 +3060,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v163</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v162</div>
   `;
 }
 
@@ -4548,7 +4548,7 @@ async function exportOneBaseXlsx(baseId){
 }
 const cloudDirtyKey = (cid)=>`${NS}vahtahoz_dirty_${cid}`;
 // удалить все sync-маркеры базы (dirty + снимки подписей) — при удалении/замене базы, чтобы не копить мусор
-function clearBaseSyncKeys(cid){ if(!cid) return; try{ localStorage.removeItem(cloudDirtyKey(cid)); for(const k of ["stock","stockCounts","stockVals","jr","settings"]) localStorage.removeItem(`${NS}vahtahoz_sig_${k}_${cid}`); }catch(_){} }
+function clearBaseSyncKeys(cid){ if(!cid) return; try{ localStorage.removeItem(cloudDirtyKey(cid)); for(const k of ["stock","jr","settings"]) localStorage.removeItem(`${NS}vahtahoz_sig_${k}_${cid}`); }catch(_){} }
 // navigator.onLine на iOS standalone-PWA часто ЛОЖНО false сразу после загрузки (пока не пошёл первый
 // запрос), и событие "online" не срабатывает → статус залипал в «оффлайн» при живой сети. Поэтому online
 // считаем подтверждённым, если ЛИБО navigator.onLine!==false, ЛИБО реальный запрос долетел (_netConfirmed).
@@ -4755,9 +4755,6 @@ function showLoginGate(){
         em = document.getElementById("lgEmail"), pw = document.getElementById("lgPwd"),
         err = document.getElementById("lgErr");
   if(!go||!skip) return;
-  // «Войти позже» скрываем, если на устройстве есть ОБЛАЧНЫЕ базы (возможно, прежнего вахтовика): иначе Skip
-  // раскрыл бы их склад/журналы из localStorage до входа и RLS. Пропуск входа допустим только на чисто локальном устройстве.
-  try{ skip.style.display = (Array.isArray(profiles.list) && profiles.list.some(p=>p.cloudId)) ? "none" : ""; }catch(_){}
   const doLogin = async ()=>{
     const e=(em.value||"").trim(), p=pw.value||"";
     if(!e||!p){ err.textContent="Введите логин и пароль"; return; }
@@ -4856,9 +4853,6 @@ async function cloudOnLogin(session, attempt){
     cloud.session = session;
     await ensureSB();                  // клиент нужен для setSession/realtime; запросы ниже — прямым fetch
     uidv = session.user.id;            // ВНУТРИ try: сбой ensureSB/нет user.id уйдёт в catch → ретрай, а не вечный _basesLoading
-    // Фиксируем владельца облачных баз, если ещё не записан (напр. восстановление сессии после обновления, где ключа
-    // не было): тогда последующий вход ДРУГИМ uid через cloudLogin увидит смену владельца и вычистит чужой склад.
-    try{ if(!localStorage.getItem(NS+"vahtahoz_cloud_owner")) localStorage.setItem(NS+"vahtahoz_cloud_owner", uidv); }catch(_){}
     // 3 независимых запроса — ПАРАЛЛЕЛЬНО (последовательно было бы ~3× дольше на медленной сети).
     // Общий таймаут 25с: зависший PostgREST-запрос не должен оставлять загрузку висеть вечно.
     const tok = session.access_token;
