@@ -92,6 +92,8 @@
   /* косметика: кнопки в 3-колоночной сетке (типы склада) — компактнее, чтобы подписи не обрезались на узком iPhone */
   .grid-cols-3 > .btn{ padding:0 6px; font-size:15px; gap:4px; min-width:0; }
   @media (max-width:360px){ .grid-cols-3 > .btn{ font-size:13px; padding:0 4px; } }
+  /* iPhone SE / очень узкие: подписи в 3-колоночной сетке (типы склада, выбор темы) переносим, а не обрезаем */
+  @media (max-width:340px){ .grid-cols-3 > .btn{ font-size:11px; padding:2px; line-height:1.15; white-space:normal; height:auto; min-height:40px; } }
   /* активная вкладка нижней навигации — подчёркивание для ясности */
   .nav-btn.active{ position:relative; }
   .nav-btn.active::after{ content:""; position:absolute; top:0; left:50%; transform:translateX(-50%); width:22px; height:3px; border-radius:0 0 3px 3px; background:currentColor; }
@@ -193,7 +195,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v157 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v158 · БЕТА</div>
   </div>
 </div>
 
@@ -487,8 +489,8 @@ function openProfilesSheet(){
       ${isActive
         ? `<span class="badge badge-green">текущая</span>`
         : `<button class="btn btn-primary text-xs" data-profact="switch">Открыть</button>`}
-      <button class="btn btn-ghost text-xs" data-profact="rename">✏️</button>
-      ${isActive?"":`<button class="btn btn-ghost text-xs" data-profact="delete">🗑</button>`}
+      <button class="btn btn-ghost text-xs" data-profact="rename" aria-label="Переименовать базу" title="Переименовать">✏️</button>
+      ${isActive?"":`<button class="btn btn-ghost text-xs" data-profact="delete" aria-label="Удалить базу" title="Удалить">🗑</button>`}
     </div>`;
   }).join("");
   openSheet(`
@@ -2739,8 +2741,8 @@ function openLocationsEdit(){
           return `<div class="flex items-center gap-2 text-sm py-1 border-b border-gray-800" data-locname="${esc(name)}">
             <span class="flex-1 truncate">${esc(name)}</span>
             ${used?`<span class="badge badge-gray">${used}</span>`:`<span class="opacity-40 text-xs">не используется</span>`}
-            <button class="btn btn-ghost text-xs" data-locact="rename">✏️</button>
-            <button class="btn btn-ghost text-xs" data-locact="delete">🗑</button>
+            <button class="btn btn-ghost text-xs" data-locact="rename" aria-label="Переименовать место хранения" title="Переименовать">✏️</button>
+            <button class="btn btn-ghost text-xs" data-locact="delete" aria-label="Удалить место хранения" title="Удалить">🗑</button>
           </div>`;
         }).join("")}
     </div>
@@ -3011,7 +3013,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v157 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v158 · тестовый канал</div>
   `;
 }
 
@@ -3893,12 +3895,13 @@ async function cloudSessionExpired(reason){
   cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.ready=false; cloud.basesLoaded=false;
   cloud.bases={}; clearAllBasesCache();        // имена баз и снимок остатков протухшей сессии не должны висеть в UI/памяти
   cloud._basesLoading=false; cloud.busy=false; cloud.pushPending=false; cloud.applying=false;   // иначе повторный вход залипнет (cloudOnLogin рано выходит при _basesLoading)
+  cloud._conflictAsked={};                      // иначе после входа ДРУГИМ юзером на этом устройстве диалог «какие данные главные» молча пропустится → тихий pull без сохранения копии
   try{ if(cloud.channel && cloud.sb) cloud.sb.removeChannel(cloud.channel); }catch(_){}
   try{ if(cloud.tasksChannel && cloud.sb) cloud.sb.removeChannel(cloud.tasksChannel); }catch(_){}
   cloud.channel=null; cloud.subscribedBase=null; cloud.tasksChannel=null; cloud.tasksSubUid=null; cloud.tasksBusy=false;   // сброс задач: иначе после повторного входа realtime молчит
   clearTimeout(cloud.pushTimer); clearTimeout(cloud.pullTimer); clearTimeout(cloud.retryTimer); clearTimeout(cloud.pullRetryT); clearTimeout(cloud._basesRetryT);
   clearTimeout(cloud.tasksTimer); clearTimeout(cloud.tasksRetry); clearTimeout(cloud.tasksPullTimer);   // не дёргаем задачи на мёртвом токене
-  try{ if(cloud.sb) cloud.sb.auth.signOut().catch(()=>{}); }catch(_){}   // чистим supabase-js, чтобы он не дёргал мёртвый токен через setSession
+  try{ if(cloud.sb) cloud.sb.auth.signOut({ scope:"local" }).catch(()=>{}); }catch(_){}   // ТОЛЬКО локальная сессия: без scope supabase-js делает глобальный logout → отзыв токенов на ВСЕХ устройствах юзера
   clearCloudSess();
   setSyncStatus("error", reason||"Вход устарел — войдите снова");
   try{ renderHeader(); render(); }catch(_){}
@@ -4855,13 +4858,14 @@ async function cloudOnLogin(session, attempt){
 async function cloudLogout(){
   try{ if(cloud.channel) await cloud.sb.removeChannel(cloud.channel); }catch(e){}
   try{ if(cloud.tasksChannel) await cloud.sb.removeChannel(cloud.tasksChannel); }catch(e){}   // снимаем и канал задач
-  try{ if(cloud.sb) await cloud.sb.auth.signOut(); }catch(e){}   // дожидаемся выхода (был баг приоритета await/&&)
+  try{ if(cloud.sb) await cloud.sb.auth.signOut({ scope:"local" }); }catch(e){}   // ТОЛЬКО это устройство: без scope — глобальный logout, разлогинил бы и другие устройства юзера
   clearTimeout(cloud.tasksTimer); clearTimeout(cloud.tasksRetry); clearTimeout(cloud.tasksPullTimer);
   clearTimeout(cloud.pushTimer); clearTimeout(cloud.retryTimer); clearTimeout(cloud.pullTimer); clearTimeout(cloud.pullRetryT);   // отложенные склад-операции не должны срабатывать после выхода
   // задачи привязаны к аккаунту (owner) — при выходе НЕ оставляем их локально, иначе следующий юзер их увидит/выгрузит
   state.tasks=[]; try{ localStorage.removeItem(TASKS_KEY); localStorage.removeItem(TASKS_DIRTY); }catch(e){}
   cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
   cloud.tasksChannel=null; cloud.tasksSubUid=null; cloud.tasksBusy=false; cloud.basesLoaded=false;   // сброс задач: иначе после входа другим юзером realtime молчит
+  cloud._conflictAsked={};   // сброс «спрашивали ли про конфликт данных» — для следующего входа на этом устройстве
   clearAllBasesCache();   // снимок остатков всех баз не должен пережить выход (утечка на общем устройстве)
   // ОБЛАЧНЫЕ БАЗЫ привязаны к аккаунту: при выходе удаляем их локальные профили и КЭШ СКЛАДА с устройства —
   // иначе следующий вошедший (другой человек на общем телефоне) увидит/откроет чужую базу и её данные из
