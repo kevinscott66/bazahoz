@@ -193,7 +193,7 @@
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <button id="lgSkip" class="btn btn-ghost" style="margin-top:6px;font-size:14px">Войти позже</button>
     <div style="font-size:12px;opacity:.8;margin-top:6px;line-height:1.4;color:#fcd34d">⚠️ Без входа данные останутся только на этом телефоне.<br>Бригада и начальник их не увидят, синхронизации не будет.</div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v156 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v157 · БЕТА</div>
   </div>
 </div>
 
@@ -212,7 +212,12 @@ if(typeof structuredClone!=="function"){
 }
 
 /* ---------- Storage ---------- */
-const STORE_KEY = "vahtahoz:v1";
+/* Изоляция беты от стабильной: origin у них ОБЩИЙ (vahta.razvedchick.ru), а localStorage — per-origin,
+   не per-path. Без префикса бета и стабильная делили бы ключ сессии (vahtahoz_sess/vahtahoz_auth) и данные →
+   ротация refresh-токена в одной копии роняла сессию другой («refresh_token_not_found» → «вход устарел»).
+   На стабильной NS="" (ключи не меняются, данные целы); на бете NS="beta_" (полностью отдельный инстанс). */
+const NS = (location.pathname.indexOf("/beta/") !== -1) ? "beta_" : "";
+const STORE_KEY = NS+"vahtahoz:v1";
 const JOURNAL_KEYS = ["receipt","issue","writeoff","order"];  // виды журналов движений
 // onclick выбора чипа: снять active со всех соседних чипов и подсветить нажатый (был продублирован 7×)
 const CHIP_PICK = "this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');";
@@ -223,7 +228,7 @@ const batchQtyBadge = (b, it) => `<span class="badge badge-green">${fmtQty(b.qty
 function emptyJournals(){ return Object.fromEntries(JOURNAL_KEYS.map(k=>[k,[]])); }
 /* Задачи/планы — ОБЩИЕ для всех баз устройства (у хоза одно расписание на обе базы).
    Храним отдельно от per-base состояния и накладываем на state.tasks при загрузке. */
-const TASKS_KEY = "vahtahoz:tasks";
+const TASKS_KEY = NS+"vahtahoz:tasks";
 function loadGlobalTasks(){
   try{ const raw=localStorage.getItem(TASKS_KEY); if(raw){ const t=JSON.parse(raw); if(Array.isArray(t)) state.tasks=t; } }catch(e){}
 }
@@ -343,7 +348,7 @@ const uid = () => (crypto?.randomUUID?.() || (Date.now()+"_"+Math.random().toStr
    - Снимок каждой НЕактивной базы лежит в slotKey(id) = "vahtahoz:v1::<id>".
    Переключение: снимок активной → её слот, слот целевой → STORE_KEY, reload.
    ============================================================ */
-const PROFILES_KEY = "vahtahoz:profiles";
+const PROFILES_KEY = NS+"vahtahoz:profiles";
 const slotKey = (id) => `${STORE_KEY}::${id}`;
 function loadProfiles(){
   try{
@@ -1129,7 +1134,7 @@ function renderHeader(){
 }
 
 /* ---------- Dashboard ---------- */
-function dismissOnboarding(){ try{ localStorage.setItem("vahtahoz_onboarded","1"); }catch(_){} render(); }
+function dismissOnboarding(){ try{ localStorage.setItem(NS+"vahtahoz_onboarded","1"); }catch(_){} render(); }
 function renderDashboard(){
   const v = document.querySelector('[data-view="dashboard"]');
   const today = todayStr();
@@ -1147,7 +1152,7 @@ function renderDashboard(){
   const showTasks = !isRestrictedUser();
   const canEditTasks = !_m || _m.can_edit_tasks;
 
-  const showOnboarding = !state.stock.length && !(state.tasks||[]).length && !localStorage.getItem("vahtahoz_onboarded");
+  const showOnboarding = !state.stock.length && !(state.tasks||[]).length && !localStorage.getItem(NS+"vahtahoz_onboarded");
   v.innerHTML = `
     ${showOnboarding?`<div class="card" style="border:1px solid rgba(37,99,235,.45)">
       <div class="font-bold mb-1">👋 С чего начать</div>
@@ -3006,7 +3011,7 @@ function renderMore(){
            <div class="text-xs opacity-70 mt-2">Стирает только текущую (локальную) базу. Другие базы не затрагиваются.</div>`}
     </div>
 
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v156 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v157 · тестовый канал</div>
   `;
 }
 
@@ -3794,7 +3799,7 @@ async function ensureSB(){
       // autoRefreshToken=false НАМЕРЕННО: refresh-токен продлеваем ТОЛЬКО вручную через cloudDoRefresh
       // (прямым fetch, надёжно в iOS standalone). Если бы supabase-клиент тоже авто-ротировал —
       // два механизма крутили бы ОДНУ цепочку токенов → reuse-detection GoTrue отзывает семью → разлогин + «REST 401».
-      persistSession:true, autoRefreshToken:false, storageKey:"vahtahoz_auth",
+      persistSession:true, autoRefreshToken:false, storageKey:NS+"vahtahoz_auth",
       // обход зависания navigator.locks в Safari (вход висел до таймаута): сквозная блокировка
       lock: async (_name, _timeout, fn) => await fn()
     }
@@ -3847,13 +3852,20 @@ async function cloudRest(path, token, opts, _retried){
 /* Своё хранилище сессии (синхронное) — переживает reload от cloudAutoLink, в отличие от
    фонового setSession в supabase-клиенте. Восстановление при запуске идёт отсюда, прямым fetch. */
 function saveCloudSess(d){
-  try{ localStorage.setItem("vahtahoz_sess", JSON.stringify({
+  try{ localStorage.setItem(NS+"vahtahoz_sess", JSON.stringify({
     access_token:d.access_token, refresh_token:d.refresh_token,
     expires_at: Date.now() + ((d.expires_in||3600)*1000), user:d.user
   })); }catch(_){}
 }
-function loadCloudSess(){ try{ return JSON.parse(localStorage.getItem("vahtahoz_sess")||"null"); }catch(_){ return null; } }
-function clearCloudSess(){ try{ localStorage.removeItem("vahtahoz_sess"); }catch(_){} }
+function loadCloudSess(){ try{ return JSON.parse(localStorage.getItem(NS+"vahtahoz_sess")||"null"); }catch(_){ return null; } }
+function clearCloudSess(){ try{ localStorage.removeItem(NS+"vahtahoz_sess"); }catch(_){} }
+/* Соседняя вкладка/копия PWA на этом origin ротировала токен → подхватываем свежую сессию в память,
+   чтобы не держать протухший refresh-токен и не слать его (иначе reuse → «вход устарел»). Логаут НЕ распространяем. */
+try{ window.addEventListener("storage", (e)=>{
+  if(e.key===NS+"vahtahoz_sess" && e.newValue && cloud.session){
+    try{ const s=JSON.parse(e.newValue); if(s && s.access_token && s.refresh_token) cloud.session=s; }catch(_){}
+  }
+}); }catch(_){}
 /* продление по refresh-токену ПРЯМЫМ fetch — не зависит от supabase-клиента (в iOS standalone мог висеть) */
 async function cloudRefresh(refresh_token){
   const ctrl = new AbortController();
@@ -3898,9 +3910,24 @@ function cloudDoRefresh(){
   if(cloud._refreshing) return cloud._refreshing;
   cloud._refreshing = (async()=>{
     try{
+      // Другой контекст на этом origin (вкладка/копия PWA) мог уже ротировать токен и сохранить свежий в localStorage.
+      // Берём максимально свежий, чтобы не слать заведомо использованный (reuse-detection → отзыв всей семьи → разлогин).
+      const stored = loadCloudSess();
+      if(stored && stored.refresh_token) cloud.session = stored;
       const rt = cloud.session && cloud.session.refresh_token;
       if(!rt){ const e=new Error("Вход устарел — войдите снова"); e.permanent=true; throw e; }   // нет refresh-токена → восстановить нельзя: реактивный 401 уйдёт в cloudSessionExpired, не зациклится
-      const d = await cloudRefresh(rt);
+      let d;
+      try{
+        d = await cloudRefresh(rt);
+      }catch(err){
+        // Токен отвергнут (permanent). Но соседний контекст мог за это время успешно продлить сессию —
+        // подхватываем его свежий токен вместо разлогина (частая причина ложного «вход устарел» при 2 вкладках).
+        const fresh = loadCloudSess();
+        if(err && err.permanent && fresh && fresh.access_token && fresh.refresh_token && fresh.refresh_token!==rt){
+          cloud.session = fresh; return fresh.access_token;
+        }
+        throw err;
+      }
       saveCloudSess(d); cloud.session = loadCloudSess();
       // отдаём свежий токен и supabase-клиенту (realtime/auth) — он сам НЕ рефрешит (autoRefreshToken=false),
       // иначе его сессия протухнет. Не блокируем: setSession в standalone может подвисать → race с 4с-таймаутом.
@@ -4464,7 +4491,7 @@ async function exportOneBaseXlsx(baseId){
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, _sheetName(b.name, new Set()));
   XLSX.writeFile(wb, `vahtahoz-${_fileSafe(b.name)}-${todayStr()}.xlsx`);
 }
-const cloudDirtyKey = (cid)=>`vahtahoz_dirty_${cid}`;
+const cloudDirtyKey = (cid)=>`${NS}vahtahoz_dirty_${cid}`;
 // удалить все sync-маркеры базы (dirty + снимки подписей) — при удалении/замене базы, чтобы не копить мусор
 function clearBaseSyncKeys(cid){ if(!cid) return; try{ localStorage.removeItem(cloudDirtyKey(cid)); for(const k of ["stock","jr","settings"]) localStorage.removeItem(`vahtahoz_sig_${k}_${cid}`); }catch(_){} }
 // navigator.onLine на iOS standalone-PWA часто ЛОЖНО false сразу после загрузки (пока не пошёл первый
@@ -4591,7 +4618,7 @@ async function cloudInit(){
         new Promise(res=>setTimeout(res,4000))
       ])).catch(()=>{});
       await cloudOnLogin({ access_token:s.access_token, refresh_token:s.refresh_token, user:s.user });
-    } else if(!localStorage.getItem("vahtahoz_login_skipped")){
+    } else if(!localStorage.getItem(NS+"vahtahoz_login_skipped")){
       // нет сохранённой/продлеваемой сессии и не выбрано «без облака» → показываем вход
       showLoginGate();
     } else { hideLoginGate(); }
@@ -4687,7 +4714,7 @@ function showLoginGate(){
   // прямое присваивание (а не addEventListener) — обработчик гарантированно стоит при каждом показе, без дублей
   go.onclick = doLogin;
   pw.onkeydown = ev=>{ if(ev.key==="Enter") doLogin(); };
-  skip.onclick = ()=>{ try{ localStorage.setItem("vahtahoz_login_skipped","1"); }catch(_){}; hideLoginGate(); };
+  skip.onclick = ()=>{ try{ localStorage.setItem(NS+"vahtahoz_login_skipped","1"); }catch(_){}; hideLoginGate(); };
   try{ em.focus(); }catch(_){}
 }
 function hideLoginGate(){
@@ -4781,7 +4808,7 @@ async function cloudOnLogin(session, attempt){
     cloud.ready = true; cloud.basesLoaded = true;   // базы реально получены из облака
     cloud._basesLoading = false; clearTimeout(cloud._basesRetryT);   // цикл загрузки баз завершён успехом
     hideLoginGate();                           // успешный вход — прячем полноэкранный гейт
-    try{ localStorage.removeItem("vahtahoz_login_skipped"); }catch(e){}
+    try{ localStorage.removeItem(NS+"vahtahoz_login_skipped"); }catch(e){}
     const reloaded = await cloudAutoLink();
     if(reloaded) return;                       // switchProfile перезагрузит страницу
     renderHeader(); render();
@@ -4805,7 +4832,7 @@ async function cloudOnLogin(session, attempt){
     if(!cloud.profile) cloud.profile = { id:uidv, username:uemail.split("@")[0] };
     cloud.ready = true; cloud.basesLoaded = false;   // базы НЕ загрузились
     hideLoginGate();
-    try{ localStorage.removeItem("vahtahoz_login_skipped"); }catch(_){}
+    try{ localStorage.removeItem(NS+"vahtahoz_login_skipped"); }catch(_){}
     renderHeader(); render();
     if(attempt===0) toast("Вход выполнен, загружаем базы…");
     // НАСТОЙЧИВО грузим базы — НЕ оставляем пользователя с «ничего». Пока онлайн — ретраим с backoff,
@@ -4854,7 +4881,7 @@ async function cloudLogout(){
   }catch(_){}
   clearCloudSess();   // чистим своё хранилище сессии, иначе при запуске восстановит вход
   // снимаем флаг «без облака» — при следующем запуске снова покажется вход (нет сессии → гейт)
-  try{ localStorage.removeItem("vahtahoz_login_skipped"); }catch(e){}
+  try{ localStorage.removeItem(NS+"vahtahoz_login_skipped"); }catch(e){}
   // перезагрузка: гарантирует чистое состояние из STORE_KEY (как switchProfile) и показ логин-гейта без остатков
   location.reload();
 }
@@ -5525,8 +5552,8 @@ nav("dashboard");
 (function gateEarly(){
   try{
     if(checkRecoveryLink()) return;   // пришли по ссылке сброса пароля → экран нового пароля, не гейт
-    if(localStorage.getItem("vahtahoz_login_skipped")) return;
-    if(!localStorage.getItem("vahtahoz_sess")) showLoginGate();   // нет своей сессии → гейт (тот же ключ, что и в cloudInit)
+    if(localStorage.getItem(NS+"vahtahoz_login_skipped")) return;
+    if(!localStorage.getItem(NS+"vahtahoz_sess")) showLoginGate();   // нет своей сессии → гейт (тот же ключ, что и в cloudInit)
   }catch(e){}
 })();
 setTimeout(expiryNoticeOnOpen, 400);
