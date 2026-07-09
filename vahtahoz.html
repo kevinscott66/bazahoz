@@ -162,7 +162,7 @@
     </div>
     <div class="flex items-center gap-2">
       <button id="syncChip" class="btn btn-ghost text-xs hidden" style="padding:6px 10px" title="Синхронизация с облаком" aria-label="Синхронизация с облаком"></button>
-      <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px;max-width:56vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Сменить базу" aria-label="Сменить базу"></button>
+      <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px;max-width:38vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Сменить базу" aria-label="Сменить базу"></button>
     </div>
   </header>
   <!-- тонкий статус-бар синхронизации (под шапкой) -->
@@ -218,7 +218,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v170</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v173</div>
   </div>
 </div>
 
@@ -521,12 +521,24 @@ function visibleProfiles(){
   if(cloud.ready && profiles.list.some(x=>x.cloudId)) return profiles.list.filter(x=>x.cloudId || x.id===profiles.activeId);
   return profiles.list;
 }
+// Порядок баз в списке «Базы»: регион (Западная→Восточная→Рудная) → номер отряда → имя.
+function baseRank(name){
+  const s = String(name||"");
+  const num = parseInt((s.match(/^\s*(\d+)/)||[])[1] || "999", 10);
+  let region = 9;
+  if(/западн/i.test(s)) region = 1; else if(/восточн/i.test(s)) region = 2; else if(/ругрп|рудн/i.test(s)) region = 3;
+  return { region, num };
+}
+function sortBases(a, b){
+  const ra = baseRank(a.name), rb = baseRank(b.name);
+  return (ra.region - rb.region) || (ra.num - rb.num) || String(a.name||"").localeCompare(String(b.name||""), "ru");
+}
 // «Новая база» = локальная, без синхронизации. Уместна вне облака или у владельца; облачному работнику её прячем,
 // иначе он создаст непривязанную базу, которую никто не увидит (и visibleProfiles её потом спрячет).
 function canAddLocalBase(){ return !cloud.ready || !!(cloud.profile && cloud.profile.is_admin); }
 function openProfilesSheet(){
   if(roleBaseLocked()){ toast("Переключение и управление базами недоступно для вашей роли"); return; }   // начальник заперт на своей базе (+ защита от гонки роли)
-  const rows = visibleProfiles().map(p=>{
+  const rows = visibleProfiles().slice().sort(sortBases).map(p=>{
     const isActive = p.id===profiles.activeId;
     return `<div class="flex items-center gap-2 text-sm py-2 border-b border-gray-800" data-profid="${esc(p.id)}">
       <span class="flex-1 truncate ${isActive?"font-bold":""}">${isActive?"✅ ":""}${esc(p.name)}</span>
@@ -1168,6 +1180,20 @@ function render(){
   if(currentView==="more") renderMore();
 }
 
+// Короткая надпись базы ТОЛЬКО для кнопки переключения в шапке (полное имя — в шите выбора базы).
+// Регион без «отряд/РоГРП/РуГРП» и без скобок: «1 отряд РоГРП «Западная»»→«1 Западная»,
+// «2 …«Западная»(Детрин)»→«2 Западная», «1 отряд РуГРП»→«1 Рудная» (РуГРП = рудная ГРП).
+function shortBaseName(name){
+  const s = String(name||"").trim();
+  const num = (s.match(/^\s*(\d+)/)||[])[1] || "";
+  let region = "";
+  if(/восточн/i.test(s)) region = "Восточная";
+  else if(/западн/i.test(s)) region = "Западная";
+  else if(/ругрп|рудн/i.test(s)) region = "Рудная";
+  if(region) return (num ? num+" " : "") + region;
+  const plain = s.replace(/\(.*?\)/g,"").replace(/[«»"]/g,"").trim();   // фолбэк: без скобок/кавычек
+  return plain.length>16 ? plain.slice(0,15)+"…" : plain;
+}
 function renderHeader(){
   const now = new Date();
   const h = now.getHours();
@@ -1177,7 +1203,7 @@ function renderHeader(){
   const bc = document.getElementById("baseChip");
   if(bc){
     // показываем чип только когда баз больше одной и роль позволяет переключение (начальник/роль-неизвестна — скрыт)
-    if(visibleProfiles().length>1 && !roleBaseLocked()){ bc.textContent = `🏠 ${activeProfileName()}`; bc.style.display=""; }
+    if(visibleProfiles().length>1 && !roleBaseLocked()){ bc.textContent = `🏠 ${shortBaseName(activeProfileName())}`; bc.style.display=""; }
     else { bc.style.display="none"; }
   }
   // статус-бар/чип облака скрываем, если активная база не связана с облаком или нет входа
@@ -3057,7 +3083,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v170</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз · оффлайн PWA · сборка v173</div>
   `;
 }
 
