@@ -46,6 +46,8 @@
   .chip:active{ transform:scale(.96); }
   .chip.active{ background:var(--accent); color:var(--on-accent); }
   .light .chip{ background:#f3f4f6; color:#111827; }
+  .chip-add{ background:transparent; border:1px dashed var(--border-strong); color:var(--accent); font-weight:600; }
+  .chip-add.active{ background:transparent; color:var(--accent); }
   .nav-btn{ flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; padding:8px 4px; font-size:11px; color:#9ca3af; }
   .nav-btn.active{ color:var(--accent); position:relative; }
   .light .nav-btn{ color:#6b7280; }
@@ -142,6 +144,8 @@
   .light #loginGate .btn-ghost{ background:rgba(255,255,255,.08); color:#f1f5f9; }
   /* косметика: тап-зона у раскрывающихся секций (details/summary) — палец попадает уверенно */
   details > summary{ padding:8px 0; min-height:44px; display:flex; align-items:center; }   /* тап-таргет ≥44px (WCAG) */
+  .stock-cat > summary{ cursor:pointer; width:max-content; max-width:100%; }
+  .stock-cat > summary::-webkit-details-marker{ display:none; }   /* скрываем дефолтный треугольник — свой ▾ */
 </style>
 <!-- Supabase клиент (self-hosted, тот же origin → кешируется SW, работает офлайн после 1й загрузки) -->
 <script src="./supabase.js"></script>
@@ -158,8 +162,7 @@
     </div>
     <div class="flex items-center gap-2">
       <button id="syncChip" class="btn btn-ghost text-xs hidden" style="padding:6px 10px" title="Синхронизация с облаком" aria-label="Синхронизация с облаком"></button>
-      <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px;max-width:42vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Сменить базу" aria-label="Сменить базу"></button>
-      <button id="themeBtn" class="btn btn-ghost" style="min-width:52px;padding:0" title="Сменить тему" aria-label="Сменить тему">🌙</button>
+      <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px;max-width:56vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Сменить базу" aria-label="Сменить базу"></button>
     </div>
   </header>
   <!-- тонкий статус-бар синхронизации (под шапкой) -->
@@ -215,7 +218,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v168 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v169 · БЕТА</div>
   </div>
 </div>
 
@@ -289,11 +292,7 @@ const defaultState = {
     ]
   },
   journals: emptyJournals(),
-  locations: {
-    product: ["Склад А","Склад Б","Холодильник","Ларь","Склад В","Кухня"],
-    household: ["Красный жилой болк","Склад В","Баня","Кунг","Болк хозрабочего"],
-    tool: ["Склад В","Кунг","Болк хозрабочего","Мастерская"]
-  },
+  locations: { product: [], household: [], tool: [] },   // места ПРИВЯЗАНЫ К БАЗЕ и у всех разные — стартуем пусто, добавляет пользователь (форма позиции → «＋ Место»)
   lastExpiryNoticeDate: null
 };
 
@@ -836,15 +835,13 @@ for(const k of STOCK_TYPE_KEYS){
   }
 }
 /* Дефолтные места — seed для state.locations при первом запуске и фолбэк, если массив пуст. */
-const DEFAULT_LOCATIONS = {
-  product: ["Склад А","Склад Б","Холодильник","Ларь","Склад В","Кухня"],
-  household: ["Красный жилой болк","Склад В","Баня","Кунг","Болк хозрабочего"],
-  tool: ["Склад В","Кунг","Болк хозрабочего","Мастерская"],
-};
+// Места хранения ПРИВЯЗАНЫ К БАЗЕ и у всех разные — поэтому НЕТ глобальных дефолтов (раньше сюда были зашиты
+// реальные места одной базы и засеивались во все → чужие «Серый склад/Морозильная камера» появлялись везде).
+// Новая база стартует с пустым списком; пользователь добавляет свои места (в форме позиции есть «＋ Новое место»).
+const DEFAULT_LOCATIONS = { product: [], household: [], tool: [] };
 function getLocations(type){
   const arr = state.locations?.[type];
-  return Array.isArray(arr) && arr.length ? arr.slice()
-       : (DEFAULT_LOCATIONS[type] ? DEFAULT_LOCATIONS[type].slice() : []);
+  return Array.isArray(arr) ? arr.slice() : [];
 }
 /* Список мест для формы редактирования — включает orphan-значение (которое есть у записи,
    но было удалено из state.locations), чтобы при сохранении не стереть его молча. */
@@ -887,7 +884,7 @@ if(!state.locations || typeof state.locations!=="object" || Array.isArray(state.
   for(const k of STOCK_TYPE_KEYS) state.locations[k] = DEFAULT_LOCATIONS[k].slice();
 }
 for(const k of STOCK_TYPE_KEYS){
-  if(!Array.isArray(state.locations[k]) || !state.locations[k].length) state.locations[k] = (DEFAULT_LOCATIONS[k]||[]).slice();
+  if(!Array.isArray(state.locations[k])) state.locations[k] = [];   // пустой список мест — валиден (места добавляет пользователь под свою базу)
 }
 // чистим дубликаты, пустоты и опасные символы (XSS-страховка для inline-onclick)
 for(const k of STOCK_TYPE_KEYS){
@@ -1025,7 +1022,7 @@ function applyTheme(){
   document.body.classList.toggle("text-gray-900", light);
   document.getElementById("navbar").classList.toggle("bg-gray-950/95", !light);
   document.getElementById("navbar").classList.toggle("bg-white/95", light);
-  document.getElementById("themeBtn").textContent = light ? "☀️" : "🌙";
+  const _tb=document.getElementById("themeBtn"); if(_tb) _tb.textContent = light ? "☀️" : "🌙";   // кнопка темы убрана из шапки (тема — в «Внешний вид»); гард на случай отсутствия
   document.querySelector('meta[name="theme-color"]').setAttribute("content", light?"#f9fafb":"#111827");
 }
 
@@ -1560,6 +1557,7 @@ async function deleteTask(id){
 let stockTab = "all";
 let stockSearch = "";
 let stockCat = ""; // фильтр по категории ("" = все)
+let stockCatOpen = false;   // раскрыт ли длинный ряд категорий (свёрнут по умолчанию — экономит место в «Складе»)
 let stockMode = "stock"; // stock | receipt | issue | writeoff | order
 let stockLimit = 100;    // сколько карточек показываем (чанкинг)
 let stockSearchT = null; // debounce таймер
@@ -1621,12 +1619,15 @@ function renderStock(){
       <button class="chip ${stockExpiryFilter==='soon'?'active':''}" data-expfilter="soon">⏰ Скоро (${expScope.filter(s=>{if(!inStock(s))return false;const d=s.expiry?daysLeft(s.expiry):null;return d!==null&&d>=0&&d<=14;}).length})</button>
     </div>
 
-    <div class="scroll-x flex gap-2" id="stockCatChips">
-      <button class="chip ${stockCat===''?'active':''}" data-stockcat="">Все категории</button>
-      ${cats.map(c=>`<button class="chip ${stockCat===c?'active':''}" data-stockcat="${esc(c)}">${esc(c)}${countByCat[c]?` <span class="opacity-70">${countByCat[c]}</span>`:""}</button>`).join("")}
-      <button class="chip" onclick="openCategoriesEdit()">⚙️ Категории</button>
-      <button class="chip" onclick="openLocationsEdit()">📍 Места</button>
-    </div>
+    <details class="stock-cat" ${stockCatOpen?"open":""}>
+      <summary class="chip" style="display:inline-flex;align-items:center;gap:6px;list-style:none">🏷 ${stockCat?`Категория: ${esc(stockCat)}`:"Все категории"} ▾</summary>
+      <div class="scroll-x flex gap-2 mt-2" id="stockCatChips">
+        <button class="chip ${stockCat===''?'active':''}" data-stockcat="">Все категории</button>
+        ${cats.map(c=>`<button class="chip ${stockCat===c?'active':''}" data-stockcat="${esc(c)}">${esc(c)}${countByCat[c]?` <span class="opacity-70">${countByCat[c]}</span>`:""}</button>`).join("")}
+        <button class="chip" onclick="openCategoriesEdit()">⚙️ Категории</button>
+        <button class="chip" onclick="openLocationsEdit()">📍 Места</button>
+      </div>
+    </details>
 
     <input class="input" id="stockSearchInp" placeholder="Поиск по складу…" value="${esc(stockSearch)}" autocomplete="off" />
 
@@ -1642,6 +1643,8 @@ function renderStock(){
       renderStockList();
     }, 150);
   });
+  const catDet = v.querySelector("details.stock-cat");
+  if(catDet) catDet.addEventListener("toggle", ()=>{ stockCatOpen = catDet.open; });   // помним раскрытие: выбор категории не схлопывает ряд
   renderStockList();
 }
 
@@ -2430,7 +2433,7 @@ function openStockEdit(id, typeDefault){
       </div>
       <div>
         <div class="text-sm opacity-70 mb-1">Место хранения</div>
-        <div class="scroll-x flex gap-2">${getLocationsWithOrphan(tk, it.location).map(l=>`<button class="chip ${it.location===l?"active":""}" data-loc="${esc(l)}" onclick="${CHIP_PICK}">${esc(l)}</button>`).join("")}</div>
+        <div class="scroll-x flex gap-2">${getLocationsWithOrphan(tk, it.location).map(l=>`<button class="chip ${it.location===l?"active":""}" data-loc="${esc(l)}" onclick="${CHIP_PICK}">${esc(l)}</button>`).join("")}<button type="button" class="chip chip-add" onclick="addLocChip(this,'${tk}')" aria-label="Добавить место хранения">＋ Место</button></div>
       </div>
       <div>
         <div class="text-sm opacity-70 mb-1">${expiryLabel}</div>
@@ -2738,6 +2741,23 @@ async function addLocation(type){
   saveState(); render();
   toast("Место добавлено");
 }
+// «＋ Место» прямо в форме позиции: добавляет место под ТЕКУЩУЮ базу и выбирает его, НЕ пересобирая форму
+// (иначе терялся бы уже введённый текст). Пустой список — норма: места у каждой базы свои, добавляются здесь.
+async function addLocChip(btn, type){
+  if(!ensureCanEdit()) return;
+  const val = await promptSheet(`Новое место хранения (${typeMeta(type).label})`, "", {title:"Добавить место"});
+  if(val===null) return;
+  const name = String(val).trim();
+  if(!name){ toast("Пустое название"); return; }
+  if(!validShortName(name)) return;
+  const list = state.locations[type] || [];
+  if(!list.includes(name)){ state.locations[type] = [...list, name]; tombRevive(state.delLoc, type, name); logOp("LOC_ADD", `${type}: «${name}»`); saveState(); }
+  const row = btn.parentNode; if(!row) return;
+  let chip=null; row.querySelectorAll(".chip").forEach(c=>{ if(c.getAttribute("data-loc")===name) chip=c; });
+  if(!chip){ chip = document.createElement("button"); chip.type="button"; chip.className="chip"; chip.setAttribute("data-loc", name); chip.setAttribute("onclick", CHIP_PICK); chip.textContent = name; row.insertBefore(chip, btn); }
+  row.querySelectorAll(".chip").forEach(x=>x.classList.remove("active"));
+  chip.classList.add("active");
+}
 async function renameLocation(type, oldName){
   if(!ensureCanEdit()) return;
   const val = await promptSheet(`Переименовать «${oldName}»`, oldName, {title:"Переименовать"});
@@ -3037,7 +3057,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v168 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v169 · тестовый канал</div>
   `;
 }
 
@@ -3847,7 +3867,6 @@ async function writeoffExpired(){
 
 /* ---------- Nav events ---------- */
 document.querySelectorAll("#navbar .nav-btn").forEach(b=>b.addEventListener("click",()=>nav(b.dataset.nav)));
-document.getElementById("themeBtn").addEventListener("click", toggleTheme);
 document.getElementById("baseChip").addEventListener("click", ()=>openProfilesSheet());
 document.getElementById("syncChip").addEventListener("click", ()=>{ if(typeof cloudSyncNow==="function") cloudSyncNow(); });
 
@@ -3862,7 +3881,7 @@ document.addEventListener("click", e=>{
   const jrMonthBtn = e.target.closest("[data-jrmonth]");
   if(jrMonthBtn){ journalMonth = jrMonthBtn.dataset.jrmonth; render(); return; }
   const catChip = e.target.closest("[data-stockcat]");
-  if(catChip){ stockCat = catChip.dataset.stockcat; stockLimit=100; renderStockList(); document.querySelectorAll("[data-stockcat]").forEach(el=>el.classList.toggle("active", el.dataset.stockcat===stockCat)); return; }
+  if(catChip){ stockCat = catChip.dataset.stockcat; stockLimit=100; renderStockList(); document.querySelectorAll("[data-stockcat]").forEach(el=>el.classList.toggle("active", el.dataset.stockcat===stockCat)); const _s=document.querySelector("details.stock-cat > summary"); if(_s) _s.textContent = "🏷 "+(stockCat?("Категория: "+stockCat):"Все категории")+" ▾"; return; }
   const catAct = e.target.closest("[data-cat-action]");
   if(catAct){
     const a = catAct.dataset;
@@ -3877,7 +3896,7 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   openStockEdit,saveStock,deleteStock,openBatchAdd,saveBatch,openBatchEdit,saveBatchEdit,deleteBatch,quickAdjust,
   openOpEdit,saveOp,deleteOp,editOp,saveOpEdit,orderReceive,
   openCategoriesEdit,addCategory,renameCategory,deleteCategory,
-  openLocationsEdit,addLocation,renameLocation,deleteLocation,
+  openLocationsEdit,addLocation,addLocChip,renameLocation,deleteLocation,
   openProfilesSheet,switchProfile,addProfile,renameProfile,deleteProfile,exportAllProfiles,mergeCatalogs,
   toggleCheck,addCheck,resetChecklist,removeCheck,
   exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,exportJournalsMonth,clearLog,wipeAll,toggleTheme,setTheme,
@@ -4732,8 +4751,13 @@ async function cloudInit(){
       ])).catch(()=>{});
       await cloudOnLogin({ access_token:s.access_token, refresh_token:s.refresh_token, user:s.user });
     } else {
-      // нет сохранённой/продлеваемой сессии → вход обязателен (режим «без облака» убран)
-      showLoginGate();
+      // нет сохранённой/продлеваемой сессии → вход обязателен (режим «без облака» убран).
+      // НО cloudInit асинхронный, а gateEarly показал гейт сразу — за время cloudInit пользователь мог УЖЕ войти.
+      // Перечитываем сессию (и смотрим cloud.session): иначе повторно перекрыли бы успешный вход панелью логина
+      // (баг: окно логина всплывало сразу после входа и исчезало лишь после перезахода).
+      const fresh = loadCloudSess();
+      if((fresh && fresh.access_token && fresh.user) || (cloud.session && cloud.session.access_token)) hideLoginGate();
+      else showLoginGate();
     }
   }catch(e){ console.warn("cloudInit", e); }
 }
