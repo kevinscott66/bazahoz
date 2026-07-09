@@ -22,8 +22,8 @@
   :root{ color-scheme: dark; }
   .light{ color-scheme: light; }
   /* Фирменный акцент — тил-петроль (инженерно-спокойный, не дефолтный синий). Единый бренд с «Почта Разведчик». */
-  :root{ --accent:#2DAEB8; --accent-press:#46C0C9; --accent-weak:rgba(45,174,184,.16); --on-accent:#06282C; }
-  .light{ --accent:#0E7C86; --accent-press:#0A6068; --accent-weak:#E1F0F1; --on-accent:#ffffff; }
+  :root{ --accent:#2DAEB8; --accent-press:#46C0C9; --accent-weak:rgba(45,174,184,.16); --on-accent:#06282C; --border-strong:rgba(255,255,255,.28); }
+  .light{ --accent:#0E7C86; --accent-press:#0A6068; --accent-weak:#E1F0F1; --on-accent:#ffffff; --border-strong:#c9c9c4; }
   body{ font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif; padding-bottom:env(safe-area-inset-bottom); }
   .safe-top{ padding-top:env(safe-area-inset-top); }
   .safe-bot{ padding-bottom:calc(88px + env(safe-area-inset-bottom)); }
@@ -162,7 +162,7 @@
     </div>
     <div class="flex items-center gap-2">
       <button id="syncChip" class="btn btn-ghost text-xs hidden" style="padding:6px 10px" title="Синхронизация с облаком" aria-label="Синхронизация с облаком"></button>
-      <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px;max-width:56vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Сменить базу" aria-label="Сменить базу"></button>
+      <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px;max-width:38vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Сменить базу" aria-label="Сменить базу"></button>
     </div>
   </header>
   <!-- тонкий статус-бар синхронизации (под шапкой) -->
@@ -218,7 +218,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v169 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v171 · БЕТА</div>
   </div>
 </div>
 
@@ -1168,6 +1168,20 @@ function render(){
   if(currentView==="more") renderMore();
 }
 
+// Короткая надпись базы ТОЛЬКО для кнопки переключения в шапке (полное имя — в шите выбора базы).
+// Регион без «отряд/РоГРП/РуГРП» и без скобок: «1 отряд РоГРП «Западная»»→«1 Западная»,
+// «2 …«Западная»(Детрин)»→«2 Западная», «1 отряд РуГРП»→«1 Рудная» (РуГРП = рудная ГРП).
+function shortBaseName(name){
+  const s = String(name||"").trim();
+  const num = (s.match(/^\s*(\d+)/)||[])[1] || "";
+  let region = "";
+  if(/восточн/i.test(s)) region = "Восточная";
+  else if(/западн/i.test(s)) region = "Западная";
+  else if(/ругрп|рудн/i.test(s)) region = "Рудная";
+  if(region) return (num ? num+" " : "") + region;
+  const plain = s.replace(/\(.*?\)/g,"").replace(/[«»"]/g,"").trim();   // фолбэк: без скобок/кавычек
+  return plain.length>16 ? plain.slice(0,15)+"…" : plain;
+}
 function renderHeader(){
   const now = new Date();
   const h = now.getHours();
@@ -1177,7 +1191,7 @@ function renderHeader(){
   const bc = document.getElementById("baseChip");
   if(bc){
     // показываем чип только когда баз больше одной и роль позволяет переключение (начальник/роль-неизвестна — скрыт)
-    if(visibleProfiles().length>1 && !roleBaseLocked()){ bc.textContent = `🏠 ${activeProfileName()}`; bc.style.display=""; }
+    if(visibleProfiles().length>1 && !roleBaseLocked()){ bc.textContent = `🏠 ${shortBaseName(activeProfileName())}`; bc.style.display=""; }
     else { bc.style.display="none"; }
   }
   // статус-бар/чип облака скрываем, если активная база не связана с облаком или нет входа
@@ -3057,7 +3071,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v169 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v171 · тестовый канал</div>
   `;
 }
 
@@ -5797,7 +5811,7 @@ function normalizeState(){
   if(!state.categories || typeof state.categories!=="object" || Array.isArray(state.categories)) state.categories = { product:[], household:[], tool:[] };
   for(const k of STOCK_TYPE_KEYS) if(!Array.isArray(state.categories[k])) state.categories[k] = (DEFAULT_CATEGORIES[k]||[]).slice();
   if(!state.locations || typeof state.locations!=="object" || Array.isArray(state.locations)){ state.locations={}; for(const k of STOCK_TYPE_KEYS) state.locations[k]=DEFAULT_LOCATIONS[k].slice(); }
-  for(const k of STOCK_TYPE_KEYS){ if(!Array.isArray(state.locations[k]) || !state.locations[k].length) state.locations[k]=(DEFAULT_LOCATIONS[k]||[]).slice(); state.locations[k]=uniqClean(state.locations[k]); }
+  for(const k of STOCK_TYPE_KEYS){ if(!Array.isArray(state.locations[k])) state.locations[k]=[]; state.locations[k]=uniqClean(state.locations[k]); }   // пустой список мест валиден (места у каждой базы свои)
   ensureTomb();
   // вычитаем надгробия после ре-сида дефолтов — иначе ранее удалённые дефолтные места/категории
   // воскресли бы при storage-событии/импорте (как и в стартовом блоке нормализации)
