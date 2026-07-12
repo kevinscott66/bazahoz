@@ -11,3 +11,10 @@ native-desktop/src-tauri/target/
 # личные данные: экспорты/бэкапы склада не коммитим в публичный репозиторий
 vahtahoz-*.json
 *.backup.json
+
+# --- Секреты инфраструктуры: НИКОГДА не коммитить реальные токены/ключи ---
+# Реальный Cloudflare API-токен живёт только локально (шаблон — cf-token.env.example)
+infra/cloudflare/cf-token.env
+*.secret
+# шаблоны *.example коммитим (иначе .env.* выше их бы съел)
+!*.example
