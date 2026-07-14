@@ -218,7 +218,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v174 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v176 · БЕТА</div>
   </div>
 </div>
 
@@ -3047,6 +3047,7 @@ function renderMore(){
   const acc = [];
   if(!baseLocked && nBases>1) acc.push(row("Сменить базу","openProfilesSheet()",{val:String(nBases)}));
   acc.push(row("Синхронизация с облаком","openCloudSheet()",{ right:`<span class="set-dot" style="background:${cloudStatusColor()}"></span>${ch}` }));
+  if(activeCloudId() && cloud.profile) acc.push(row("Резервная почта","openRecoveryEmailSheet()",{ val: cloud.profile.recovery_email_verified ? "✓ подтв." : (cloud.profile.recovery_email ? "не подтв." : "не задана") }));
   if(canManageBase()) acc.push(row("Работники и роли","openMembersSheet()"));
   if(canManageOrgRoles()) acc.push(row("Роли по регионам","openOrgRolesSheet()"));
   if(canSeeAllBases()) acc.push(row("Сводка по всем базам","openAllBasesSheet()"));
@@ -3083,7 +3084,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v174 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v176 · тестовый канал</div>
   `;
 }
 
@@ -3145,7 +3146,7 @@ function openFaqSheet(){ const q=(t,a)=>`<details class="border-b border-white/5
   ${q("Как выгрузить в Excel?","«Данные → Экспорт в Excel». Файл .xlsx содержит склад и журналы. Работает офлайн.")}
   ${q("Как передать смену?","Управляющий базой: «Аккаунт и база → Работники и роли → Передать смену». Нужен интернет.")}
   ${q("Почему меня не видно в другой базе?","Доступ к базам выдаёт начальник участка или партии. Каждый видит только свои базы.")}
-  ${q("Забыл пароль","На экране входа нажмите «Забыли пароль?» — ссылка придёт на привязанную почту @razvedchick.ru.")}
+  ${q("Забыл пароль","Заранее привяжите личную почту: «Ещё → Резервная почта». Тогда на экране входа «Забыли пароль?» → введёте логин → код придёт на эту почту → введёте код и новый пароль. Без привязанной почты сброс делает начальник.")}
   </div>`); }
 function openPrivacySheet(){ openSheet(`<div class="font-bold text-xl mb-3">Политика конфиденциальности</div>
   <div class="text-sm space-y-2" style="line-height:1.6;max-height:70vh;overflow-y:auto">
@@ -3958,7 +3959,7 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   toggleCheck,addCheck,resetChecklist,removeCheck,
   exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,exportJournalsMonth,clearLog,wipeAll,toggleTheme,setTheme,
   openCloudSheet,openExportSheet,openBackupSheet,openJournalSheet,openBroadcastSheet,sendBroadcast,
-  openAboutSheet,openFaqSheet,openPrivacySheet,openTermsSheet,
+  openAboutSheet,openFaqSheet,openPrivacySheet,openTermsSheet,openRecoveryEmailSheet,
   openMove,doMove,
   openMembersSheet,openMemberRole,setMemberRole,memberRotate,memberRemove,openAddMember,openResetPwd,
   openShift,openHandover,doHandover,
@@ -4823,20 +4824,94 @@ async function cloudInit(){
    Работает, когда домен логина (LOGIN_DOMAIN) реально принимает почту (catch-all на своём домене).
    1) «Забыли пароль?» → recover-письмо со ссылкой на приложение;
    2) ссылка открывает приложение с #type=recovery&access_token=… → экран нового пароля. */
+// вызов Edge Function БЕЗ токена — только публичные действия восстановления (юзер не залогинен)
+async function cloudCallFnPublic(action, payload){
+  const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(), 35000);
+  let r;
+  try{ r = await fetch(`${CLOUD_CFG.url}/functions/v1/manage-user`, { method:"POST", signal:ctrl.signal, headers:{ apikey:CLOUD_CFG.anon, "Content-Type":"application/json" }, body: JSON.stringify(Object.assign({ action }, payload)) }); }
+  catch(_){ clearTimeout(to); throw new Error("Сервер недоступен. Проверьте интернет"); }
+  clearTimeout(to);
+  const d = await r.json().catch(()=>({}));
+  if(!r.ok || d.error) throw new Error(d.error || ("Ошибка "+r.status));
+  return d;
+}
+function _recErr(m){ return m==="wrong_code"?"Неверный код":m==="expired"?"Код истёк — запросите заново":m==="too_many"?"Слишком много попыток, подождите":m==="wait"?"Подождите минуту перед повтором":m; }
+// Восстановление пароля по КОДУ на привязанную резервную почту (замена старой ссылке @razvedchick.ru)
 async function requestPasswordReset(){
-  const u = await promptSheet("Введите ваш логин — на привязанную почту придёт ссылка для сброса пароля.", (document.getElementById("lgEmail")?.value||"").trim(), { title:"Забыли пароль?" });
-  if(u===null) return;
-  const login=(u||"").trim().toLowerCase();
-  if(!login){ toast("Введите логин"); return; }
-  const email = login.includes("@") ? login : login + LOGIN_DOMAIN;
-  try{
-    await fetch(`${CLOUD_CFG.url}/auth/v1/recover`, {
-      method:"POST", headers:{ apikey:CLOUD_CFG.anon, "Content-Type":"application/json" },
-      body: JSON.stringify({ email, options:{ redirect_to: location.origin + location.pathname } })
-    });
-    // GoTrue отвечает 200 в любом случае (не раскрывает, есть ли аккаунт) — сообщение нейтральное
-    toast("Если такой логин есть — ссылка отправлена на привязанную почту");
-  }catch(e){ toast("Не удалось отправить. Проверьте интернет и повторите"); }
+  const pre=(document.getElementById("lgEmail")?.value||"").trim();
+  openSheet(`
+    <div class="font-bold text-xl mb-1">Забыли пароль?</div>
+    <div class="text-sm opacity-70 mb-3">Введите логин — код для сброса придёт на привязанную резервную почту.</div>
+    <input class="input mb-2" id="rcLogin" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Логин (например: ivanov)" value="${esc(pre)}" />
+    <button class="btn btn-primary w-full" id="rcSend">Отправить код</button>
+    <div id="rcErr" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
+  `);
+  const err=()=>document.getElementById("rcErr");
+  document.getElementById("rcSend").onclick = async ()=>{
+    const username=(document.getElementById("rcLogin").value||"").trim().toLowerCase().replace(/@.*$/,"");
+    if(!/^[a-z0-9_]{3,32}$/.test(username)){ err().textContent="Неверный логин"; return; }
+    const b=document.getElementById("rcSend"); b.disabled=true; b.textContent="Отправка…";
+    try{ await cloudCallFnPublic("request_reset",{username}); }
+    catch(e){ b.disabled=false; b.textContent="Отправить код"; err().textContent="Не удалось отправить. Проверьте интернет"; return; }
+    // шаг 2: код + новый пароль
+    openSheet(`
+      <div class="font-bold text-xl mb-1">Новый пароль</div>
+      <div class="text-sm opacity-70 mb-3">Если у логина есть привязанная почта — код отправлен. Введите его и новый пароль.</div>
+      <input class="input mb-2" id="rcCode" inputmode="numeric" maxlength="6" placeholder="Код из письма (6 цифр)" />
+      <input class="input mb-2" id="rcPw" type="text" autocapitalize="none" autocorrect="off" autocomplete="new-password" placeholder="Новый пароль (от 6 символов)" />
+      <button class="btn btn-primary w-full" id="rcGo">Сменить пароль</button>
+      <div id="rcErr2" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
+    `);
+    document.getElementById("rcGo").onclick = async ()=>{
+      const code=(document.getElementById("rcCode").value||"").trim();
+      const pw=(document.getElementById("rcPw").value||"");
+      const e2=document.getElementById("rcErr2");
+      if(!/^\d{6}$/.test(code)){ e2.textContent="Код — 6 цифр"; return; }
+      if(pw.length<6){ e2.textContent="Пароль не короче 6 символов"; return; }
+      const g=document.getElementById("rcGo"); g.disabled=true; g.textContent="Сохранение…";
+      try{ await cloudCallFnPublic("confirm_reset",{username,code,new_password:pw}); closeSheet(); toast("Пароль изменён — войдите с новым"); }
+      catch(ex){ g.disabled=false; g.textContent="Сменить пароль"; e2.textContent=_recErr(String(ex.message||"Ошибка")); }
+    };
+  };
+}
+// Профиль: привязать/подтвердить резервную почту (для восстановления пароля кодом)
+async function openRecoveryEmailSheet(){
+  const cur = cloud.profile && cloud.profile.recovery_email;
+  const ver = cloud.profile && cloud.profile.recovery_email_verified;
+  openSheet(`
+    <div class="font-bold text-xl mb-1">Резервная почта</div>
+    <div class="text-sm opacity-70 mb-3">На неё придёт код для восстановления пароля. Можно личную почту (Gmail и т.п.) или @razvedchick.ru.</div>
+    ${cur?`<div class="text-sm mb-3">Сейчас: <b>${esc(cur)}</b> ${ver?'<span class="badge badge-green">подтверждена</span>':'<span class="badge badge-yellow">не подтверждена</span>'}</div>`:''}
+    <input class="input mb-2" id="reEmail" inputmode="email" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="email@example.com" value="${esc(cur||'')}" />
+    <button class="btn btn-primary w-full" id="reSend">Отправить код подтверждения</button>
+    ${cur?`<button class="btn btn-ghost w-full mt-2" id="reUnbind">Отвязать почту</button>`:''}
+    <div id="reErr" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
+  `);
+  const un=document.getElementById("reUnbind");
+  if(un) un.onclick=async()=>{ try{ await cloudCallFn("unbind_recovery_email",{}); if(cloud.profile){cloud.profile.recovery_email=null;cloud.profile.recovery_email_verified=false;} closeSheet(); toast("Резервная почта отвязана"); }catch(e){ toast("Не удалось"); } };
+  document.getElementById("reSend").onclick = async ()=>{
+    const email=(document.getElementById("reEmail").value||"").trim().toLowerCase();
+    const err=document.getElementById("reErr");
+    if(!/^[a-z0-9_.+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(email)){ err.textContent="Введите корректный адрес почты"; return; }
+    const b=document.getElementById("reSend"); b.disabled=true; b.textContent="Отправка…";
+    try{ await cloudCallFn("set_recovery_email",{email}); }
+    catch(e){ b.disabled=false; b.textContent="Отправить код подтверждения"; err.textContent=_recErr(String(e.message||"Ошибка")); return; }
+    openSheet(`
+      <div class="font-bold text-xl mb-1">Подтвердите почту</div>
+      <div class="text-sm opacity-70 mb-3">Код отправлен на <b>${esc(email)}</b>. Введите его.</div>
+      <input class="input mb-2" id="reCode" inputmode="numeric" maxlength="6" placeholder="Код (6 цифр)" />
+      <button class="btn btn-primary w-full" id="reGo">Подтвердить</button>
+      <div id="reErr2" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
+    `);
+    document.getElementById("reGo").onclick = async ()=>{
+      const code=(document.getElementById("reCode").value||"").trim();
+      const e2=document.getElementById("reErr2");
+      if(!/^\d{6}$/.test(code)){ e2.textContent="Код — 6 цифр"; return; }
+      const g=document.getElementById("reGo"); g.disabled=true; g.textContent="Проверка…";
+      try{ await cloudCallFn("confirm_recovery_email",{email,code}); if(cloud.profile){cloud.profile.recovery_email=email;cloud.profile.recovery_email_verified=true;} closeSheet(); toast("Резервная почта подтверждена"); }
+      catch(ex){ g.disabled=false; g.textContent="Подтвердить"; e2.textContent=_recErr(String(ex.message||"Ошибка")); }
+    };
+  };
 }
 // перехват recovery-ссылки при старте: показать экран нового пароля
 function checkRecoveryLink(){
