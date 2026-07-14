@@ -218,7 +218,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v172 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v174 · БЕТА</div>
   </div>
 </div>
 
@@ -1767,7 +1767,7 @@ async function exportJournalsMonth(ym){
     ws["!cols"]=[{wch:16},{wch:34},{wch:11},{wch:9},{wch:16},{wch:12},{wch:10},{wch:24}];
     XLSX.utils.book_append_sheet(wb, ws, meta.label.slice(0,28));
   }
-  XLSX.writeFile(wb, `vahtahoz-журналы-${ym}-${_fileSafe(activeProfileName())}.xlsx`);
+  saveXlsx(wb, `vahtahoz-журналы-${ym}-${_fileSafe(activeProfileName())}.xlsx`);
 }
 function renderJournal(kind){
   const m = JOURNAL_META[kind];
@@ -3083,7 +3083,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v172 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v174 · тестовый канал</div>
   `;
 }
 
@@ -3277,7 +3277,7 @@ async function exportXlsx(){
     XLSX.utils.book_append_sheet(wb, tsh, "Задачи");
   }
 
-  XLSX.writeFile(wb, `vahtahoz-${todayStr()}.xlsx`);
+  saveXlsx(wb, `vahtahoz-${todayStr()}.xlsx`);
   toast("Excel сохранён");
 }
 function exportCsv(){
@@ -3391,18 +3391,49 @@ async function runFilteredXlsx(){
   if(ws["!ref"]) ws["!autofilter"] = { ref: ws["!ref"] };   // автофильтр в Excel по шапке
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Склад (фильтр)");
-  XLSX.writeFile(wb, `vahtahoz-${_filterTag(f)}-${todayStr()}.xlsx`);
+  saveXlsx(wb, `vahtahoz-${_filterTag(f)}-${todayStr()}.xlsx`);
   closeSheet();
   toast(`Excel сохранён · ${list.length} поз.`);
 }
 
+// Универсальное сохранение файла. В НАТИВНЫХ обёртках (Capacitor iOS/Android WKWebView/WebView) обычный
+// <a download>+Blob НЕ срабатывает (нет менеджера загрузок) → сначала пробуем Web Share API с файлом
+// («Поделиться» → «Сохранить в Файлы»/отправить), и только затем классическое скачивание (браузеры/десктоп).
+// ВАЖНО: вызывать синхронно из обработчика клика (без await до share) — иначе iOS снимет «жест» и share упадёт.
+async function saveBlob(blob, filename){
+  // share нужен на МОБИЛЬНЫХ/тач (там download не работает в обёртках); на десктопе/Tauri оставляем обычное
+  // скачивание (иначе десктоп-веб получал бы лишний «Поделиться» вместо прямого сохранения).
+  const mobileLike = (navigator.maxTouchPoints||0) > 0 || /iphone|ipad|ipod|android/i.test(navigator.userAgent||"");
+  try{
+    const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
+    if(mobileLike && navigator.canShare && navigator.canShare({ files:[file] })){
+      await navigator.share({ files:[file], title: filename });
+      return true;   // пользователь сохранил/отправил (или закрыл шит) — второй раз НЕ качаем
+    }
+  }catch(e){
+    if(e && e.name==="AbortError") return true;   // сам отменил «Поделиться» — не дублируем скачиванием
+    // иначе (не поддержано/не разрешено) — падаем на обычное скачивание
+  }
+  try{
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{ a.remove(); URL.revokeObjectURL(url); }, 1500);
+    return true;
+  }catch(e){ toast("Не удалось сохранить файл на этом устройстве"); return false; }
+}
 function triggerDownload(text, filename, mime){
-  const blob = new Blob([text],{type:mime||"application/json"});
-  const a = document.createElement("a");
-  const url = URL.createObjectURL(blob);
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click();
-  setTimeout(()=>{ a.remove(); URL.revokeObjectURL(url); }, 1500);
+  saveBlob(new Blob([text],{type:mime||"application/json"}), filename);
+}
+// Excel через универсальный сейв (не XLSX.writeFile — он делает тот же не-работающий в обёртках download)
+function saveXlsx(wb, filename){
+  try{
+    const X = window.XLSX;   // вызывается ПОСЛЕ ensureXlsx() в экспорт-функции → уже загружен
+    if(!X){ toast("Excel ещё грузится — повторите"); return; }
+    const buf = X.write(wb, { type:"array", bookType:"xlsx" });
+    saveBlob(new Blob([buf], { type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), filename);
+  }catch(e){ console.warn("saveXlsx", e); toast("Не удалось сформировать Excel"); }
 }
 function exportData(){
   // экспорт ТОЛЬКО текущей базы (для обычного бэкапа/переноса одной базы)
@@ -4639,7 +4670,7 @@ async function exportAllBasesXlsx(){
     XLSX.utils.book_append_sheet(wb, ws, _sheetName(b.name, used));   // лист на базу
   });
   if(!wb.SheetNames.length){ XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Нет данных"]]), "Пусто"); }
-  XLSX.writeFile(wb, `vahtahoz-по-базам-${todayStr()}.xlsx`);
+  saveXlsx(wb, `vahtahoz-по-базам-${todayStr()}.xlsx`);
 }
 async function exportOneBaseXlsx(baseId){
   const b=(_allBasesCache||[]).find(x=>x.id===baseId); if(!b||!b.rows){ toast("Нет данных по базе"); return; }
@@ -4647,7 +4678,7 @@ async function exportOneBaseXlsx(baseId){
   const rows=b.rows.map(_acctRow);
   const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}])); ws["!cols"]=_ACCT_COLS;
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, _sheetName(b.name, new Set()));
-  XLSX.writeFile(wb, `vahtahoz-${_fileSafe(b.name)}-${todayStr()}.xlsx`);
+  saveXlsx(wb, `vahtahoz-${_fileSafe(b.name)}-${todayStr()}.xlsx`);
 }
 const cloudDirtyKey = (cid)=>`${NS}vahtahoz_dirty_${cid}`;
 // удалить все sync-маркеры базы (dirty + снимки подписей) — при удалении/замене базы, чтобы не копить мусор
