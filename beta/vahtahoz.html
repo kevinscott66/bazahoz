@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v177 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v178 · БЕТА</div>
   </div>
 </div>
 
@@ -1049,7 +1049,9 @@ function nav(view){
   document.querySelectorAll("#navbar .nav-btn").forEach(b=>{
     b.classList.toggle("active", b.dataset.nav===view);
   });
-  render();
+  if(view==="more" && cloud.session?.access_token){
+    cloudRefreshRecoveryProfile().finally(()=>render());
+  } else render();
 }
 
 /* ---------- Sheet ---------- */
@@ -3085,7 +3087,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v177 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v178 · тестовый канал</div>
   `;
 }
 
@@ -4837,6 +4839,23 @@ async function cloudCallFnPublic(action, payload){
   return d;
 }
 function _recErr(m){ return m==="wrong_code"?"Неверный код":m==="expired"?"Код истёк — запросите заново":m==="too_many"?"Слишком много попыток, подождите":m==="wait"?"Подождите минуту перед повтором":m; }
+async function cloudRefreshRecoveryProfile(){
+  if(!cloud.session?.access_token || !cloud.profile?.id) return null;
+  try{
+    const prof = await cloudRest(`profiles?select=recovery_email,recovery_email_verified&id=eq.${encodeURIComponent(cloud.profile.id)}`, cloud.session.access_token);
+    if(Array.isArray(prof) && prof[0]){
+      cloud.profile.recovery_email = prof[0].recovery_email;
+      cloud.profile.recovery_email_verified = !!prof[0].recovery_email_verified;
+      return prof[0];
+    }
+  }catch(e){ console.warn("cloudRefreshRecoveryProfile", e); }
+  return null;
+}
+function cloudApplyRecoveryProfile(src){
+  if(!cloud.profile || !src) return;
+  if("recovery_email" in src) cloud.profile.recovery_email = src.recovery_email;
+  if("recovery_email_verified" in src) cloud.profile.recovery_email_verified = !!src.recovery_email_verified;
+}
 // Восстановление пароля по КОДУ на привязанную резервную почту (замена старой ссылке @razvedchick.ru)
 async function requestPasswordReset(){
   const pre=(document.getElementById("lgEmail")?.value||"").trim();
@@ -4877,6 +4896,7 @@ async function requestPasswordReset(){
 }
 // Профиль: привязать/подтвердить резервную почту (для восстановления пароля кодом)
 async function openRecoveryEmailSheet(){
+  await cloudRefreshRecoveryProfile().catch(()=>{});
   const cur = cloud.profile && cloud.profile.recovery_email;
   const ver = cloud.profile && cloud.profile.recovery_email_verified;
   openSheet(`
@@ -4889,7 +4909,7 @@ async function openRecoveryEmailSheet(){
     <div id="reErr" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
   `);
   const un=document.getElementById("reUnbind");
-  if(un) un.onclick=async()=>{ try{ await cloudCallFn("unbind_recovery_email",{}); if(cloud.profile){cloud.profile.recovery_email=null;cloud.profile.recovery_email_verified=false;} closeSheet(); toast("Резервная почта отвязана"); }catch(e){ toast("Не удалось"); } };
+  if(un) un.onclick=async()=>{ try{ const d=await cloudCallFn("unbind_recovery_email",{}); cloudApplyRecoveryProfile(d); closeSheet(); toast("Резервная почта отвязана"); renderMore(); }catch(e){ toast("Не удалось"); } };
   document.getElementById("reSend").onclick = async ()=>{
     const email=(document.getElementById("reEmail").value||"").trim().toLowerCase();
     const err=document.getElementById("reErr");
@@ -4899,7 +4919,7 @@ async function openRecoveryEmailSheet(){
     catch(e){ b.disabled=false; b.textContent="Отправить код подтверждения"; err.textContent=_recErr(String(e.message||"Ошибка")); return; }
     openSheet(`
       <div class="font-bold text-xl mb-1">Подтвердите почту</div>
-      <div class="text-sm opacity-70 mb-3">Код отправлен на <b>${esc(email)}</b>. Введите его.</div>
+      <div class="text-sm opacity-70 mb-3">Код отправлен на <b>${esc(email)}</b>. Если письма нет во «Входящих» — проверьте папку «Спам».</div>
       <input class="input mb-2" id="reCode" inputmode="numeric" maxlength="6" placeholder="Код (6 цифр)" />
       <button class="btn btn-primary w-full" id="reGo">Подтвердить</button>
       <div id="reErr2" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
@@ -4909,7 +4929,13 @@ async function openRecoveryEmailSheet(){
       const e2=document.getElementById("reErr2");
       if(!/^\d{6}$/.test(code)){ e2.textContent="Код — 6 цифр"; return; }
       const g=document.getElementById("reGo"); g.disabled=true; g.textContent="Проверка…";
-      try{ await cloudCallFn("confirm_recovery_email",{email,code}); if(cloud.profile){cloud.profile.recovery_email=email;cloud.profile.recovery_email_verified=true;} closeSheet(); toast("Резервная почта подтверждена"); }
+      try{
+        const d=await cloudCallFn("confirm_recovery_email",{email,code});
+        cloudApplyRecoveryProfile(d);
+        closeSheet();
+        toast("Резервная почта подтверждена");
+        renderMore();
+      }
       catch(ex){ g.disabled=false; g.textContent="Подтвердить"; e2.textContent=_recErr(String(ex.message||"Ошибка")); }
     };
   };
