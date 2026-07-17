@@ -35,12 +35,14 @@ const EMAIL_RE = /^[a-z0-9_.+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
 async function sendCode(to: string, code: string, purpose: "bind" | "reset"): Promise<boolean> {
   const url = Deno.env.get("MAIL_SENDCODE_URL"); const secret = Deno.env.get("MAIL_BROADCAST_SECRET");
   if (!url || !/^https:\/\//i.test(url) || !secret) return false;
-  const subject = "Код ВахтаХоз";
+  const subject = purpose === "bind"
+    ? "ВахтаХоз — код подтверждения резервной почты"
+    : "ВахтаХоз — код восстановления пароля";
   const body = purpose === "bind"
-    ? `Код подтверждения резервной почты в ВахтаХоз: ${code}\n\nВведите его в приложении. Код действует 15 минут.\nЕсли вы не привязывали почту — игнорируйте это письмо.`
-    : `Код для восстановления пароля в ВахтаХоз: ${code}\n\nВведите его в приложении вместе с новым паролем. Код действует 15 минут.\nЕсли вы не запрашивали восстановление — игнорируйте это письмо.`;
+    ? `Ваш код подтверждения: ${code}\n\nОткройте ВахтаХоз → Ещё → Резервная почта и введите код. Действует 15 минут.\n\nЕсли письма нет во «Входящих» — проверьте папку «Спам» и отметьте «Не спам».\n\nЕсли вы не привязывали почту — удалите это письмо.`
+    : `Ваш код восстановления пароля: ${code}\n\nВведите его в приложении вместе с новым паролем. Действует 15 минут.\n\nЕсли письма нет во «Входящих» — проверьте папку «Спам».\n\nЕсли вы не запрашивали восстановление — удалите это письмо.`;
   try {
-    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "X-Provision-Secret": secret }, body: JSON.stringify({ to, subject, body }) });
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "X-Provision-Secret": secret }, body: JSON.stringify({ to, subject, body, from_name: "ВахтаХоз" }) });
     return r.ok;
   } catch { return false; }
 }
@@ -232,11 +234,11 @@ Deno.serve(async (req) => {
     }
     await admin.from("profiles").update({ recovery_email: email, recovery_email_verified: true }).eq("id", callerId);
     await admin.from("auth_codes").update({ used: true }).eq("id", rec.id);
-    return json({ ok: true });
+    return json({ ok: true, recovery_email: email, recovery_email_verified: true });
   }
   if (action === "unbind_recovery_email") {
     await admin.from("profiles").update({ recovery_email: null, recovery_email_verified: false }).eq("id", callerId);
-    return json({ ok: true });
+    return json({ ok: true, recovery_email: null, recovery_email_verified: false });
   }
 
   const { data: prof } = await admin.from("profiles").select("is_admin").eq("id", callerId).maybeSingle();
