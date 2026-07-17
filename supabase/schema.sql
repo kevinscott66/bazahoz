@@ -30,6 +30,8 @@ create table if not exists public.profiles (
   username     text unique not null,
   display_name text,
   is_admin     boolean not null default false,  -- глобальный админ (ты)
+  recovery_email text,
+  recovery_email_verified boolean not null default false,
   created_at   timestamptz not null default now()
 );
 

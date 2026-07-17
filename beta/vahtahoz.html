@@ -49,6 +49,7 @@
   .chip-add{ background:transparent; border:1px dashed var(--border-strong); color:var(--accent); font-weight:600; }
   .chip-add.active{ background:transparent; color:var(--accent); }
   .nav-btn{ flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; padding:8px 4px; font-size:11px; color:#9ca3af; }
+  .nav-icon{ width:22px; height:22px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; }
   .nav-btn.active{ color:var(--accent); position:relative; }
   .light .nav-btn{ color:#6b7280; }
   .badge{ font-size:11px; font-weight:700; padding:3px 8px; border-radius:999px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; }
@@ -187,11 +188,11 @@
 <nav id="navbar" class="fixed bottom-0 left-0 right-0 border-t border-white/10 bg-gray-950/95 backdrop-blur"
      style="padding-bottom:env(safe-area-inset-bottom)">
   <div class="max-w-[640px] mx-auto flex">
-    <button class="nav-btn active" data-nav="dashboard"><span class="text-xl">🏠</span><span>Дашборд</span></button>
-    <button class="nav-btn" data-nav="tasks"><span class="text-xl">✅</span><span>Задачи</span></button>
-    <button class="nav-btn" data-nav="stock"><span class="text-xl">📦</span><span>Склад</span></button>
-    <button class="nav-btn" data-nav="kitchen"><span class="text-xl">🍳</span><span>Кухня</span></button>
-    <button class="nav-btn" data-nav="more"><span class="text-xl">⚙️</span><span>Ещё</span></button>
+    <button class="nav-btn active" data-nav="dashboard" aria-label="Дашборд"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5L12 3l9 7.5V20a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1v-9.5z"/></svg><span>Дашборд</span></button>
+    <button class="nav-btn" data-nav="tasks" aria-label="Задачи"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg><span>Задачи</span></button>
+    <button class="nav-btn" data-nav="stock" aria-label="Склад"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3.3 7.7L12 12l8.7-4.3M12 22V12"/></svg><span>Склад</span></button>
+    <button class="nav-btn" data-nav="kitchen" aria-label="Кухня"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2v7a6 6 0 0012 0V2"/><path d="M4 22h16"/><path d="M10 22v-4h4v4"/></svg><span>Кухня</span></button>
+    <button class="nav-btn" data-nav="more" aria-label="Ещё"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg><span>Ещё</span></button>
   </div>
 </nav>
 
@@ -218,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v176 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v177 · БЕТА</div>
   </div>
 </div>
 
@@ -3084,7 +3085,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">🧪 ВахтаХоз БЕТА · сборка v176 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v177 · тестовый канал</div>
   `;
 }
 
