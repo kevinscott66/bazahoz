@@ -11,13 +11,39 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
+// Разрешаем только origin приложения (весь трафик — с vahta.razvedchick.ru; github.io 301-редиректит туда,
+// нативные обёртки Capacitor грузят тот же origin через server.url). Bearer-only (без cookie) — CSRF-вектора нет,
+// но сужение с "*" убирает возможность вызывать функцию из произвольной вкладки пользователя.
+const APP_ORIGIN = "https://vahta.razvedchick.ru";
 const cors = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": APP_ORIGIN,
+  "Vary": "Origin",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 const json = (b: unknown, status = 200) =>
   new Response(JSON.stringify(b), { status, headers: { ...cors, "Content-Type": "application/json" } });
+
+// ── Резервная почта: коды подтверждения/восстановления ──────────────────────────
+async function sha256(s: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+const genCode = () => String(Math.floor(100000 + Math.random() * 900000)); // 6 цифр
+const EMAIL_RE = /^[a-z0-9_.+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
+// отправка кода письмом через наш почтовый сервер (/sendcode на VPS, секрет = MAIL_BROADCAST_SECRET)
+async function sendCode(to: string, code: string, purpose: "bind" | "reset"): Promise<boolean> {
+  const url = Deno.env.get("MAIL_SENDCODE_URL"); const secret = Deno.env.get("MAIL_BROADCAST_SECRET");
+  if (!url || !/^https:\/\//i.test(url) || !secret) return false;
+  const subject = "Код ВахтаХоз";
+  const body = purpose === "bind"
+    ? `Код подтверждения резервной почты в ВахтаХоз: ${code}\n\nВведите его в приложении. Код действует 15 минут.\nЕсли вы не привязывали почту — игнорируйте это письмо.`
+    : `Код для восстановления пароля в ВахтаХоз: ${code}\n\nВведите его в приложении вместе с новым паролем. Код действует 15 минут.\nЕсли вы не запрашивали восстановление — игнорируйте это письмо.`;
+  try {
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "X-Provision-Secret": secret }, body: JSON.stringify({ to, subject, body }) });
+    return r.ok;
+  } catch { return false; }
+}
 
 const RANK: Record<string, number> = {
   owner: 6, general_director: 5, director: 4, party_chief: 3,
@@ -100,24 +126,118 @@ async function canGrant(admin: any, caps: Caps, targetRole: string, baseId?: str
   return "Неизвестная роль";
 }
 
+// выпуск почтового ящика username@razvedchick.ru с тем же паролем (для восстановления/веб-почты).
+// Не критично для создания аккаунта — при сбое почты аккаунт всё равно создаётся.
+async function provisionMail(username: string, password: string) {
+  try {
+    const url = Deno.env.get("MAIL_PROVISION_URL");
+    const secret = Deno.env.get("MAIL_PROVISION_SECRET");
+    if (!url || !secret) return;
+    // Пароль уходит во внешний сервис — ТОЛЬКО по https (иначе утечёт в открытом виде). http/иное — не шлём.
+    if (!/^https:\/\//i.test(url)) { console.warn("provisionMail: MAIL_PROVISION_URL не https — пропуск"); return; }
+    // Таймаут: провижининг почты не должен подвешивать создание/сброс аккаунта.
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const r = await fetch(url, {
+        method: "POST", signal: ctrl.signal,
+        headers: { "Content-Type": "application/json", "X-Provision-Secret": secret },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!r.ok) console.warn("provisionMail: провижининг вернул", r.status, (await r.text().catch(() => "")).slice(0, 120));
+    } finally { clearTimeout(t); }
+  } catch (_) { /* почта не критична — аккаунт создаётся/сбрасывается в любом случае */ }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ error: "method" }, 405);
 
+  const admin = createClient(SUPABASE_URL, SERVICE);
+  let p: any;
+  try { p = await req.json(); } catch { return json({ error: "bad json" }, 400); }
+  const action = String(p.action || "");
+  const uuid = (v: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+
+  // ── ПУБЛИЧНЫЕ действия восстановления пароля (БЕЗ токена — пользователь забыл пароль) ─────────
+  // Безопасность: код уходит ТОЛЬКО на ПОДТВЕРЖДЁННУЮ резервную почту; rate-limit + лимит попыток;
+  // ответ нейтральный (не раскрываем, существует ли логин). Функция задеплоена с verify_jwt=false.
+  if (action === "request_reset") {
+    const username = String(p.username || "").trim().toLowerCase().replace(/@.*$/, "");
+    if (/^[a-z0-9_]{3,32}$/.test(username)) {
+      const { data: u } = await admin.from("profiles").select("id,recovery_email,recovery_email_verified").eq("username", username).maybeSingle();
+      if (u && u.recovery_email && u.recovery_email_verified) {
+        const { data: recent } = await admin.from("auth_codes").select("id").eq("user_id", u.id).eq("purpose", "reset_password").gte("created_at", new Date(Date.now() - 60000).toISOString()).limit(1);
+        if (!recent || recent.length === 0) {
+          const code = genCode();
+          await admin.from("auth_codes").insert({ user_id: u.id, purpose: "reset_password", email: u.recovery_email, code_hash: await sha256(u.id + ":" + code), expires_at: new Date(Date.now() + 15 * 60000).toISOString() });
+          await sendCode(u.recovery_email, code, "reset");
+        }
+      }
+    }
+    return json({ ok: true }); // нейтрально: «если логин с привязанной почтой существует — код отправлен»
+  }
+  if (action === "confirm_reset") {
+    const username = String(p.username || "").trim().toLowerCase().replace(/@.*$/, "");
+    const code = String(p.code || "").trim();
+    const newPassword = String(p.new_password || "");
+    if (!/^[a-z0-9_]{3,32}$/.test(username) || !/^\d{6}$/.test(code) || newPassword.length < 6) return json({ error: "bad input" }, 400);
+    const { data: u } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
+    if (!u) return json({ error: "invalid" }, 400);
+    const { data: rows } = await admin.from("auth_codes").select("*").eq("user_id", u.id).eq("purpose", "reset_password").eq("used", false).order("created_at", { ascending: false }).limit(1);
+    const rec = rows?.[0];
+    if (!rec) return json({ error: "invalid" }, 400);
+    if (new Date(rec.expires_at) < new Date()) return json({ error: "expired" }, 400);
+    if (rec.attempts >= 5) return json({ error: "too_many" }, 429);
+    if (await sha256(u.id + ":" + code) !== rec.code_hash) {
+      await admin.from("auth_codes").update({ attempts: rec.attempts + 1 }).eq("id", rec.id);
+      return json({ error: "wrong_code" }, 400);
+    }
+    await admin.auth.admin.updateUserById(u.id, { password: newPassword });
+    await admin.from("auth_codes").update({ used: true }).eq("id", rec.id);
+    return json({ ok: true });
+  }
+
+  // ── дальше — ТОЛЬКО с валидным токеном ─────────────────────────────────────────
   const jwt = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
   if (!jwt) return json({ error: "no auth" }, 401);
-
   const userClient = createClient(SUPABASE_URL, ANON, { global: { headers: { Authorization: `Bearer ${jwt}` } } });
   const { data: ures, error: uerr } = await userClient.auth.getUser();
   if (uerr || !ures?.user) return json({ error: "bad token" }, 401);
   const callerId = ures.user.id;
 
-  const admin = createClient(SUPABASE_URL, SERVICE);
-
-  let p: any;
-  try { p = await req.json(); } catch { return json({ error: "bad json" }, 400); }
-  const action = String(p.action || "");
-  const uuid = (v: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+  // привязка/подтверждение резервной почты (авторизованно, для себя)
+  if (action === "set_recovery_email") {
+    const email = String(p.email || "").trim().toLowerCase();
+    if (!EMAIL_RE.test(email)) return json({ error: "bad_email" }, 400);
+    const { data: recent } = await admin.from("auth_codes").select("id").eq("user_id", callerId).eq("purpose", "bind_email").gte("created_at", new Date(Date.now() - 60000).toISOString()).limit(1);
+    if (recent && recent.length) return json({ error: "wait" }, 429);
+    const code = genCode();
+    await admin.from("auth_codes").insert({ user_id: callerId, purpose: "bind_email", email, code_hash: await sha256(callerId + ":" + email + ":" + code), expires_at: new Date(Date.now() + 15 * 60000).toISOString() });
+    const sent = await sendCode(email, code, "bind");
+    return json({ ok: true, sent });
+  }
+  if (action === "confirm_recovery_email") {
+    const email = String(p.email || "").trim().toLowerCase();
+    const code = String(p.code || "").trim();
+    if (!/^\d{6}$/.test(code)) return json({ error: "bad_code" }, 400);
+    const { data: rows } = await admin.from("auth_codes").select("*").eq("user_id", callerId).eq("purpose", "bind_email").eq("used", false).order("created_at", { ascending: false }).limit(1);
+    const rec = rows?.[0];
+    if (!rec || rec.email !== email) return json({ error: "invalid" }, 400);
+    if (new Date(rec.expires_at) < new Date()) return json({ error: "expired" }, 400);
+    if (rec.attempts >= 5) return json({ error: "too_many" }, 429);
+    if (await sha256(callerId + ":" + email + ":" + code) !== rec.code_hash) {
+      await admin.from("auth_codes").update({ attempts: rec.attempts + 1 }).eq("id", rec.id);
+      return json({ error: "wrong_code" }, 400);
+    }
+    await admin.from("profiles").update({ recovery_email: email, recovery_email_verified: true }).eq("id", callerId);
+    await admin.from("auth_codes").update({ used: true }).eq("id", rec.id);
+    return json({ ok: true });
+  }
+  if (action === "unbind_recovery_email") {
+    await admin.from("profiles").update({ recovery_email: null, recovery_email_verified: false }).eq("id", callerId);
+    return json({ ok: true });
+  }
 
   const { data: prof } = await admin.from("profiles").select("is_admin").eq("id", callerId).maybeSingle();
 
@@ -179,6 +299,7 @@ Deno.serve(async (req) => {
     const { error: merr } = await admin.from("base_members")
       .insert({ base_id: baseId, user_id: newId, role, active: true, ...flags });
     if (merr) { console.error("base_members insert", merr); await admin.auth.admin.deleteUser(newId).catch(() => {}); return json({ error: "Не удалось добавить в базу, попробуйте ещё раз" }, 400); }
+    await provisionMail(username, password);   // выпуск почтового ящика с тем же логином/паролем
     return json({ ok: true, user_id: newId, username, email });
   }
 
@@ -216,6 +337,7 @@ Deno.serve(async (req) => {
     const row: any = { user_id: newId, role, active: true, party_id: PARTY_ROLES.has(role) ? partyId : null, ...PRESETS[role] };
     const { error: oerr } = await admin.from("org_roles").insert(row);
     if (oerr) { console.error("org_roles insert", oerr); await admin.auth.admin.deleteUser(newId).catch(() => {}); return json({ error: "Не удалось назначить роль" }, 400); }
+    await provisionMail(username, password);   // выпуск почтового ящика с тем же логином/паролем
     return json({ ok: true, user_id: newId, username, email });
   }
 
@@ -318,6 +440,11 @@ Deno.serve(async (req) => {
     }
     const { error } = await admin.auth.admin.updateUserById(targetId, { password });
     if (error) { console.error("reset pwd", error); return json({ error: "Не удалось сменить пароль" }, 400); }
+    // синхронизируем пароль почтового ящика: локальная часть РЕАЛЬНОГО auth-email (источник истины),
+    // а не profiles.username — они могут разойтись. Ящик существует только для домена @razvedchick.ru.
+    const { data: tu } = await admin.auth.admin.getUserById(targetId);
+    const mailMatch = /^([a-z0-9_]+)@razvedchick\.ru$/i.exec(tu?.user?.email || "");
+    if (mailMatch) await provisionMail(mailMatch[1].toLowerCase(), password);
     return json({ ok: true });
   }
 
@@ -336,6 +463,37 @@ Deno.serve(async (req) => {
       return json({ error: "Не удалось передать смену, попробуйте ещё раз" }, 400);
     }
     return json({ ok: true, tasks_moved: typeof moved === "number" ? moved : 0 });
+  }
+
+  if (action === "broadcast") {
+    // системная рассылка всем пользователям — ТОЛЬКО владелец/админ (rank 6)
+    if (!prof?.is_admin) {
+      const caps = await callerCaps(admin, callerId);
+      if (caps.rank < 6) return json({ error: "Рассылку может отправить только владелец" }, 403);
+    }
+    const subject = String(p.subject || "").replace(/[\r\n\t]+/g, " ").trim();   // без CR/LF в теме → аккуратный заголовок письма
+    const body = String(p.body || "").trim();
+    if (!subject || !body) return json({ error: "Укажите тему и текст" }, 400);
+    if (subject.length > 200 || body.length > 5000) return json({ error: "Слишком длинно" }, 400);
+    const url = Deno.env.get("MAIL_BROADCAST_URL"); const secret = Deno.env.get("MAIL_BROADCAST_SECRET");
+    if (!url || !secret || !/^https:\/\//i.test(url)) return json({ error: "Рассылка не настроена" }, 500);
+    // собираем всех пользователей (@razvedchick.ru) — постранично
+    const recipients: string[] = [];
+    for (let page = 1; page <= 20; page++) {
+      const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 1000 });
+      if (error) break;
+      const users = data?.users || [];
+      for (const u of users) { if (u.email && /@razvedchick\.ru$/i.test(u.email)) recipients.push(u.email); }
+      if (users.length < 1000) break;
+    }
+    if (!recipients.length) return json({ error: "Нет получателей" }, 400);
+    let rd: any = {};
+    try {
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "X-Provision-Secret": secret }, body: JSON.stringify({ subject, body, recipients }) });
+      rd = await r.json().catch(() => ({}));
+      if (!r.ok) return json({ error: "Сервер рассылки отклонил запрос" }, 502);
+    } catch (_) { return json({ error: "Сервер рассылки недоступен" }, 502); }
+    return json({ ok: true, sent: rd.sent || 0, total: rd.total || recipients.length });
   }
 
   return json({ error: "Неизвестное действие" }, 400);
