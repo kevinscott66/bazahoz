@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v178 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v179 · БЕТА</div>
   </div>
 </div>
 
@@ -1007,6 +1007,28 @@ for(const k of JOURNAL_KEYS){
     if(op && op.qty!=null) op.qty = roundQty(op.qty);
   }
 }
+// Поступление с ручным названием (до v179) попадало только в журнал — восстанавливаем позиции и остатки один раз на базу.
+(function repairUnlinkedReceiptStock(){
+  try{
+    const key = NS + "vahtahoz_receipt_stock_repair_v1_" + (profiles.activeId || "default");
+    if(localStorage.getItem(key)) return;
+    let fixed = 0;
+    for(const op of (state.journals.receipt||[])){
+      if(!op || !(Number(op.qty)>0)) continue;
+      const name = (op.productName||"").trim();
+      if(!name) continue;
+      let product = op.productId ? state.stock.find(s=>s.id===op.productId) : null;
+      const wasBroken = !product;
+      if(!product) product = resolveIncomingProduct({ manualName:name, unit:op.unit, type:"product" });
+      if(op.productId !== product.id){ op.productId = product.id; op.productName = product.name; }
+      if(wasBroken && !op.batchId) applyStockDelta(product, +1, op.qty, op.note||"Восстановление поступления", op);
+      if(wasBroken) fixed++;
+    }
+    if(fixed) saveState();
+    localStorage.setItem(key, "1");
+    if(fixed) setTimeout(()=>toast(`Восстановлено ${fixed} поступлений без позиции на складе`), 800);
+  }catch(e){ console.warn("repairUnlinkedReceiptStock", e); }
+})();
 
 function toast(msg){
   const t=document.getElementById("toast");
@@ -1886,7 +1908,55 @@ function openOpEdit(kind){
       </div>
     </div>
   `);
-  wireStockPicker({ prefix:"op", emptyHint:"Введите 2+ символа для поиска", notFoundText:"Не найдено. Можно ввести вручную.", nameOnPick:false });
+  wireStockPicker({ prefix:"op", emptyHint:"Введите название для поиска", notFoundText:"Не найдено. Можно ввести вручную.", nameOnPick:false });
+}
+
+const stockNormName = s => (s||"").trim().toLowerCase();
+function defaultCategoryForType(type){
+  if(type!=="product") return "";
+  return (state.categories.product||[]).includes("Прочие продукты") ? "Прочие продукты" : ((state.categories.product||[])[0] || "");
+}
+function findStockByName(name, type){
+  const n = stockNormName(name);
+  if(!n) return null;
+  const types = type ? [type] : allowedTypeKeys();
+  return state.stock.find(s=> types.includes(s.type) && stockNormName(s.name)===n) || null;
+}
+function createCatalogStockItem(type, name, unit){
+  return {
+    id: uid(), type: type||"product", name: String(name||"").trim(),
+    qty: 0, unit: unit||"шт", minStock:"", expiry:"", location:"",
+    category: defaultCategoryForType(type||"product"),
+    note:"", createdAt:new Date().toISOString(),
+  };
+}
+// Приход: найти существующую позицию по имени или создать каталожную (qty=0).
+function resolveIncomingProduct({ productId, manualName, unit, type }){
+  type = type || "product";
+  let product = productId ? state.stock.find(s=>s.id===productId) : null;
+  const name = (product ? product.name : manualName).trim();
+  if(!name) return null;
+  if(!product) product = findStockByName(name, type);
+  if(!product){
+    product = createCatalogStockItem(type, name, unit);
+    state.stock.push(product);
+    try{ propagateName(type, name, product.unit); }catch(e){ console.warn("propagateName", e); }
+  }
+  return product;
+}
+// Изменение остатка: для партийных карточек приход = новая партия (как при приёме заказа).
+function applyStockDelta(product, sign, qty, note, op){
+  if(!product || !sign) return;
+  if(sign > 0 && hasBatches(product)){
+    const newB = { id: uid(), qty: roundQty(qty), expiry:"", location:"", note: note||"Поступление", createdAt:new Date().toISOString() };
+    product.batches = product.batches || [];
+    product.batches.push(newB);
+    if(op){ op.batchId = newB.id; op.batchLocation = ""; op.batchExpiry = ""; }
+    syncItemFromBatches(product);
+  } else {
+    product.qty = roundQty(Number(product.qty||0) + sign*qty);
+  }
+  product.updatedAt = new Date().toISOString();
 }
 
 function saveOp(kind){
@@ -1899,11 +1969,12 @@ function saveOp(kind){
   const unit = body.querySelector("#opUnit").value;
   const note = body.querySelector("#opNote").value.trim();
   if(!qty || qty<=0){ toast("Укажите количество"); return; }
-  const product = pid ? state.stock.find(s=>s.id===pid) : null;
+  let product = pid ? state.stock.find(s=>s.id===pid) : null;
+  if(!product && m.sign>0) product = resolveIncomingProduct({ manualName, unit, type:"product" });
   const name = product ? product.name : manualName;
   if(!name){ toast("Выберите товар или введите название"); return; }
-  // Защита от рассинхрона с партиями: для batches-карточек нельзя править qty напрямую
-  if(product && hasBatches(product) && m.sign!==0){
+  // Расход/списание с партиями — только через ＋/− на карточке (выбор партии)
+  if(product && hasBatches(product) && m.sign<0){
     toast("У этой позиции есть партии — используйте ＋/− на карточке (выбор партии)");
     return;
   }
@@ -1925,10 +1996,7 @@ function saveOp(kind){
   };
   if(kind==="order") op.status = "pending";
 
-  if(product && m.sign!==0){
-    product.qty = roundQty(Number(product.qty||0) + m.sign*qty);
-    product.updatedAt = new Date().toISOString();
-  }
+  if(product && m.sign!==0) applyStockDelta(product, m.sign, qty, note, m.sign>0 ? op : null);
   state.journals[kind] = state.journals[kind] || [];
   state.journals[kind].unshift(op);
   logOp(kind.toUpperCase(), `${name} ${m.sign>0?"+":m.sign<0?"-":""}${qty} ${op.unit||""}`);
@@ -3087,7 +3155,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v178 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v179 · тестовый канал</div>
   `;
 }
 
@@ -5551,7 +5619,8 @@ async function cloudPushNow(){
         console.warn("cloudPush: склад подозрительно мал ("+rows.length+" из "+prevCount+") — выгрузка склада пропущена (защита от порчи)");
       } else {
         const upsert = rows.filter(r=> curSig[r.id] !== prevSig[r.id]);   // новое/изменённое
-        const del = Object.keys(prevSig).filter(id=> !(id in curSig));    // удалённое локально
+        const localStockIds = new Set((state.stock||[]).map(s=>s.id));
+        const del = Object.keys(prevSig).filter(id=> !localStockIds.has(id));   // удалено из локального склада (не «скрыто» фильтром роли)
         if(del.length) await cloudRestDelete("stock_items", del, tok);
         if(STOCK_MERGE && upsert.length) await mergeStockQtyBeforePush(cid, tok, upsert, curSig);   // 3-way слияние qty (конкурентные списания с 2 устройств)
         if(upsert.length) await cloudRestUpsert("stock_items", upsert, tok, (d,t)=>{ if(t>20) setSyncStatus("syncing",`Выгрузка ${d}/${t}`); });
