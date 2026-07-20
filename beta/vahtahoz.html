@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v179 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v180 · БЕТА</div>
   </div>
 </div>
 
@@ -1007,28 +1007,8 @@ for(const k of JOURNAL_KEYS){
     if(op && op.qty!=null) op.qty = roundQty(op.qty);
   }
 }
-// Поступление с ручным названием (до v179) попадало только в журнал — восстанавливаем позиции и остатки один раз на базу.
-(function repairUnlinkedReceiptStock(){
-  try{
-    const key = NS + "vahtahoz_receipt_stock_repair_v1_" + (profiles.activeId || "default");
-    if(localStorage.getItem(key)) return;
-    let fixed = 0;
-    for(const op of (state.journals.receipt||[])){
-      if(!op || !(Number(op.qty)>0)) continue;
-      const name = (op.productName||"").trim();
-      if(!name) continue;
-      let product = op.productId ? state.stock.find(s=>s.id===op.productId) : null;
-      const wasBroken = !product;
-      if(!product) product = resolveIncomingProduct({ manualName:name, unit:op.unit, type:"product" });
-      if(op.productId !== product.id){ op.productId = product.id; op.productName = product.name; }
-      if(wasBroken && !op.batchId) applyStockDelta(product, +1, op.qty, op.note||"Восстановление поступления", op);
-      if(wasBroken) fixed++;
-    }
-    if(fixed) saveState();
-    localStorage.setItem(key, "1");
-    if(fixed) setTimeout(()=>toast(`Восстановлено ${fixed} поступлений без позиции на складе`), 800);
-  }catch(e){ console.warn("repairUnlinkedReceiptStock", e); }
-})();
+// Поступление с ручным названием (до v179) попадало только в журнал — полная сверка v2 (дубли + остатки по журналу).
+setTimeout(()=>{ try{ runAutoStockJournalReconcile(); }catch(e){ console.warn("stock reconcile", e); } }, 300);
 
 function toast(msg){
   const t=document.getElementById("toast");
@@ -1957,6 +1937,202 @@ function applyStockDelta(product, sign, qty, note, op){
     product.qty = roundQty(Number(product.qty||0) + sign*qty);
   }
   product.updatedAt = new Date().toISOString();
+}
+
+function journalEffectSign(kind, op){
+  if(kind==="receipt") return 1;
+  if(kind==="issue" || kind==="writeoff") return -1;
+  if(kind==="order") return op.status==="received" ? 1 : 0;
+  return 0;
+}
+function journalRefScore(it){
+  let n = 0;
+  for(const kind of JOURNAL_KEYS){
+    for(const op of (state.journals[kind]||[])) if(op && op.productId===it.id) n++;
+  }
+  return n;
+}
+function ledgerQtyForProduct(product){
+  if(!product) return 0;
+  let sum = 0;
+  const pid = product.id;
+  const pname = stockNormName(product.name);
+  for(const kind of JOURNAL_KEYS){
+    for(const op of (state.journals[kind]||[])){
+      const sign = journalEffectSign(kind, op);
+      if(!sign) continue;
+      const matchId = op.productId && op.productId===pid;
+      const matchName = stockNormName(op.productName)===pname;
+      if(matchId || (!op.productId && matchName) || (op.productId && matchName && !state.stock.some(s=>s.id===op.productId)))
+        sum += sign * Number(op.qty||0);
+    }
+  }
+  return roundQty(sum);
+}
+function ledgerByNormName(){
+  const m = new Map();
+  for(const kind of JOURNAL_KEYS){
+    for(const op of (state.journals[kind]||[])){
+      const sign = journalEffectSign(kind, op);
+      if(!sign) continue;
+      const n = stockNormName(op.productName);
+      if(!n) continue;
+      m.set(n, roundQty((m.get(n)||0) + sign * Number(op.qty||0)));
+    }
+  }
+  return m;
+}
+function relinkJournalOpsToCanonical(){
+  let n = 0;
+  for(const kind of JOURNAL_KEYS){
+    for(const op of (state.journals[kind]||[])){
+      const name = (op.productName||"").trim();
+      if(!name) continue;
+      let canon = op.productId ? state.stock.find(s=>s.id===op.productId) : null;
+      if(!canon) canon = findStockByName(name);
+      if(!canon) continue;
+      if(op.productId!==canon.id || op.productName!==canon.name){
+        op.productId = canon.id;
+        op.productName = canon.name;
+        n++;
+      }
+    }
+  }
+  return n;
+}
+function mergeDuplicateStockByName(){
+  const groups = new Map();
+  for(const s of (state.stock||[])){
+    const key = `${s.type}|${stockNormName(s.name)}`;
+    if(!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(s);
+  }
+  let merged = 0;
+  for(const items of groups.values()){
+    if(items.length < 2) continue;
+    items.sort((a,b)=> (journalRefScore(b)*1e6 + totalQtyOf(b)) - (journalRefScore(a)*1e6 + totalQtyOf(a)));
+    const primary = items[0];
+    for(const dup of items.slice(1)){
+      if(hasBatches(dup)){
+        primary.batches = primary.batches || [];
+        for(const b of batchesOf(dup)) primary.batches.push({ ...b, id: uid() });
+        if(hasBatches(primary)) syncItemFromBatches(primary);
+        else primary.qty = roundQty(Number(primary.qty||0) + totalQtyOf(dup));
+      } else if(hasBatches(primary)){
+        if(roundQty(dup.qty||0) > 0){
+          primary.batches.push({ id:uid(), qty:roundQty(dup.qty||0), expiry:dup.expiry||"", location:dup.location||"", note:"Слияние дубля", createdAt:new Date().toISOString() });
+          syncItemFromBatches(primary);
+        }
+      } else {
+        primary.qty = roundQty(Number(primary.qty||0) + Number(dup.qty||0));
+      }
+      for(const kind of JOURNAL_KEYS){
+        for(const op of (state.journals[kind]||[])){
+          if(op && op.productId===dup.id){ op.productId = primary.id; op.productName = primary.name; }
+        }
+      }
+      state.stock = state.stock.filter(x=>x.id!==dup.id);
+      merged++;
+    }
+    primary.updatedAt = new Date().toISOString();
+    if(hasBatches(primary)) syncItemFromBatches(primary);
+  }
+  return merged;
+}
+function ensureProductsFromJournalLedger(){
+  let created = 0;
+  const ledgers = ledgerByNormName();
+  for(const [n, ledger] of ledgers){
+    if(!(ledger > 0)) continue;
+    if(findStockByName(n)) continue;
+    let sampleName = "", sampleUnit = "шт";
+    outer: for(const kind of JOURNAL_KEYS){
+      for(const op of (state.journals[kind]||[])){
+        if(stockNormName(op.productName)===n){ sampleName = op.productName.trim(); sampleUnit = op.unit||"шт"; break outer; }
+      }
+    }
+    if(!sampleName) continue;
+    const p = createCatalogStockItem("product", sampleName, sampleUnit);
+    p.qty = ledger;
+    state.stock.push(p);
+    try{ propagateName("product", p.name, p.unit); }catch(e){}
+    for(const kind of JOURNAL_KEYS){
+      for(const op of (state.journals[kind]||[])){
+        if(stockNormName(op.productName)===n){ op.productId = p.id; op.productName = p.name; }
+      }
+    }
+    created++;
+  }
+  return created;
+}
+function reconcileLegacyQtyFromJournal(){
+  let fixed = 0;
+  const under = [];
+  for(const s of (state.stock||[])){
+    if(hasBatches(s)) continue;
+    const ledger = ledgerQtyForProduct(s);
+    const cur = totalQtyOf(s);
+    if(ledger === cur) continue;
+    if(ledger > cur){
+      s.qty = ledger;
+      s.updatedAt = new Date().toISOString();
+      fixed++;
+      under.push({ name:s.name, was:cur, now:ledger });
+    }
+  }
+  return { fixed, under };
+}
+function runStockJournalReconcile(){
+  if(!canEditStock()) return { merged:0, relinked:0, created:0, fixed:0, under:[], skippedBatched:0 };
+  const merged = mergeDuplicateStockByName();
+  const relinked = relinkJournalOpsToCanonical();
+  const created = ensureProductsFromJournalLedger();
+  const { fixed, under } = reconcileLegacyQtyFromJournal();
+  const skippedBatched = (state.stock||[]).filter(s=>hasBatches(s)).length;
+  if(merged || relinked || created || fixed){
+    saveState();
+    try{ cloudMaybePush(); }catch(_){}
+    try{ render(); }catch(_){}
+  }
+  return { merged, relinked, created, fixed, under, skippedBatched };
+}
+function runAutoStockJournalReconcile(){
+  const key = NS + "vahtahoz_stock_reconcile_v2_" + (profiles.activeId || "default");
+  if(localStorage.getItem(key)) return null;
+  const r = runStockJournalReconcile();
+  localStorage.setItem(key, "1");
+  const parts = [];
+  if(r.merged) parts.push(`дублей: ${r.merged}`);
+  if(r.created) parts.push(`новых поз.: ${r.created}`);
+  if(r.fixed) parts.push(`остатков исправлено: ${r.fixed}`);
+  if(parts.length) setTimeout(()=>toast(`Сверка склада: ${parts.join(", ")}`), 900);
+  return r;
+}
+async function openStockReconcileSheet(){
+  if(!ensureCanEdit()) return;
+  openSheet(`
+    <div class="font-bold text-xl mb-2">Сверка склада по журналу</div>
+    <div class="text-sm opacity-70 mb-3">Сравнивает остатки с записями «Поступление», «Выдача», «Списание» и «Заказы». Объединяет дубли по названию (например две «Манная») и восстанавливает недостающие позиции.</div>
+    <div class="text-xs opacity-60 mb-3">Товары с партиями (срок годности) сверяются вручную — автоматом не трогаем.</div>
+    <button class="btn btn-primary w-full" id="reconcileGo">Запустить сверку</button>
+    <div id="reconcileOut" class="text-sm mt-3 whitespace-pre-line opacity-80"></div>
+  `);
+  document.getElementById("reconcileGo").onclick = ()=>{
+    const r = runStockJournalReconcile();
+    const lines = [];
+    if(r.merged) lines.push(`Объединено дублей: ${r.merged}`);
+    if(r.relinked) lines.push(`Перепривязано записей журнала: ${r.relinked}`);
+    if(r.created) lines.push(`Создано позиций на складе: ${r.created}`);
+    if(r.fixed) lines.push(`Исправлено остатков: ${r.fixed}`);
+    if(r.under && r.under.length){
+      lines.push("", "Примеры (было → стало):");
+      r.under.slice(0,12).forEach(x=> lines.push(`• ${x.name}: ${fmtQty(x.was)} → ${fmtQty(x.now)}`));
+      if(r.under.length>12) lines.push(`… и ещё ${r.under.length-12}`);
+    }
+    if(!lines.length) lines.push("Расхождений не найдено — склад совпадает с журналом.");
+    document.getElementById("reconcileOut").textContent = lines.join("\n");
+    toast(r.fixed || r.created || r.merged ? "Сверка выполнена" : "Расхождений нет");
+  };
 }
 
 function saveOp(kind){
@@ -3125,7 +3301,11 @@ function renderMore(){
   if(isOwner) acc.push(row("Рассылка уведомлений","openBroadcastSheet()"));
 
   const data = [];
-  if(canEditStock()){ data.push(row("Места хранения","openLocationsEdit()")); data.push(row("Категории","openCategoriesEdit()")); }
+  if(canEditStock()){
+    data.push(row("Сверка склада по журналу","openStockReconcileSheet()",{ sub:"дубли и пропущенные поступления" }));
+    data.push(row("Места хранения","openLocationsEdit()"));
+    data.push(row("Категории","openCategoriesEdit()"));
+  }
   data.push(row("Экспорт в Excel","openExportSheet()"));
   data.push(row("Резервная копия","openBackupSheet()"));
   if(profiles.list.length>1 && !restricted && isOwner) data.push(row("Общий каталог баз","mergeCatalogs()"));
@@ -3155,7 +3335,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v179 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v180 · тестовый канал</div>
   `;
 }
 
@@ -4029,7 +4209,7 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   openProfilesSheet,switchProfile,addProfile,renameProfile,deleteProfile,exportAllProfiles,mergeCatalogs,
   toggleCheck,addCheck,resetChecklist,removeCheck,
   exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,exportJournalsMonth,clearLog,wipeAll,toggleTheme,setTheme,
-  openCloudSheet,openExportSheet,openBackupSheet,openJournalSheet,openBroadcastSheet,sendBroadcast,
+  openCloudSheet,openExportSheet,openBackupSheet,openJournalSheet,openStockReconcileSheet,openBroadcastSheet,sendBroadcast,
   openAboutSheet,openFaqSheet,openPrivacySheet,openTermsSheet,openRecoveryEmailSheet,
   openMove,doMove,
   openMembersSheet,openMemberRole,setMemberRole,memberRotate,memberRemove,openAddMember,openResetPwd,
