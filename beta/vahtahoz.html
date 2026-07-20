@@ -5711,6 +5711,8 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
       const snapQty=Number(snap[r.id]); if(!isFinite(snapQty)) continue;   // нет базы для 3-way
       const cloudQty=Number(cr.qty)||0;
       if(cloudQty===snapQty) continue;                                     // облако не менялось с снимка → конфликта нет, local победит
+      const localQty = Number(r.qty)||0;
+      if(localQty === snapQty && cloudQty < snapQty) continue;   // локально не меняли, облако «упало» — не обнуляем (устаревшее облако / чужой сбой)
       const batched = (Array.isArray(r.batches)&&r.batches.length) || (Array.isArray(cr.batches)&&cr.batches.length);
       if(batched){ conflictBatched++; continue; }                          // партийные не сливаем (инвариант) — предупредим
       const merged = Math.max(0, roundQty((Number(r.qty)||0) + cloudQty - snapQty));   // 3-way CRDT-счётчик
