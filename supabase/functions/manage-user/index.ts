@@ -29,7 +29,19 @@ async function sha256(s: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-const genCode = () => String(Math.floor(100000 + Math.random() * 900000)); // 6 цифр
+// 6 цифр из CSPRNG (Math.random предсказуем — недопустимо для кодов восстановления)
+const genCode = () => {
+  const u = new Uint32Array(1);
+  crypto.getRandomValues(u);
+  return String(100000 + (u[0] % 900000));
+};
+// сравнение хешей за константное время (обычный !== даёт теоретический timing-канал)
+const hashEq = (a: string, b: string) => {
+  if (a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+};
 const EMAIL_RE = /^[a-z0-9_.+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
 // отправка кода письмом через наш почтовый сервер (/sendcode на VPS, секрет = MAIL_BROADCAST_SECRET)
 async function sendCode(to: string, code: string, purpose: "bind" | "reset"): Promise<boolean> {
@@ -172,6 +184,8 @@ Deno.serve(async (req) => {
         const { data: recent } = await admin.from("auth_codes").select("id").eq("user_id", u.id).eq("purpose", "reset_password").gte("created_at", new Date(Date.now() - 60000).toISOString()).limit(1);
         if (!recent || recent.length === 0) {
           const code = genCode();
+          // старые неиспользованные коды гасим: живым остаётся только последний (сужает окно перебора)
+          await admin.from("auth_codes").update({ used: true }).eq("user_id", u.id).eq("purpose", "reset_password").eq("used", false);
           await admin.from("auth_codes").insert({ user_id: u.id, purpose: "reset_password", email: u.recovery_email, code_hash: await sha256(u.id + ":" + code), expires_at: new Date(Date.now() + 15 * 60000).toISOString() });
           await sendCode(u.recovery_email, code, "reset");
         }
@@ -184,19 +198,26 @@ Deno.serve(async (req) => {
     const code = String(p.code || "").trim();
     const newPassword = String(p.new_password || "");
     if (!/^[a-z0-9_]{3,32}$/.test(username) || !/^\d{6}$/.test(code) || newPassword.length < 6) return json({ error: "bad input" }, 400);
+    // ЕДИНЫЙ ответ "invalid" + выравнивающая задержка на всех неуспешных путях:
+    // разные тексты/тайминги позволяли перечислять логины и состояние кода
+    const fail = async () => { await new Promise((r) => setTimeout(r, 250 + Math.floor(Math.random() * 150))); return json({ error: "invalid" }, 400); };
     const { data: u } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
-    if (!u) return json({ error: "invalid" }, 400);
+    if (!u) return await fail();
     const { data: rows } = await admin.from("auth_codes").select("*").eq("user_id", u.id).eq("purpose", "reset_password").eq("used", false).order("created_at", { ascending: false }).limit(1);
     const rec = rows?.[0];
-    if (!rec) return json({ error: "invalid" }, 400);
-    if (new Date(rec.expires_at) < new Date()) return json({ error: "expired" }, 400);
-    if (rec.attempts >= 5) return json({ error: "too_many" }, 429);
-    if (await sha256(u.id + ":" + code) !== rec.code_hash) {
+    if (!rec) return await fail();
+    if (new Date(rec.expires_at) < new Date()) return await fail();
+    if (rec.attempts >= 5) return await fail();
+    if (!hashEq(await sha256(u.id + ":" + code), rec.code_hash)) {
       await admin.from("auth_codes").update({ attempts: rec.attempts + 1 }).eq("id", rec.id);
-      return json({ error: "wrong_code" }, 400);
+      return await fail();
     }
     await admin.auth.admin.updateUserById(u.id, { password: newPassword });
     await admin.from("auth_codes").update({ used: true }).eq("id", rec.id);
+    // разлогиниваем все устройства: старые refresh-токены не должны переживать смену пароля
+    try {
+      await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${u.id}/logout`, { method: "POST", headers: { apikey: SERVICE, Authorization: `Bearer ${SERVICE}` } });
+    } catch (_) { /* не критично: пароль уже сменён */ }
     return json({ ok: true });
   }
 
@@ -215,6 +236,7 @@ Deno.serve(async (req) => {
     const { data: recent } = await admin.from("auth_codes").select("id").eq("user_id", callerId).eq("purpose", "bind_email").gte("created_at", new Date(Date.now() - 60000).toISOString()).limit(1);
     if (recent && recent.length) return json({ error: "wait" }, 429);
     const code = genCode();
+    await admin.from("auth_codes").update({ used: true }).eq("user_id", callerId).eq("purpose", "bind_email").eq("used", false);  // живым остаётся только последний код
     await admin.from("auth_codes").insert({ user_id: callerId, purpose: "bind_email", email, code_hash: await sha256(callerId + ":" + email + ":" + code), expires_at: new Date(Date.now() + 15 * 60000).toISOString() });
     const sent = await sendCode(email, code, "bind");
     return json({ ok: true, sent });
@@ -228,7 +250,7 @@ Deno.serve(async (req) => {
     if (!rec || rec.email !== email) return json({ error: "invalid" }, 400);
     if (new Date(rec.expires_at) < new Date()) return json({ error: "expired" }, 400);
     if (rec.attempts >= 5) return json({ error: "too_many" }, 429);
-    if (await sha256(callerId + ":" + email + ":" + code) !== rec.code_hash) {
+    if (!hashEq(await sha256(callerId + ":" + email + ":" + code), rec.code_hash)) {
       await admin.from("auth_codes").update({ attempts: rec.attempts + 1 }).eq("id", rec.id);
       return json({ error: "wrong_code" }, 400);
     }
@@ -273,6 +295,9 @@ Deno.serve(async (req) => {
     const role = String(p.role || "worker");
     if (!/^[a-z0-9_]{3,32}$/.test(username)) return json({ error: "Логин: 3-32 символа a-z 0-9 _" }, 400);
     if (password.length < 6) return json({ error: "Пароль не короче 6 символов" }, 400);
+    // ТОЛЬКО базовые роли: org-роли (party_chief/director/…) в base_members дали бы can_manage
+    // в обход триггера рангов (service_role его не проходит). Для них — create_org_member.
+    if (!BASE_ROLES.has(role)) return json({ error: "Неизвестная роль" }, 400);
     const flags = baseFlags(role);
     if (!flags) return json({ error: "Неизвестная роль" }, 400);
     // create_member всегда base-scoped (обратная совместимость с v134, где party_chief/accounting = роль базы).
@@ -414,7 +439,9 @@ Deno.serve(async (req) => {
     const pmap: Record<string, string> = {}; (profs || []).forEach((p: any) => pmap[p.id] = p.username);
     const partymap: Record<string, string> = {}; (parties || []).forEach((p: any) => partymap[p.id] = p.name);
     const members = visible.map((r: any) => ({ ...r, username: pmap[r.user_id] || "—", party_name: r.party_id ? (partymap[r.party_id] || "—") : null }));
-    return json({ ok: true, members, parties: parties || [] });
+    // не-глобальный видит только свои партии — не отдаём ему карту всей оргструктуры
+    const visParties = caps.global ? (parties || []) : (parties || []).filter((pp: any) => caps.parties.has(pp.id));
+    return json({ ok: true, members, parties: visParties });
   }
 
   if (action === "reset_password") {
@@ -455,6 +482,13 @@ Deno.serve(async (req) => {
     const toId = String(p.to_user || "");
     if (!uuid(fromId) || !uuid(toId)) return json({ error: "user_id" }, 400);
     if (fromId === toId) return json({ error: "Это один и тот же работник" }, 400);
+    // ранговая защита: пересменка деактивирует `from` — нельзя трогать равного/старшего
+    // (иначе site_manager мог бы «пересменкой» снять другого site_manager)
+    if (!prof?.is_admin) {
+      const caps = await callerCaps(admin, callerId);
+      const fcaps = await callerCaps(admin, fromId);
+      if (fcaps.rank >= caps.rank) return json({ error: "Нельзя снять со смены того, кто равен или выше вас" }, 403);
+    }
     const { data: moved, error: herr } = await admin.rpc("handover_shift", { p_base: baseId, p_from: fromId, p_to: toId });
     if (herr) {
       console.error("handover_shift", herr);

@@ -7,3 +7,7 @@ node_modules/
 native/android/
 native/ios/
 native-desktop/src-tauri/target/
+
+# личные данные: экспорты/бэкапы склада не коммитим в публичный репозиторий
+vahtahoz-*.json
+*.backup.json

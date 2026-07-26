@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v180 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v182 · БЕТА</div>
   </div>
 </div>
 
@@ -263,7 +263,8 @@ function loadGlobalTasks(){
   try{ const raw=localStorage.getItem(TASKS_KEY); if(raw){ const t=JSON.parse(raw); if(Array.isArray(t)) state.tasks=t; } }catch(e){}
 }
 function saveGlobalTasks(){
-  try{ localStorage.setItem(TASKS_KEY, JSON.stringify(Array.isArray(state.tasks)?state.tasks:[])); }catch(e){}
+  try{ localStorage.setItem(TASKS_KEY, JSON.stringify(Array.isArray(state.tasks)?state.tasks:[])); }
+  catch(e){ if(e && (e.name==="QuotaExceededError" || e.code===22)) _quotaBlock(); else console.error("saveGlobalTasks", e); }
   // задачи изменились → отложенная выгрузка в облако (функция сама проверит, реально ли менялись)
   try{ if(typeof cloudMaybePushTasks==="function") cloudMaybePushTasks(); }catch(e){}
 }
@@ -410,7 +411,7 @@ function loadProfiles(){
 }
 function saveProfiles(p){
   try{ localStorage.setItem(PROFILES_KEY, JSON.stringify(p)); }
-  catch(e){ console.error("saveProfiles", e); }
+  catch(e){ if(e && (e.name==="QuotaExceededError" || e.code===22)) _quotaBlock(); else console.error("saveProfiles", e); }
 }
 function ensureProfiles(){
   let p = loadProfiles();
@@ -1826,6 +1827,7 @@ function renderJournal(kind){
 
   return `
     <button class="btn ${m.color} w-full mt-3" onclick="openOpEdit('${kind}')">＋ ${m.label}</button>
+    ${kind==="receipt" ? `<button class="btn btn-ghost w-full mt-2" onclick="openReceiptImportSheet()">📥 Импорт поступления из Excel</button>` : ""}
     ${months.length ? `<div class="scroll-x flex gap-2 mt-2" id="jrMonthChips">
       ${months.map(ym=>`<button class="chip ${ym===selMonth?'active':''}" data-jrmonth="${ym}">${monthLabel(ym)}</button>`).join("")}
     </div>
@@ -1844,13 +1846,15 @@ function wireStockPicker({prefix, emptyHint, notFoundText, nameOnPick}){
   const unit =document.getElementById(prefix+"Unit");
   const nameI=document.getElementById(prefix+"Name");
   if(!input||!list) return;
+  const PICK_CAP = 50;   // список прокручиваемый (max-h-60 overflow) — показываем больше, при переполнении подсказываем уточнить
   function renderList(q){
     const Q=q.trim().toLowerCase();
     if(!Q){ list.innerHTML=`<div class="text-xs opacity-60 p-2">${emptyHint}</div>`; return; }
-    const found=state.stock.filter(s=>(s.name||"").toLowerCase().includes(Q)).slice(0,20);
-    list.innerHTML=found.length
-      ? found.map(s=>`<button type="button" class="w-full text-left p-2 rounded hover:bg-white/5" data-pick="${esc(s.id)}">${typeMeta(s.type).icon} ${esc(s.name)} <span class="opacity-60 text-xs">· ${fmtQty(s.qty)} ${esc(s.unit||"")}</span></button>`).join("")
-      : `<div class="text-xs opacity-60 p-2">${notFoundText}</div>`;
+    const matched=state.stock.filter(s=>(s.name||"").toLowerCase().includes(Q));
+    const found=matched.slice(0,PICK_CAP);
+    if(!found.length){ list.innerHTML=`<div class="text-xs opacity-60 p-2">${notFoundText}</div>`; return; }
+    list.innerHTML = found.map(s=>`<button type="button" class="w-full text-left p-2 rounded hover:bg-white/5" data-pick="${esc(s.id)}">${typeMeta(s.type).icon} ${esc(s.name)} <span class="opacity-60 text-xs">· ${fmtQty(s.qty)} ${esc(s.unit||"")}</span></button>`).join("")
+      + (matched.length>PICK_CAP ? `<div class="text-xs opacity-60 p-2">Показаны первые ${PICK_CAP} из ${matched.length} — уточните запрос</div>` : "");
   }
   renderList("");
   input.addEventListener("input", ()=>renderList(input.value));
@@ -1942,7 +1946,8 @@ function applyStockDelta(product, sign, qty, note, op){
 function journalEffectSign(kind, op){
   if(kind==="receipt") return 1;
   if(kind==="issue" || kind==="writeoff") return -1;
-  if(kind==="order") return op.status==="received" ? 1 : 0;
+  // Заказ НЕ учитывается в ledger: приём заказа (orderReceive) создаёт зеркальную запись
+  // в "receipt", она и даёт +qty. Иначе принятый заказ считался бы дважды (раздувал остаток).
   return 0;
 }
 function journalRefScore(it){
@@ -1962,8 +1967,10 @@ function ledgerQtyForProduct(product){
       const sign = journalEffectSign(kind, op);
       if(!sign) continue;
       const matchId = op.productId && op.productId===pid;
-      const matchName = stockNormName(op.productName)===pname;
-      if(matchId || (!op.productId && matchName) || (op.productId && matchName && !state.stock.some(s=>s.id===op.productId)))
+      // по имени учитываем ТОЛЬКО записи без productId (иначе движение с чужим/удалённым
+      // productId, но совпавшим именем, приписалось бы не той карточке)
+      const matchNameOnly = !op.productId && stockNormName(op.productName)===pname;
+      if(matchId || matchNameOnly)
         sum += sign * Number(op.qty||0);
     }
   }
@@ -2015,7 +2022,19 @@ function mergeDuplicateStockByName(){
     for(const dup of items.slice(1)){
       if(hasBatches(dup)){
         primary.batches = primary.batches || [];
-        for(const b of batchesOf(dup)) primary.batches.push({ ...b, id: uid() });
+        const usedIds = new Set(primary.batches.map(b=>b.id));
+        for(const b of batchesOf(dup)){
+          // СОХРАНЯЕМ b.id — иначе op.batchId в журнале осиротеет («партия не найдена»).
+          // Новый id только при коллизии, с переносом ссылок в журнале.
+          let bid = b.id;
+          if(usedIds.has(bid)){
+            const nid = uid();
+            for(const kind of JOURNAL_KEYS) for(const op of (state.journals[kind]||[])){ if(op && op.batchId===bid && op.productId===dup.id) op.batchId = nid; }
+            bid = nid;
+          }
+          usedIds.add(bid);
+          primary.batches.push({ ...b, id: bid });
+        }
         if(hasBatches(primary)) syncItemFromBatches(primary);
         else primary.qty = roundQty(Number(primary.qty||0) + totalQtyOf(dup));
       } else if(hasBatches(primary)){
@@ -2065,41 +2084,56 @@ function ensureProductsFromJournalLedger(){
   }
   return created;
 }
-function reconcileLegacyQtyFromJournal(){
-  let fixed = 0;
-  const under = [];
+// Сверка остатка с журналом. allowDown=false (по умолчанию) — только повышаем недосчитанные
+// (безопасно: журнал мог не попасть в остаток). allowDown=true — приводим и завышенные к журналу
+// (только по явному запросу пользователя: журнал не всегда полный, ручное занижение возможно).
+function reconcileLegacyQtyFromJournal(allowDown){
+  const up = [], down = [];
   for(const s of (state.stock||[])){
     if(hasBatches(s)) continue;
     const ledger = ledgerQtyForProduct(s);
     const cur = totalQtyOf(s);
     if(ledger === cur) continue;
     if(ledger > cur){
-      s.qty = ledger;
-      s.updatedAt = new Date().toISOString();
-      fixed++;
-      under.push({ name:s.name, was:cur, now:ledger });
+      s.qty = ledger; s.updatedAt = new Date().toISOString();
+      up.push({ name:s.name, was:cur, now:ledger });
+    } else if(allowDown && ledger >= 0){
+      s.qty = ledger; s.updatedAt = new Date().toISOString();
+      down.push({ name:s.name, was:cur, now:ledger });
     }
   }
-  return { fixed, under };
+  return { fixed: up.length + down.length, up, down };
 }
-function runStockJournalReconcile(){
-  if(!canEditStock()) return { merged:0, relinked:0, created:0, fixed:0, under:[], skippedBatched:0 };
+// список позиций, где остаток БОЛЬШЕ журнала (кандидаты на завышение, напр. старым багом сверки)
+function overCountedVsJournal(){
+  const over = [];
+  for(const s of (state.stock||[])){
+    if(hasBatches(s)) continue;
+    const ledger = ledgerQtyForProduct(s);
+    const cur = totalQtyOf(s);
+    if(cur > ledger && ledger >= 0) over.push({ id:s.id, name:s.name, cur, ledger });
+  }
+  return over;
+}
+function runStockJournalReconcile(allowDown){
+  if(!canEditStock()) return { merged:0, relinked:0, created:0, fixed:0, up:[], down:[], skippedBatched:0 };
   const merged = mergeDuplicateStockByName();
   const relinked = relinkJournalOpsToCanonical();
   const created = ensureProductsFromJournalLedger();
-  const { fixed, under } = reconcileLegacyQtyFromJournal();
+  const { fixed, up, down } = reconcileLegacyQtyFromJournal(!!allowDown);
   const skippedBatched = (state.stock||[]).filter(s=>hasBatches(s)).length;
   if(merged || relinked || created || fixed){
     saveState();
     try{ cloudMaybePush(); }catch(_){}
     try{ render(); }catch(_){}
   }
-  return { merged, relinked, created, fixed, under, skippedBatched };
+  return { merged, relinked, created, fixed, up, down, skippedBatched };
 }
 function runAutoStockJournalReconcile(){
-  const key = NS + "vahtahoz_stock_reconcile_v2_" + (profiles.activeId || "default");
+  // v3: ключ поднят после фикса двойного учёта заказов (v2 мог завысить остатки).
+  const key = NS + "vahtahoz_stock_reconcile_v3_" + (profiles.activeId || "default");
   if(localStorage.getItem(key)) return null;
-  const r = runStockJournalReconcile();
+  const r = runStockJournalReconcile(false);   // авто — только вверх (безопасно)
   localStorage.setItem(key, "1");
   const parts = [];
   if(r.merged) parts.push(`дублей: ${r.merged}`);
@@ -2114,20 +2148,27 @@ async function openStockReconcileSheet(){
     <div class="font-bold text-xl mb-2">Сверка склада по журналу</div>
     <div class="text-sm opacity-70 mb-3">Сравнивает остатки с записями «Поступление», «Выдача», «Списание» и «Заказы». Объединяет дубли по названию (например две «Манная») и восстанавливает недостающие позиции.</div>
     <div class="text-xs opacity-60 mb-3">Товары с партиями (срок годности) сверяются вручную — автоматом не трогаем.</div>
+    <label class="flex items-center gap-2 text-sm mb-3"><input type="checkbox" id="reconcileDown" /> Приводить и завышенные остатки к журналу (если остаток больше, чем по движениям)</label>
     <button class="btn btn-primary w-full" id="reconcileGo">Запустить сверку</button>
     <div id="reconcileOut" class="text-sm mt-3 whitespace-pre-line opacity-80"></div>
   `);
   document.getElementById("reconcileGo").onclick = ()=>{
-    const r = runStockJournalReconcile();
+    const allowDown = !!document.getElementById("reconcileDown").checked;
+    const r = runStockJournalReconcile(allowDown);
     const lines = [];
     if(r.merged) lines.push(`Объединено дублей: ${r.merged}`);
     if(r.relinked) lines.push(`Перепривязано записей журнала: ${r.relinked}`);
     if(r.created) lines.push(`Создано позиций на складе: ${r.created}`);
     if(r.fixed) lines.push(`Исправлено остатков: ${r.fixed}`);
-    if(r.under && r.under.length){
+    const ex = [...(r.up||[]), ...(r.down||[])];
+    if(ex.length){
       lines.push("", "Примеры (было → стало):");
-      r.under.slice(0,12).forEach(x=> lines.push(`• ${x.name}: ${fmtQty(x.was)} → ${fmtQty(x.now)}`));
-      if(r.under.length>12) lines.push(`… и ещё ${r.under.length-12}`);
+      ex.slice(0,12).forEach(x=> lines.push(`• ${x.name}: ${fmtQty(x.was)} → ${fmtQty(x.now)}`));
+      if(ex.length>12) lines.push(`… и ещё ${ex.length-12}`);
+    }
+    if(!allowDown){
+      const over = overCountedVsJournal();
+      if(over.length) lines.push("", `⚠ Остаток больше журнала у ${over.length} поз. — включите галочку выше, чтобы привести к журналу.`);
     }
     if(!lines.length) lines.push("Расхождений не найдено — склад совпадает с журналом.");
     document.getElementById("reconcileOut").textContent = lines.join("\n");
@@ -2180,24 +2221,181 @@ function saveOp(kind){
   toast(`${m.verb}: ${name}`);
 }
 
+/* ===================== ИМПОРТ ПОСТУПЛЕНИЯ ИЗ EXCEL =====================
+   Файл .xlsx/.csv с колонками (обязателен только «Наименование»):
+   Наименование | Количество | Ед. изм. | Категория | Срок годности | Место | Примечание
+   Каждая строка = одно поступление: остаток пополняется (или создаётся каталожная позиция). */
+
+// канонизация заголовка колонки: нижний регистр, без точек/пробелов/ё
+const _impNormHeader = (h) => String(h||"").toLowerCase().replace(/ё/g,"е").replace(/[\s.\-_]+/g,"").trim();
+const _IMP_HEADER_MAP = {
+  name:     ["наименование","название","товар","номенклатура","name","item","product"],
+  qty:      ["количество","колво","кол","qty","quantity","count","приход","поступило"],
+  unit:     ["едизм","ед","единица","единицаизмерения","unit","uom"],
+  category: ["категория","группа","category","group"],
+  expiry:   ["срокгодности","срок","годендо","expiry","expirydate","bestbefore"],
+  location: ["место","локация","склад","ячейка","location","place"],
+  note:     ["примечание","коммент","комментарий","note","comment","поставщик","supplier"],
+};
+function _impMapHeaders(headerRow){
+  const map = {};
+  for(const raw of headerRow){
+    const n = _impNormHeader(raw);
+    for(const field in _IMP_HEADER_MAP){
+      if(_IMP_HEADER_MAP[field].includes(n)){ map[raw] = field; break; }
+    }
+  }
+  return map;
+}
+// Excel-серийная дата (дней от 1899-12-30) → YYYY-MM-DD
+function _excelSerialToISO(n){
+  const ms = Math.round((Number(n) - 25569) * 86400 * 1000);
+  const d = new Date(ms);
+  return isNaN(d.getTime()) ? "" : d.toISOString().slice(0,10);
+}
+// нормализация даты: число (серийная) / Date / строка (YYYY-MM-DD | DD.MM.YYYY | DD/MM/YYYY)
+function _impParseDate(v){
+  if(v==null || v==="") return "";
+  if(v instanceof Date) return isNaN(v.getTime()) ? "" : v.toISOString().slice(0,10);
+  if(typeof v==="number") return _excelSerialToISO(v);
+  const s = String(v).trim();
+  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s);
+  if(m) return `${m[1]}-${String(m[2]).padStart(2,"0")}-${String(m[3]).padStart(2,"0")}`;
+  m = /^(\d{1,2})[.\/](\d{1,2})[.\/](\d{2,4})/.exec(s);
+  if(m){ let [,d,mo,y]=m; if(y.length===2) y="20"+y; return `${y}-${String(mo).padStart(2,"0")}-${String(d).padStart(2,"0")}`; }
+  return "";
+}
+// одна строка импорта → запись поступления (мутирует склад/журнал; saveState делает вызывающий)
+function recordReceiptRow(row){
+  const name = cleanName40(row.name);
+  const qty = roundQty(parseNum(row.qty));
+  if(!name || !(qty>0)) return null;
+  const unit = UNITS.includes(String(row.unit||"").trim()) ? String(row.unit).trim() : "шт";
+  const product = resolveIncomingProduct({ manualName:name, unit, type:"product" });
+  if(!product) return null;
+  const cat = cleanCatName(row.category);
+  if(cat){
+    state.categories.product = state.categories.product || [];
+    if(!state.categories.product.includes(cat)) state.categories.product.push(cat);
+    if(!product.category) product.category = cat;
+  }
+  const note = (typeof row.note==="string" ? row.note.slice(0,200) : "").trim();
+  const expiry = _impParseDate(row.expiry);
+  const location = cleanCatName(row.location);
+  const op = { id:uid(), ts:new Date().toISOString(), productId:product.id, productName:product.name, qty, unit:product.unit||unit, note: note||"Импорт поступления" };
+  applyStockDelta(product, 1, qty, op.note, op);
+  if(hasBatches(product) && op.batchId){
+    const b = (product.batches||[]).find(x=>x.id===op.batchId);
+    if(b){ if(expiry) b.expiry=expiry; if(location) b.location=location; op.batchExpiry=b.expiry||""; op.batchLocation=b.location||""; syncItemFromBatches(product); }
+  } else {
+    if(expiry && !product.expiry) product.expiry = expiry;
+    if(location && !product.location) product.location = location;
+  }
+  state.journals.receipt = state.journals.receipt || [];
+  state.journals.receipt.unshift(op);
+  return op;
+}
+
+// разбор книги XLSX → массив нормализованных строк
+function _impParseWorkbook(XLSX, data){
+  const wb = XLSX.read(data, { type:"array" });
+  const wsName = wb.SheetNames[0];
+  if(!wsName) return { rows:[], error:"Файл пуст" };
+  const ws = wb.Sheets[wsName];
+  const aoa = XLSX.utils.sheet_to_json(ws, { header:1, raw:true, defval:"" });
+  if(!aoa.length) return { rows:[], error:"Нет строк" };
+  const headerRow = aoa[0].map(x=>String(x));
+  const hmap = _impMapHeaders(headerRow);
+  if(!Object.values(hmap).includes("name")) return { rows:[], error:"Не найден столбец «Наименование». Проверьте заголовки (первая строка)." };
+  const idxOf = {};
+  headerRow.forEach((h,i)=>{ if(hmap[h]) idxOf[hmap[h]] = i; });
+  const rows = [];
+  for(let r=1; r<aoa.length; r++){
+    const arr = aoa[r]; if(!arr || !arr.length) continue;
+    const get = (f)=> idxOf[f]!=null ? arr[idxOf[f]] : "";
+    const nm = String(get("name")||"").trim();
+    if(!nm) continue;
+    rows.push({ name:nm, qty:get("qty"), unit:get("unit"), category:get("category"), expiry:get("expiry"), location:get("location"), note:get("note") });
+  }
+  return { rows };
+}
+
+function openReceiptImportSheet(){
+  if(!ensureCanEdit()) return;
+  openSheet(`
+    <div class="font-bold text-xl mb-2">📥 Импорт поступления из Excel</div>
+    <div class="text-sm opacity-80 mb-2">Загрузите файл <b>.xlsx</b> или <b>.csv</b>. Первая строка — заголовки. Каждая строка добавит поступление на склад и запись в журнал.</div>
+    <div class="text-xs opacity-70 mb-3">Столбцы (обязателен только «Наименование»):<br>
+      <b>Наименование</b> · Количество · Ед. изм. · Категория · Срок годности · Место · Примечание</div>
+    <button class="btn btn-ghost w-full mb-2" onclick="downloadReceiptTemplate()">⬇️ Скачать шаблон .xlsx</button>
+    <label class="btn btn-primary w-full">Выбрать файл…<input type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hidden" onchange="importReceiptsExcel(event)"></label>
+    <div id="impReceiptOut" class="text-sm mt-3 whitespace-pre-line opacity-80"></div>
+  `);
+}
+
+async function downloadReceiptTemplate(){
+  let XLSX; try{ XLSX = await ensureXlsx(); }catch(e){ toast("Не удалось загрузить Excel-модуль (нужна сеть в первый раз)"); return; }
+  const sample = [
+    { "Наименование":"Манная крупа", "Количество":7, "Ед. изм.":"кг", "Категория":"Крупы", "Срок годности":"", "Место":"Склад А", "Примечание":"" },
+    { "Наименование":"Молоко сгущённое", "Количество":24, "Ед. изм.":"шт", "Категория":"Молочные продукты", "Срок годности":"2027-01-15", "Место":"", "Примечание":"Поставщик X" },
+  ];
+  const ws = xlsxGuard(XLSX.utils.json_to_sheet(sample));
+  ws["!cols"] = [{wch:28},{wch:12},{wch:10},{wch:20},{wch:14},{wch:14},{wch:22}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Поступление");
+  saveXlsx(wb, `vahtahoz-шаблон-поступление.xlsx`);
+}
+
+async function importReceiptsExcel(ev){
+  const f = ev.target.files && ev.target.files[0];
+  const inputEl = ev.target;
+  if(!f){ return; }
+  if(!ensureCanEdit()){ inputEl.value=""; return; }
+  const out = ()=>document.getElementById("impReceiptOut");
+  if(out()) out().textContent = "Чтение файла…";
+  let XLSX;
+  try{ XLSX = await ensureXlsx(); }
+  catch(e){ if(out()) out().textContent="Не удалось загрузить Excel-модуль (нужна сеть в первый раз)."; inputEl.value=""; return; }
+  const reader = new FileReader();
+  reader.onload = async () => {
+    inputEl.value = "";
+    let parsed;
+    try{ parsed = _impParseWorkbook(XLSX, new Uint8Array(reader.result)); }
+    catch(e){ console.warn("import parse", e); if(out()) out().textContent="Не удалось прочитать файл — проверьте формат (.xlsx/.csv)."; return; }
+    if(parsed.error){ if(out()) out().textContent = parsed.error; return; }
+    const rows = parsed.rows || [];
+    const valid = rows.filter(r=> cleanName40(r.name) && roundQty(parseNum(r.qty))>0);
+    const skipped = rows.length - valid.length;
+    if(!valid.length){ if(out()) out().textContent = `Не найдено ни одной строки с наименованием и количеством > 0 (всего строк: ${rows.length}).`; return; }
+    const preview = valid.slice(0,8).map(r=>`• ${cleanName40(r.name)} — ${fmtQty(roundQty(parseNum(r.qty)))} ${UNITS.includes(String(r.unit||"").trim())?String(r.unit).trim():"шт"}`).join("\n");
+    const go = await confirmSheet(
+      `Импортировать поступлений: ${valid.length}${skipped?`\nБудет пропущено (нет имени/кол-ва): ${skipped}`:""}\n\n${preview}${valid.length>8?`\n…и ещё ${valid.length-8}`:""}`,
+      { yes:"Импортировать", no:"Отмена", title:"Подтверждение импорта" }
+    );
+    if(!go) return;
+    let ok = 0;
+    for(const r of valid){ try{ if(recordReceiptRow(r)) ok++; }catch(e){ console.warn("recordReceiptRow", e); } }
+    if(Array.isArray(state.journals.receipt) && state.journals.receipt.length>3000) state.journals.receipt = state.journals.receipt.slice(0,3000);
+    logOp("IMPORT", `Поступление из Excel: ${ok} поз.`);
+    saveState();
+    try{ render(); }catch(_){}
+    toast(`Импортировано поступлений: ${ok}`);
+    if(out()) out().textContent = `Готово. Добавлено поступлений: ${ok}${skipped?`, пропущено: ${skipped}`:""}.`;
+  };
+  reader.onerror = ()=>{ if(out()) out().textContent="Ошибка чтения файла."; };
+  reader.readAsArrayBuffer(f);
+}
+
 function orderReceive(opId){
   if(!ensureCanEdit()) return;
   const op = state.journals.order.find(o=>o.id===opId); if(!op) return;
   if(op.status==="received") return;
   op.status = "received";
   op.receivedAt = new Date().toISOString();
-  let product = op.productId ? state.stock.find(s=>s.id===op.productId) : null;
-  if(!product){
-    // авто-создание позиции на складе по ручному имени
-    product = {
-      id: uid(), type:"product", name: op.productName,
-      qty: 0, unit: op.unit||"шт", minStock:"", expiry:"", location:"",
-      category: ((state.categories.product||[]).includes("Прочие продукты") ? "Прочие продукты" : (state.categories.product||[])[0] || ""),
-      note:"", createdAt:new Date().toISOString(),
-    };
-    state.stock.push(product);
-    op.productId = product.id;
-  }
+  // авто-создание/поиск позиции по ручному имени — единый хелпер (нормализация имени, каталог, propagate)
+  let product = resolveIncomingProduct({ productId: op.productId, manualName: op.productName, unit: op.unit, type:"product" });
+  if(!product){ toast("Не удалось определить товар заказа"); return; }
+  op.productId = product.id;
   const receiptId = uid();
   op.receiptId = receiptId;
   if(hasBatches(product)){
@@ -2392,7 +2590,13 @@ async function saveOpEdit(kind, opId){
   const effSign = kind==="order" ? (op.status==="received" ? +1 : 0) : m.sign;
 
   const oldProd = op.productId ? state.stock.find(s=>s.id===op.productId) : null;
-  const newProd = newProdId ? state.stock.find(s=>s.id===newProdId) : null;
+  let newProd = newProdId ? state.stock.find(s=>s.id===newProdId) : null;
+  // приход по ручному имени без выбранной позиции: создаём/находим карточку, иначе поступление
+  // осталось бы «в воздухе» (запись есть, остаток не вырос). Для расхода — нельзя (ниже отдельный гард).
+  const _effSignEarly = kind==="order" ? (op.status==="received" ? +1 : 0) : m.sign;
+  if(!newProd && _effSignEarly>0 && newName){
+    newProd = resolveIncomingProduct({ manualName:newName, unit:newUnit, type:(oldProd?.type||"product") });
+  }
 
   // если запись имела привязку к складу, но продукт удалён — нельзя корректно откатить старый эффект
   if(effSign!==0 && op.productId && !oldProd){
@@ -3335,7 +3539,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v180 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v182 · тестовый канал</div>
   `;
 }
 
@@ -4529,10 +4733,10 @@ async function openMembersSheet(){
         <span class="badge ${inactive?"badge-gray":"badge-green"}">${inactive?"не на смене":"на смене"}</span>
       </div>
       <div class="flex flex-wrap gap-2 mt-2">
-        <button class="btn btn-ghost text-sm px-2" onclick="openMemberRole('${m.user_id}')">Роль</button>
-        <button class="btn btn-ghost text-sm px-2" onclick="openShift('${m.user_id}')">Смена</button>
-        <button class="btn btn-ghost text-sm px-2" onclick="openResetPwd('${m.user_id}')">Пароль</button>
-        ${m.user_id===myId?"":`<button class="btn btn-ghost text-sm px-2" onclick="memberRemove('${m.user_id}')">Убрать</button>`}
+        <button class="btn btn-ghost text-sm px-2" onclick="openMemberRole('${safeId(m.user_id)}')">Роль</button>
+        <button class="btn btn-ghost text-sm px-2" onclick="openShift('${safeId(m.user_id)}')">Смена</button>
+        <button class="btn btn-ghost text-sm px-2" onclick="openResetPwd('${safeId(m.user_id)}')">Пароль</button>
+        ${m.user_id===myId?"":`<button class="btn btn-ghost text-sm px-2" onclick="memberRemove('${safeId(m.user_id)}')">Убрать</button>`}
       </div>
     </div>`;
   }).join("");
@@ -4737,7 +4941,7 @@ async function openOrgRolesSheet(){
     return `<div class="card flex items-center justify-between gap-2">
       <div class="min-w-0"><div class="font-semibold truncate">${esc(m.username)}</div>
         <div class="text-xs opacity-70 truncate">${esc(orgRoleLabel(m.role))}${where}${m.active===false?" · выкл":""}</div></div>
-      ${can?`<button class="btn btn-ghost px-2" onclick="orgRoleRemove('${m.user_id}','${m.role}',${m.party_id?`'${m.party_id}'`:"null"})">Снять</button>`:""}
+      ${can?`<button class="btn btn-ghost px-2" onclick="orgRoleRemove('${safeId(m.user_id)}','${safeId(m.role)}',${m.party_id?`'${safeId(m.party_id)}'`:"null"})">Снять</button>`:""}
     </div>`;
   }).join("") : `<div class="opacity-70 text-sm">Пока никого нет.</div>`;
   openSheet(`<div class="font-bold text-xl mb-3">🗺 Роли по регионам</div>
@@ -5090,11 +5294,13 @@ function _recErr(m){ return m==="wrong_code"?"Неверный код":m==="expi
 async function cloudRefreshRecoveryProfile(){
   if(!cloud.session?.access_token || !cloud.profile?.id) return null;
   try{
-    const prof = await cloudRest(`profiles?select=recovery_email,recovery_email_verified&id=eq.${encodeURIComponent(cloud.profile.id)}`, cloud.session.access_token);
-    if(Array.isArray(prof) && prof[0]){
-      cloud.profile.recovery_email = prof[0].recovery_email;
-      cloud.profile.recovery_email_verified = !!prof[0].recovery_email_verified;
-      return prof[0];
+    // через definer-RPC: колоночный SELECT на recovery_* отозван (чужую резервную почту не видно никому)
+    const raw = await cloudRest(`rpc/my_recovery_email`, cloud.session.access_token);
+    const prof = Array.isArray(raw) ? raw[0] : raw;   // rpc отдаёт json-объект (страховка и от массива)
+    if(prof && typeof prof==="object"){
+      cloud.profile.recovery_email = prof.recovery_email;
+      cloud.profile.recovery_email_verified = !!prof.recovery_email_verified;
+      return prof;
     }
   }catch(e){ console.warn("cloudRefreshRecoveryProfile", e); }
   return null;
@@ -5349,7 +5555,7 @@ async function cloudOnLogin(session, attempt){
     const tok = session.access_token;
     const [prof, mem, bs, orgs] = await Promise.race([
       Promise.all([
-        cloudRest(`profiles?select=*&id=eq.${encodeURIComponent(uidv)}`, tok),
+        cloudRest(`profiles?select=id,username,display_name,is_admin&id=eq.${encodeURIComponent(uidv)}`, tok),   // явные колонки: SELECT на recovery_* отозван, select=* упал бы с 403
         cloudRest(`base_members?select=*&user_id=eq.${encodeURIComponent(uidv)}`, tok),   // ТОЛЬКО мои членства: RLS теперь даёт менеджеру видеть и чужие строки, но cloud.members = «мои права»
         cloudRest(`bases?select=id,name,party_id`, tok),
         cloudRest(`org_roles?select=*&user_id=eq.${encodeURIComponent(uidv)}`, tok).catch(()=>[]),   // территориальные/глобальные роли (может отсутствовать на старом бэке → [] )
@@ -5619,7 +5825,23 @@ async function cloudPull(cid){
     const J=emptyJournals();
     const _delJrSet = new Set(Array.isArray(state.delJr)?state.delJr:[]);   // не воскрешаем явно удалённые (если облачное удаление ещё не доехало / чужой re-push)
     (jr||[]).forEach(r=>{ const rid=safeId(r.id); if(_delJrSet.has(rid)) return; if(J[r.kind]) J[r.kind].push({ ...(r.data||{}), id:rid }); });
-    for(const k in J) J[k] = J[k].sort((a,b)=>(b.ts||"").localeCompare(a.ts||"")).slice(0,500);   // держим локально свежие 500 (как при quota-усечении) — иначе на малой памяти цикл pull↔усечение; облачный архив полный
+    for(const k in J) J[k] = J[k].sort((a,b)=>(b.ts||"").localeCompare(a.ts||""));
+    state.journals = J;
+    // снимок подписей строим ПО СЫРЫМ облачным данным (ДО сверки) — тогда, если сверка что-то
+    // поправит, дельта-push увидит расхождение и выгрузит исправление в облако.
+    const pulledStSig = {}; state.stock.forEach(s=>{ pulledStSig[s.id]=_sigOf(stockToRow(s,cid)); });
+    // После pull сверяем остатки с полным журналом (облако могло отстать/обнулиться при sync с другого
+    // телефона). ТОЛЬКО для тех, кто может править склад, и только вверх (безопасно, без обнуления).
+    let _reconChanged = false;
+    if(canEditStock()){
+      try{
+        mergeDuplicateStockByName();
+        relinkJournalOpsToCanonical();
+        const rec = reconcileLegacyQtyFromJournal(false);
+        _reconChanged = !!(rec.fixed);
+      }catch(e){ console.warn("post-pull stock reconcile", e); }
+    }
+    for(const k in J) J[k] = J[k].slice(0,500);
     state.journals = J;
     // ЗАДАЧИ НЕ ТЯНЕМ из облака — они общие-локальные (одно расписание на все базы),
     // не зависят от базы и не видны начальнику. state.tasks остаётся как есть (из loadGlobalTasks).
@@ -5642,13 +5864,15 @@ async function cloudPull(cid){
       try{ saveSyncSig(cid,"settings",{ v:_sigOf({ locations:state.locations, categories:state.categories, deletedLocations:state.delLoc, deletedCategories:state.delCat }) }); }catch(_){}
     }
     saveState();                              // cloud.applying=true → push не сработает (без эха)
-    // снимок подписей = только что загруженное из облака → следующий push пойдёт ДЕЛЬТОЙ (не вся база)
+    // снимок подписей = СЫРОЕ облачное (до сверки) → если сверка исправила остаток,
+    // следующий push увидит дельту и выгрузит исправление; иначе — пусто, лишнего трафика нет.
     try{
-      const stSig={}; state.stock.forEach(s=>{ stSig[s.id]=_sigOf(stockToRow(s,cid)); });
-      saveStockSig(cid,stSig);
+      saveStockSig(cid, pulledStSig);
       const jSig={}; for(const k of JOURNAL_KEYS) for(const op of (state.journals[k]||[])) jSig[op.id]=_sigOf({kind:k,data:op});
       saveSyncSig(cid,"jr",jSig);
     }catch(_){}
+    // исправления сверки (только у редакторов) — помечаем к выгрузке, чтобы облако тоже обновилось
+    if(_reconChanged){ try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){} }
     setSyncStatus("synced","Загружено из облака");
   }catch(e){
     console.warn("cloudPull", e);
@@ -5666,6 +5890,10 @@ async function cloudPull(cid){
 function cloudMaybePush(){
   if(!cloud.ready) return;
   const cid = activeCloudId(); if(!cid) return;
+  // РОЛИ ТОЛЬКО ДЛЯ ПРОСМОТРА (бухгалтер / снят со смены): пушить нечего и НЕЛЬЗЯ по RLS.
+  // НЕ ставим dirty — иначе saveState() после pull пометил бы базу «грязной», push вышел бы
+  // без снятия флага, и следующий cloudPull молча пропускал бы обновления (view-only «залипал»).
+  if(typeof canEditStock==="function" && !canEditStock()) return;
   // помечаем «не синхронизировано» СРАЗУ — флаг снимется только после успешной выгрузки.
   // Так переключение базы/перезагрузка не теряет отложенные правки: при возврате
   // cloudActivate увидит dirty и выгрузит локальное, а не затрёт его pull-ом.
