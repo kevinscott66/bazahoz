@@ -1,11 +1,18 @@
--- Хардненинг по аудиту безопасности 2026-07-20. Четыре дыры:
+-- Хардненинг по аудиту безопасности 2026-07-20. ОБРАТНО СОВМЕСТИМО:
+-- существующие сессии не сбрасываются (JWT/refresh не трогаем → повторный вход не нужен),
+-- старые закешированные клиенты продолжают работать (profiles?select=* остаётся валидным).
+--
+-- Закрываемые дыры:
 --  1) handover_shift: SECURITY DEFINER без проверки прав — любой authenticated мог через RPC
 --     деактивировать участников базы и утащить чужие задачи.
 --  2) enforce_base_member_write: триггер проверял ранг НОВОЙ роли, а не ранг ЦЕЛИ —
---     site_manager мог понизить равного site_manager до worker (demote пира).
---  3) profiles: SELECT на recovery_email не был отозван — менеджер видел чужую резервную
---     почту через can_see_profile (profiles?select=*).
---  4) auth_codes: защита только «RLS без политик», без явного REVOKE (belt-and-braces).
+--     site_manager мог понизить/снять равного site_manager (demote пира).
+--  3) profiles.recovery_email виден менеджеру (can_see_profile) через profiles?select=*.
+--     Фикс без поломки клиентов: переносим резервную почту в отдельную таблицу
+--     user_recovery (только service_role) и УДАЛЯЕМ колонки из profiles. select=* остаётся рабочим.
+--  4) auth_codes: защита только «RLS без политик», добавляем явный REVOKE.
+
+begin;
 
 -- ── 1. handover_shift: авторизация внутри + отзыв EXECUTE ────────────────────────────
 create or replace function public.handover_shift(p_base uuid, p_from uuid, p_to uuid)
@@ -43,7 +50,7 @@ end$function$;
 
 -- клиент ходит через Edge Function (service_role) — прямой RPC пользователям не нужен вовсе
 revoke execute on function public.handover_shift(uuid, uuid, uuid) from public, anon, authenticated;
-grant execute on function public.handover_shift(uuid, uuid, uuid) to service_role;
+grant  execute on function public.handover_shift(uuid, uuid, uuid) to service_role;
 
 -- ── 2. Триггер base_members: ранг ЦЕЛИ (OLD.role), не только новой роли ─────────────
 create or replace function public.enforce_base_member_write()
@@ -62,11 +69,11 @@ begin
     coalesce((select max(role_rank(o.role)) from org_roles o    where o.user_id = caller and o.active), 0),
     coalesce((select max(role_rank(m.role)) from base_members m where m.user_id = caller and m.active and m.can_manage), 0)
   ) into crank;
-  if TG_OP in ('INSERT','UPDATE') and role_rank(NEW.role) = 0 then          -- неизвестная роль → отказ (иначе мусорная роль с can_manage=true проходила)
+  if TG_OP in ('INSERT','UPDATE') and role_rank(NEW.role) = 0 then          -- неизвестная роль → отказ
     raise exception 'base_member: неизвестная роль %', NEW.role using errcode = '42501';
   end if;
   -- ранг ЦЕЛИ: на UPDATE/DELETE смотрим ТЕКУЩУЮ роль строки (OLD). Иначе site_manager
-  -- мог «понизить» равного site_manager до worker: новая роль (worker, ранг 1) < его ранга 2.
+  -- мог «понизить» равного site_manager до worker (новая роль ниже его ранга).
   if TG_OP in ('UPDATE','DELETE') and role_rank(OLD.role) >= crank then
     raise exception 'base_member: нельзя менять/удалять того, кто по рангу (%) не ниже вашего (%)', role_rank(OLD.role), crank
       using errcode = '42501';
@@ -76,7 +83,6 @@ begin
       using errcode = '42501';
   end if;
   if TG_OP in ('INSERT','UPDATE') then
-    -- канонические флаги по роли (пресет), клиентские значения флагов игнорируются
     if NEW.role in ('worker','cook','mechanic') then
       NEW.can_view_stock := true; NEW.can_edit_stock := true; NEW.can_view_tasks := true; NEW.can_edit_tasks := true; NEW.can_manage := false;
     elsif NEW.role = 'site_manager' then
@@ -87,13 +93,39 @@ begin
   return OLD;  -- DELETE
 end $$;
 
--- ── 3. profiles: закрыть чтение чужой recovery_email колоночным грантом ──────────────
--- Табличный SELECT → колоночный: только безопасные поля. Строки по-прежнему режет RLS
--- (can_see_profile), но резервную почту не видит даже управляющий.
-revoke select on public.profiles from authenticated, anon;
-grant  select (id, username, display_name, is_admin) on public.profiles to authenticated;
+-- ── 3. Резервная почта → отдельная таблица только для service_role ───────────────────
+create table if not exists public.user_recovery (
+  user_id                  uuid primary key references auth.users(id) on delete cascade,
+  recovery_email           text,
+  recovery_email_verified  boolean not null default false,
+  updated_at               timestamptz not null default now()
+);
+alter table public.user_recovery enable row level security;   -- нет политик → PostgREST закрыт
+revoke all on public.user_recovery from public, anon, authenticated;
+grant  all on public.user_recovery to service_role;
 
--- своя резервная почта — через definer-RPC (клиент: Ещё → Резервная почта)
+-- переносим существующие данные (идемпотентно), только если колонки ещё есть в profiles
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema='public' and table_name='profiles' and column_name='recovery_email'
+  ) then
+    insert into public.user_recovery (user_id, recovery_email, recovery_email_verified)
+    select id, recovery_email, coalesce(recovery_email_verified,false)
+    from public.profiles
+    where recovery_email is not null
+    on conflict (user_id) do nothing;
+  end if;
+end $$;
+
+-- удаляем колонки из profiles: select=* больше не отдаёт резервную почту, но остаётся ВАЛИДНЫМ
+-- (старые клиенты не ломаются). Явный запрос select=recovery_email в старом кэше вернёт 400 —
+-- в клиенте он в try/catch и не критичен (только строка статуса «Резервная почта»).
+alter table public.profiles drop column if exists recovery_email;
+alter table public.profiles drop column if exists recovery_email_verified;
+
+-- своя резервная почта для клиента — через definer-RPC (читает user_recovery)
 create or replace function public.my_recovery_email()
 returns json
 language sql
@@ -101,15 +133,17 @@ stable security definer
 set search_path to 'public'
 as $function$
   select json_build_object(
-    'recovery_email', p.recovery_email,
-    'recovery_email_verified', p.recovery_email_verified
+    'recovery_email',          ur.recovery_email,
+    'recovery_email_verified', coalesce(ur.recovery_email_verified,false)
   )
-  from public.profiles p where p.id = auth.uid();
+  from public.user_recovery ur where ur.user_id = auth.uid();
 $function$;
 revoke execute on function public.my_recovery_email() from public, anon;
 grant  execute on function public.my_recovery_email() to authenticated;
 
--- ── 4. auth_codes: явный запрет (до этого — только «RLS без политик») ────────────────
+-- ── 4. auth_codes: явный запрет прямого доступа ─────────────────────────────────────
 revoke all on public.auth_codes from public, anon, authenticated;
 
-select 'security hardening 2026-07-20 applied' as status;
+commit;
+
+select 'security hardening 2026-07-20 (backward-compatible) applied' as status;

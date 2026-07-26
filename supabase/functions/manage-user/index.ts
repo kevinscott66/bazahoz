@@ -179,15 +179,16 @@ Deno.serve(async (req) => {
   if (action === "request_reset") {
     const username = String(p.username || "").trim().toLowerCase().replace(/@.*$/, "");
     if (/^[a-z0-9_]{3,32}$/.test(username)) {
-      const { data: u } = await admin.from("profiles").select("id,recovery_email,recovery_email_verified").eq("username", username).maybeSingle();
-      if (u && u.recovery_email && u.recovery_email_verified) {
+      const { data: u } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
+      const { data: rec2 } = u ? await admin.from("user_recovery").select("recovery_email,recovery_email_verified").eq("user_id", u.id).maybeSingle() : { data: null };
+      if (u && rec2 && rec2.recovery_email && rec2.recovery_email_verified) {
         const { data: recent } = await admin.from("auth_codes").select("id").eq("user_id", u.id).eq("purpose", "reset_password").gte("created_at", new Date(Date.now() - 60000).toISOString()).limit(1);
         if (!recent || recent.length === 0) {
           const code = genCode();
           // старые неиспользованные коды гасим: живым остаётся только последний (сужает окно перебора)
           await admin.from("auth_codes").update({ used: true }).eq("user_id", u.id).eq("purpose", "reset_password").eq("used", false);
-          await admin.from("auth_codes").insert({ user_id: u.id, purpose: "reset_password", email: u.recovery_email, code_hash: await sha256(u.id + ":" + code), expires_at: new Date(Date.now() + 15 * 60000).toISOString() });
-          await sendCode(u.recovery_email, code, "reset");
+          await admin.from("auth_codes").insert({ user_id: u.id, purpose: "reset_password", email: rec2.recovery_email, code_hash: await sha256(u.id + ":" + code), expires_at: new Date(Date.now() + 15 * 60000).toISOString() });
+          await sendCode(rec2.recovery_email, code, "reset");
         }
       }
     }
@@ -254,12 +255,12 @@ Deno.serve(async (req) => {
       await admin.from("auth_codes").update({ attempts: rec.attempts + 1 }).eq("id", rec.id);
       return json({ error: "wrong_code" }, 400);
     }
-    await admin.from("profiles").update({ recovery_email: email, recovery_email_verified: true }).eq("id", callerId);
+    await admin.from("user_recovery").upsert({ user_id: callerId, recovery_email: email, recovery_email_verified: true, updated_at: new Date().toISOString() });
     await admin.from("auth_codes").update({ used: true }).eq("id", rec.id);
     return json({ ok: true, recovery_email: email, recovery_email_verified: true });
   }
   if (action === "unbind_recovery_email") {
-    await admin.from("profiles").update({ recovery_email: null, recovery_email_verified: false }).eq("id", callerId);
+    await admin.from("user_recovery").upsert({ user_id: callerId, recovery_email: null, recovery_email_verified: false, updated_at: new Date().toISOString() });
     return json({ ok: true, recovery_email: null, recovery_email_verified: false });
   }
 
