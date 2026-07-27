@@ -50,24 +50,27 @@ $$;
 revoke all on function public.verify_auth_code(uuid, text, text, text) from public, anon, authenticated;
 grant execute on function public.verify_auth_code(uuid, text, text, text) to service_role;
 
--- ── 2. Тип журнальной строки: stockType в data → склад → fallback product ────────
+-- ── 2. Тип журнальной строки: склад → stockType → fallback product ────────
 create or replace function public.journal_row_type(p_base uuid, p_data jsonb)
 returns text
 language sql
 stable security definer
 set search_path to 'public'
 as $function$
+  -- склад — источник истины (нельзя подделать stockType у чужого productId);
+  -- data.stockType — снимок после удаления позиции; иначе product
   select coalesce(
-    nullif(trim(coalesce(p_data->>'stockType','')), ''),
     (select s.type from public.stock_items s
       where s.base_id = p_base
         and s.id = nullif(trim(coalesce(p_data->>'productId','')), '')
       limit 1),
+    nullif(trim(coalesce(p_data->>'stockType','')), ''),
     'product'
   );
 $function$;
-revoke all on function public.journal_row_type(uuid, jsonb) from public, anon, authenticated;
-grant execute on function public.journal_row_type(uuid, jsonb) to service_role;
+-- RLS вызывает функцию от имени invoker → EXECUTE нужен authenticated
+revoke all on function public.journal_row_type(uuid, jsonb) from public, anon;
+grant execute on function public.journal_row_type(uuid, jsonb) to authenticated, service_role;
 
 -- старый оракул: убираем EXECUTE у клиентов (политики вызывают definer-функции напрямую)
 revoke all on function public.journal_entry_type(uuid, jsonb) from public, anon, authenticated;

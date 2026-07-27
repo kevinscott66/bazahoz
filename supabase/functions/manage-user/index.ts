@@ -372,22 +372,24 @@ Deno.serve(async (req) => {
     const role = String(p.role || "");
     const partyId = String(p.party_id || "");
     const remove = !!p.remove;
-    // назначение существующему по ЛОГИНУ: resolve username→id (profiles SELECT закрыт RLS → через service_role)
-    const username = String(p.username || "").trim().toLowerCase();
-    if (!targetId && username) {
-      if (!/^[a-z0-9_]{3,32}$/.test(username)) return json({ error: "Логин: 3-32 символа a-z 0-9 _" }, 400);
-      const { data: pr2, error: le } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
-      if (le) return json({ error: "Не удалось найти работника" }, 400);
-      if (!pr2) return json({ error: "Работник с таким логином не найден" }, 400);
-      targetId = pr2.id;
-    }
-    if (!uuid(targetId)) return json({ error: "Не указан работник" }, 400);
-    if (targetId === callerId) return json({ error: "Нельзя менять роль самому себе" }, 403);
+    // СНАЧАЛА права на роль — до resolve username (иначе любой залогиненный перечислял логины ответом «не найден»)
     if (!PRESETS[role] || BASE_ROLES.has(role)) return json({ error: "Неизвестная роль" }, 400);
     if (PARTY_ROLES.has(role) && !uuid(partyId)) return json({ error: "Не указана партия" }, 400);
     const caps = await callerCaps(admin, callerId);
     const deny = await canGrant(admin, caps, role, undefined, PARTY_ROLES.has(role) ? partyId : undefined);
     if (deny) return json({ error: deny }, 403);
+    // назначение существующему по ЛОГИНУ: resolve username→id (profiles SELECT закрыт RLS → через service_role)
+    const username = String(p.username || "").trim().toLowerCase();
+    if (!targetId && username) {
+      if (!/^[a-z0-9_]{3,32}$/.test(username)) return json({ error: "Логин: 3-32 символа a-z 0-9 _" }, 400);
+      const { data: pr2, error: le } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
+      if (le) return json({ error: "Не удалось назначить роль" }, 400);
+      // нейтрально: не раскрываем, существует ли логин
+      if (!pr2) return json({ error: "Не удалось назначить роль" }, 400);
+      targetId = pr2.id;
+    }
+    if (!uuid(targetId)) return json({ error: "Не указан работник" }, 400);
+    if (targetId === callerId) return json({ error: "Нельзя менять роль самому себе" }, 403);
     if (PARTY_ROLES.has(role) && !remove) {   // при выдаче регион должен существовать (при remove — не важно)
       const { data: pp } = await admin.from("parties").select("id").eq("id", partyId).maybeSingle();
       if (!pp) return json({ error: "Регион не найден" }, 400);
