@@ -20,19 +20,20 @@ alwaysApply: true
 
 ## Сделано (не повторять как «дыры»)
 
-- v185–v187: journal RLS EXECUTE hotfix, dirty view-only backup, type-restricted sig merge, пагинация pull, no auto-merge on pull, ledger `type::name`, parseNum EU.
+- v185–v188: journal RLS, type-restricted merge, пагинация pull, app_private journal_row_type, orphan fail-closed, handover multi_base.
+- v189: pull обновляет `stockAllowed`/`jrAllowed` (иначе delete у cook/mechanic не уходил в облако); hardCap бросает ошибку; type-restrict backup атомарный.
 
 ## Открыто / сделать при следующем hardening
 
-1. **`journal_row_type` RPC-оракул** — вынести из exposed `public` в `app_private` (PostgREST schemas = `public,graphql_public`).
-2. **Orphan → `'product'`** — fail-closed (`__none__` + whitelist в `can_see_type`), не слепой fallback.
-3. **`DROP FUNCTION journal_entry_type`** — leftover footgun.
-4. **`handover_shift`**: tasks без `base_id` (аккаунт-скоуп); запрещать перенос если есть членство в других базах (не только `active`).
-5. **Клиент**: legacy `quickAdjust` без партий — писать `stockType` (ветка ~2931).
-6. Deferred: per-IP rate-limit `request_reset`; SheetJS update; prod `vahtahoz.html` без `stockType` (не beta).
+1. ~~**`journal_row_type` RPC-оракул**~~ — закрыто v188 (`app_private`).
+2. ~~**Orphan → `'product'`**~~ — закрыто v188 (fail-closed).
+3. ~~**`DROP journal_entry_type`**~~ — закрыто v188.
+4. ~~**`handover_shift` multi_base**~~ — закрыто v188 (любое членство).
+5. ~~**legacy quickAdjust stockType**~~ — закрыто v188.
+6. Deferred: per-IP rate-limit `request_reset`; SheetJS; prod HTML parity.
 
 ## Деплой
 
-- SQL: Management API `database/query` с PAT из `~/Desktop/vahtahoz-supabase-keys.txt`.
+- SQL: Management API `database/query` с PAT из `~/Desktop/vahtahoz-supabase-keys.txt` (крупные миграции — чанками; целиком бывает 502).
 - EF: `manage-user`; клиент — push в GitHub Pages.
-- После миграций journal: проверить SELECT журнала у authenticated и что `/rest/v1/rpc/journal_row_type` недоступен.
+- После journal-миграций: SELECT журнала жив; `public.journal_row_type` отсутствует.

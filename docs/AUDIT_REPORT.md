@@ -1,32 +1,13 @@
-# Audit Report — beta v188 (2026-07-28)
+# Audit Report — beta v189 (2026-07-28)
 
-## Memory
-
-- `.cursor/rules/vahtahoz-security.mdc` — инварианты + backlog для агентов
-- `docs/BACKLOG_SECURITY.md` — чеклист
-
-## Closed this pass
+## Closed this pass (from [аудит v187](94005ab7-fed7-4cab-aa9d-86ccf25e27c3))
 
 | ID | Severity | Issue | Fix |
 |----|----------|-------|-----|
-| H1 | **High** | `public.journal_row_type` RPC-оракул | `app_private.journal_row_type` (вне PostgREST schemas) |
-| H2 | **High** | Orphan → `'product'` type-leak | Whitelist stockType; else `__none__`; `can_see_type` reject unknown |
-| M1 | **Medium** | leftover `journal_entry_type` | `DROP FUNCTION` |
-| M2 | **Medium** | handover tasks при членстве в др. базах | `multi_base` на **любое** членство, не только active |
-| M3 | **Medium** | legacy quickAdjust без `stockType` | Пишем `journalStockType(it)` |
+| F1 | **High** | `stockAllowed`/`jrAllowed` только с push → delete у ограниченных ролей не в облако | На pull пишем allowed = RLS-снимок |
+| F2 | **Medium** | `cloudRestAll` hardCap молча обрезал | `throw` вместо `break` |
+| F3 | **Medium** | type-restrict backup best-effort | Как view-only: fail → abort push, dirty жив |
 
-## Prior critical (v187)
+## Prior v188
 
-- Pull пагинация `cloudRestAll` (max_rows=1000)
-- No auto-merge on pull
-
-## Deferred
-
-- Per-IP `request_reset`
-- Session revoke after reset (не делать без запроса)
-- SheetJS / prod HTML parity
-
-## Deploy
-
-- [x] SQL `2026-07-28_journal_private_orphan_handover.sql` on prod
-- [x] Beta v188
+app_private `journal_row_type`, orphan fail-closed, DROP `journal_entry_type`, handover any-membership, legacy `stockType`

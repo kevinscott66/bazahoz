@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v188 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v189 · БЕТА</div>
   </div>
 </div>
 
@@ -3618,7 +3618,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v188 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v189 · тестовый канал</div>
   `;
 }
 
@@ -4588,7 +4588,11 @@ async function cloudRestAll(path, token, opts){
     all.push(...chunk);
     if(chunk.length < page) break;
     from += page;
-    if(from >= hardCap){ console.warn("cloudRestAll: hardCap", hardCap, path); break; }
+    if(from >= hardCap){
+      const e = new Error("Слишком много данных для загрузки — обратитесь к администратору");
+      e.code = "hardCap"; e.hardCap = hardCap; e.path = path;
+      throw e;
+    }
   }
   return all;
 }
@@ -6006,8 +6010,12 @@ async function cloudPull(cid){
     // следующий push увидит дельту и выгрузит исправление; иначе — пусто, лишнего трафика нет.
     try{
       saveStockSig(cid, pulledStSig);
+      // allowed-снимки = то, что RLS реально отдал этой роли (иначе type-restricted
+      // delete ждёт stockAllowed с push и после pull удаления не уходят в облако)
+      saveSyncSig(cid, "stockAllowed", pulledStSig);
       const jSig={}; for(const k of JOURNAL_KEYS) for(const op of (state.journals[k]||[])) jSig[op.id]=_sigOf({kind:k,data:op});
       saveSyncSig(cid,"jr",jSig);
+      saveSyncSig(cid,"jrAllowed",jSig);
     }catch(_){}
     // исправления сверки (только у редакторов) — помечаем к выгрузке, чтобы облако тоже обновилось
     if(_reconChanged){ try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){} }
@@ -6178,10 +6186,12 @@ async function cloudPushNow(){
           if(!_typeRestricted) return true;
           return haveAllowed && prevAllowed[id]!==undefined;
         });
-        // смена роли + локальные правки скрытых типов: backup один раз, чтобы pull не стёр их без копии
+        // смена роли + локальные правки скрытых типов: backup обязателен (как view-only),
+        // иначе последующий pull сотрёт их без копии при успешном clear dirty
         if(_typeRestricted){
           const hidden = (state.stock||[]).filter(s=>!_at.includes(s.type));
           if(hidden.length){
+            let backed = false;
             try{
               const raw = localStorage.getItem(STORE_KEY);
               if(raw){
@@ -6192,10 +6202,13 @@ async function cloudPushNow(){
                   profiles.list.push({ id:bkId, name: cleanName40((cloud.bases[cid]||"База")+" (копия до смены роли)") });
                   try{ localStorage.setItem(bkTag, bkId); }catch(_){}
                   saveProfiles(profiles);
+                  toast("Правки по скрытым типам сохранены копией");
                 }
                 localStorage.setItem(slotKey(bkId), raw);
+                backed = true;
               }
-            }catch(e){ console.warn("type-restrict backup", e); }
+            }catch(e){ console.warn("type-restrict backup", e); backed = false; }
+            if(!backed) throw new Error("Не удалось сохранить копию перед выгрузкой (мало места?)");
           }
         }
         if(del.length) await cloudRestDelete("stock_items", del, tok);
