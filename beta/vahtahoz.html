@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v184 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v186 · БЕТА</div>
   </div>
 </div>
 
@@ -581,9 +581,25 @@ const fmtDate = (s) => { if(!s) return "—"; const [y,m,d]=s.split("-"); return
 const daysLeft = (s) => { if(!s) return null; const a=new Date(s+"T00:00:00"); const b=new Date(todayStr()+"T00:00:00"); if(isNaN(a)||isNaN(b)) return null; return Math.round((a-b)/86400000); };
 // сортировка партий «по ближайшему сроку»: пустой срок уходит в конец
 const byExpiry = (a,b)=>(a.expiry||"9999").localeCompare(b.expiry||"9999");
-// разбор числа из поля ввода: запятая → точка, пусто/мусор → 0 (как и было во всех формах)
-// разбор числа: запятая→точка, пробелы/nbsp-разделители тысяч убираем («1 000» → 1000)
-const parseNum = (v)=> Number(String(v==null?"":v).replace(/[\s\u00A0]/g,"").replace(",","."));
+// разбор числа: пробелы/nbsp тысяч; EU «1.000»/«1.000,5»; RU/US «1,000.5» / «1,5»
+function parseNum(v){
+  let s = String(v==null?"":v).replace(/[\s\u00A0]/g,"").trim();
+  if(!s) return 0;
+  const hasDot = s.includes("."), hasComma = s.includes(",");
+  if(hasDot && hasComma){
+    // последний разделитель — десятичный, остальные — тысячи
+    if(s.lastIndexOf(",") > s.lastIndexOf(".")) s = s.replace(/\./g,"").replace(",", ".");
+    else s = s.replace(/,/g,"");
+  } else if(hasComma){
+    // «1,5» или «1,000» (тысячи) — если ровно 3 цифры после единственной запятой и целая часть длиннее → тысячи
+    if(/^\d{1,3}(,\d{3})+$/.test(s)) s = s.replace(/,/g,"");
+    else s = s.replace(",", ".");
+  } else if(hasDot){
+    if(/^\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g,""); // EU «1.000» → 1000
+  }
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
 // тег движения для журнала операций (logOp)
 const opTag = k => k==="receipt"?"IN":(k==="issue"?"OUT":"WRITEOFF");
 // примечание для записи/партии, созданной из заказа (было продублировано 4×)
@@ -1905,7 +1921,9 @@ function defaultCategoryForType(type){
 function findStockByName(name, type){
   const n = stockNormName(name);
   if(!n) return null;
-  const types = type ? [type] : allowedTypeKeys();
+  // type задан → ищем строго в нём (не перепутать product/tool с одним именем)
+  if(type) return state.stock.find(s=> s.type===type && stockNormName(s.name)===n) || null;
+  const types = allowedTypeKeys();
   return state.stock.find(s=> types.includes(s.type) && stockNormName(s.name)===n) || null;
 }
 function createCatalogStockItem(type, name, unit){
@@ -1985,6 +2003,7 @@ function ledgerQtyForProduct(product){
   return roundQty(sum);
 }
 function ledgerByNormName(){
+  // ключ type::name — иначе одноимённые orphan product/tool сливаются в один ledger
   const m = new Map();
   const stockIds = new Set((state.stock||[]).map(s=>s.id));
   for(const kind of JOURNAL_KEYS){
@@ -1996,7 +2015,9 @@ function ledgerByNormName(){
       if(op.productId && stockIds.has(op.productId)) continue;
       const n = stockNormName(op.productName);
       if(!n) continue;
-      m.set(n, roundQty((m.get(n)||0) + sign * Number(op.qty||0)));
+      const typ = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : "product";
+      const key = typ + "::" + n;
+      m.set(key, roundQty((m.get(key)||0) + sign * Number(op.qty||0)));
     }
   }
   return m;
@@ -2008,11 +2029,13 @@ function relinkJournalOpsToCanonical(){
       const name = (op.productName||"").trim();
       if(!name) continue;
       let canon = op.productId ? state.stock.find(s=>s.id===op.productId) : null;
-      if(!canon) canon = findStockByName(name);
+      const preferType = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : null;
+      if(!canon) canon = findStockByName(name, preferType || undefined);
       if(!canon) continue;
       if(op.productId!==canon.id || op.productName!==canon.name){
         op.productId = canon.id;
         op.productName = canon.name;
+        if(canon.type) op.stockType = journalStockType(canon, op.stockType);
         n++;
       }
     }
@@ -2074,27 +2097,36 @@ function ensureProductsFromJournalLedger(){
   let created = 0;
   const ledgers = ledgerByNormName();
   const stockIds = new Set((state.stock||[]).map(s=>s.id));
-  for(const [n, ledger] of ledgers){
+  for(const [key, ledger] of ledgers){
     if(!(ledger > 0)) continue;
-    if(findStockByName(n)) continue;
+    const sep = key.indexOf("::");
+    const typ = sep>=0 ? key.slice(0,sep) : "product";
+    const n = sep>=0 ? key.slice(sep+2) : key;
+    const type = STOCK_TYPE_KEYS.includes(typ) ? typ : "product";
+    if(findStockByName(n, type)) continue;
     let sampleName = "", sampleUnit = "шт";
     outer: for(const kind of JOURNAL_KEYS){
       for(const op of (state.journals[kind]||[])){
-        if(stockNormName(op.productName)===n){ sampleName = op.productName.trim(); sampleUnit = op.unit||"шт"; break outer; }
+        if(stockNormName(op.productName)!==n) continue;
+        const ot = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : "product";
+        if(ot!==type) continue;
+        sampleName = op.productName.trim(); sampleUnit = op.unit||"шт"; break outer;
       }
     }
     if(!sampleName) continue;
-    const p = createCatalogStockItem("product", sampleName, sampleUnit);
+    const p = createCatalogStockItem(type, sampleName, sampleUnit);
     p.qty = ledger;
     state.stock.push(p);
     stockIds.add(p.id);
-    try{ propagateName("product", p.name, p.unit); }catch(e){}
-    // перепривязываем ТОЛЬКО orphan-записи (без productId или id нет на складе)
+    try{ propagateName(type, p.name, p.unit); }catch(e){}
+    // перепривязываем ТОЛЬКО orphan-записи того же типа (без productId или id нет на складе)
     for(const kind of JOURNAL_KEYS){
       for(const op of (state.journals[kind]||[])){
         if(stockNormName(op.productName)!==n) continue;
+        const ot = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : "product";
+        if(ot!==type) continue;
         if(op.productId && stockIds.has(op.productId)) continue;
-        op.productId = p.id; op.productName = p.name;
+        op.productId = p.id; op.productName = p.name; op.stockType = type;
       }
     }
     created++;
@@ -2210,7 +2242,9 @@ function saveOp(kind){
   const note = body.querySelector("#opNote").value.trim();
   if(!qty || qty<=0){ toast("Укажите количество"); return; }
   let product = pid ? state.stock.find(s=>s.id===pid) : null;
-  if(!product && m.sign>0) product = resolveIncomingProduct({ manualName, unit, type:"product" });
+  // тип с активной вкладки склада (household/tool), иначе product — не создаём «еду» с вкладки инструмента
+  const defType = (STOCK_TYPE_KEYS.includes(stockTab) ? stockTab : "product");
+  if(!product && m.sign>0) product = resolveIncomingProduct({ manualName, unit, type: defType });
   const name = product ? product.name : manualName;
   if(!name){ toast("Выберите товар или введите название"); return; }
   // Расход/списание с партиями — только через ＋/− на карточке (выбор партии)
@@ -2233,7 +2267,7 @@ function saveOp(kind){
     qty,
     unit: product?.unit || unit,
     note,
-    stockType: journalStockType(product, "product"),
+    stockType: journalStockType(product, defType),
   };
   if(kind==="order") op.status = "pending";
 
@@ -3581,7 +3615,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v184 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v186 · тестовый канал</div>
   `;
 }
 
@@ -4909,7 +4943,7 @@ async function memberRemove(uid){
 const _loginFieldHTML = (prefix, label)=>`<div><div class="text-sm opacity-70 mb-1">${label}</div>
   <input class="input" id="${prefix}u" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="напр. petrov" /></div>`;
 const _pwdFieldHTML = (prefix)=>`<div><div class="text-sm opacity-70 mb-1">Пароль (не короче 8 символов)</div>
-  <input class="input" id="${prefix}p" type="text" autocapitalize="none" autocorrect="off" placeholder="придумайте пароль" /></div>`;
+  <input class="input" id="${prefix}p" type="password" autocomplete="new-password" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="придумайте пароль" /></div>`;
 const _hintFieldHTML = (prefix, tail)=>`<div class="text-xs opacity-60 mt-2">${tail}Логин: <span id="${prefix}Hint">…${LOGIN_DOMAIN}</span>. Передайте работнику логин${prefix==='ae'?"":" и пароль"}.</div>`;
 function _wireLoginHint(prefix){ const u=document.getElementById(prefix+"u"); if(!u) return; u.addEventListener("input",()=>{ const h=document.getElementById(prefix+"Hint"); if(h) h.textContent=((u.value.trim().toLowerCase())||"…")+LOGIN_DOMAIN; }); }
 // валидация: возвращает true и показывает toast при ошибке
@@ -4952,7 +4986,7 @@ async function doAddMember(){
 function openResetPwd(uid){
   const m=_findBM(uid); if(!m) return;
   openSheet(`<div class="font-bold text-xl mb-3">Пароль: ${esc(m.username)}</div>
-    <input class="input" id="rpp" type="text" autocapitalize="none" autocorrect="off" placeholder="Новый пароль (не короче 8 символов)" />
+    <input class="input" id="rpp" type="password" autocomplete="new-password" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Новый пароль (не короче 8 символов)" />
     <div class="flex gap-2 mt-3">
       <button class="btn btn-ghost flex-1" data-close>Отмена</button>
       <button class="btn btn-primary flex-1" id="rpGo">Сменить</button>
@@ -5181,7 +5215,7 @@ async function exportOneBaseXlsx(baseId){
 }
 const cloudDirtyKey = (cid)=>`${NS}vahtahoz_dirty_${cid}`;
 // удалить все sync-маркеры базы (dirty + снимки подписей) — при удалении/замене базы, чтобы не копить мусор
-function clearBaseSyncKeys(cid){ if(!cid) return; try{ localStorage.removeItem(cloudDirtyKey(cid)); for(const k of ["stock","stockCounts","stockVals","jr","settings"]) localStorage.removeItem(`${NS}vahtahoz_sig_${k}_${cid}`); }catch(_){} }
+function clearBaseSyncKeys(cid){ if(!cid) return; try{ localStorage.removeItem(cloudDirtyKey(cid)); for(const k of ["stock","stockCounts","stockVals","stockAllowed","jr","jrAllowed","settings"]) localStorage.removeItem(`${NS}vahtahoz_sig_${k}_${cid}`); try{ localStorage.removeItem(`${NS}vahtahoz_viewonly_bak_${cid}`); localStorage.removeItem(`${NS}vahtahoz_typerestrict_bak_${cid}`); }catch(_){} }catch(_){} }
 // navigator.onLine на iOS standalone-PWA часто ЛОЖНО false сразу после загрузки (пока не пошёл первый
 // запрос), и событие "online" не срабатывает → статус залипал в «оффлайн» при живой сети. Поэтому online
 // считаем подтверждённым, если ЛИБО navigator.onLine!==false, ЛИБО реальный запрос долетел (_netConfirmed).
@@ -5375,7 +5409,7 @@ async function requestPasswordReset(){
       <div class="font-bold text-xl mb-1">Новый пароль</div>
       <div class="text-sm opacity-70 mb-3">Если у логина есть привязанная почта — код отправлен. Введите его и новый пароль.</div>
       <input class="input mb-2" id="rcCode" inputmode="numeric" maxlength="6" placeholder="Код из письма (6 цифр)" />
-      <input class="input mb-2" id="rcPw" type="text" autocapitalize="none" autocorrect="off" autocomplete="new-password" placeholder="Новый пароль (от 8 символов)" />
+      <input class="input mb-2" id="rcPw" type="password" autocapitalize="none" autocorrect="off" autocomplete="new-password" spellcheck="false" placeholder="Новый пароль (от 8 символов)" />
       <button class="btn btn-primary w-full" id="rcGo">Сменить пароль</button>
       <div id="rcErr2" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
     `);
@@ -5462,7 +5496,7 @@ function openSetNewPassword(token){
   openSheet(`
     <div class="font-bold text-xl mb-3">Новый пароль</div>
     <div class="text-sm opacity-70 mb-2">Придумайте новый пароль для входа (не короче 8 символов).</div>
-    <input class="input mb-2" id="npw" type="text" autocapitalize="none" autocorrect="off" autocomplete="new-password" placeholder="Новый пароль" />
+    <input class="input mb-2" id="npw" type="password" autocapitalize="none" autocorrect="off" autocomplete="new-password" spellcheck="false" placeholder="Новый пароль" />
     <button class="btn btn-primary w-full" id="npGo">Сохранить пароль</button>
     <div id="npErr" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
   `);
@@ -5839,19 +5873,36 @@ async function cloudPull(cid){
   if(!cid || !cloudOnline()) return;
   if(isOffShift(cid)) return;   // снят со смены: RLS вернёт пусто — НЕ затираем локальные данные пустотой
   // dirty без прав редактирования: push невозможен → иначе pull навсегда no-op (бухгалтер/демоут).
-  // Сохраняем локальную копию и снимаем dirty, затем тянем облако.
+  // Снимаем dirty ТОЛЬКО после успешного backup — иначе правки теряются без копии (QuotaExceeded и т.п.).
+  // Один слот на cloudId — не плодим профили при каждом pull.
   if(localStorage.getItem(cloudDirtyKey(cid)) && typeof canEditStock==="function" && !canEditStock()){
+    let backed = false;
     try{
       const raw = localStorage.getItem(STORE_KEY);
-      if(raw){
-        const bkId = uid();
+      if(!raw){ backed = true; }   // нечего сохранять
+      else {
+        const bkTag = `${NS}vahtahoz_viewonly_bak_${cid}`;
+        let bkId = null;
+        try{ bkId = localStorage.getItem(bkTag); }catch(_){}
+        if(!bkId || !profiles.list.some(p=>p.id===bkId)){
+          bkId = uid();
+          profiles.list.push({ id:bkId, name: cleanName40((cloud.bases[cid]||"База")+" (локальная копия)") });
+          try{ localStorage.setItem(bkTag, bkId); }catch(_){}
+        } else {
+          const p = profiles.list.find(x=>x.id===bkId);
+          if(p) p.name = cleanName40((cloud.bases[cid]||"База")+" (локальная копия)");
+        }
         localStorage.setItem(slotKey(bkId), raw);
-        profiles.list.push({ id:bkId, name: cleanName40((cloud.bases[cid]||"База")+" (локальная копия)") });
         saveProfiles(profiles);
+        backed = true;
         toast("Локальные правки сохранены копией — прав на выгрузку нет, загружаем облако");
       }
-    }catch(_){}
-    try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(_){}
+    }catch(e){ console.warn("view-only backup", e); backed = false; }
+    if(backed){ try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(_){} }
+    else {
+      setSyncStatus("error","Нет прав на выгрузку и не удалось сохранить копию — облако не затираем");
+      return;
+    }
   }
   // защита: не затирать НЕсинхронизированные локальные правки облачными данными
   if(cloud.pushPending || localStorage.getItem(cloudDirtyKey(cid))){ cloudMaybePush(); return; }
@@ -6090,11 +6141,44 @@ async function cloudPushNow(){
       } else {
         const upsert = rows.filter(r=> curSig[r.id] !== prevSig[r.id]);   // новое/изменённое
         const localStockIds = new Set((state.stock||[]).map(s=>s.id));
-        const del = Object.keys(prevSig).filter(id=> !localStockIds.has(id));   // удалено из локального склада (не «скрыто» фильтром роли)
+        // type-restricted: не удалять из облака id «скрытых» типов (остались в prevSig после смены роли).
+        // Удаляем только то, что раньше было в allowed-снимке (или при полном доступе — всё отсутствующее локально).
+        const prevAllowed = loadSyncSig(cid,"stockAllowed");
+        const haveAllowed = prevAllowed && Object.keys(prevAllowed).length>0;
+        const del = Object.keys(prevSig).filter(id=>{
+          if(localStockIds.has(id)) return false;
+          if(!_typeRestricted) return true;
+          return haveAllowed && prevAllowed[id]!==undefined;
+        });
+        // смена роли + локальные правки скрытых типов: backup один раз, чтобы pull не стёр их без копии
+        if(_typeRestricted){
+          const hidden = (state.stock||[]).filter(s=>!_at.includes(s.type));
+          if(hidden.length){
+            try{
+              const raw = localStorage.getItem(STORE_KEY);
+              if(raw){
+                const bkTag = `${NS}vahtahoz_typerestrict_bak_${cid}`;
+                let bkId = null; try{ bkId = localStorage.getItem(bkTag); }catch(_){}
+                if(!bkId || !profiles.list.some(p=>p.id===bkId)){
+                  bkId = uid();
+                  profiles.list.push({ id:bkId, name: cleanName40((cloud.bases[cid]||"База")+" (копия до смены роли)") });
+                  try{ localStorage.setItem(bkTag, bkId); }catch(_){}
+                  saveProfiles(profiles);
+                }
+                localStorage.setItem(slotKey(bkId), raw);
+              }
+            }catch(e){ console.warn("type-restrict backup", e); }
+          }
+        }
         if(del.length) await cloudRestDelete("stock_items", del, tok);
         if(STOCK_MERGE && upsert.length) await mergeStockQtyBeforePush(cid, tok, upsert, curSig);   // 3-way слияние qty (конкурентные списания с 2 устройств)
         if(upsert.length) await cloudRestUpsert("stock_items", upsert, tok, (d,t)=>{ if(t>20) setSyncStatus("syncing",`Выгрузка ${d}/${t}`); });
-        saveStockSig(cid,curSig);   // снимок = текущее (следующий push будет дельтой)
+        // type-restricted: merge подписи — не выкидывать скрытые типы из prevSig (иначе следующий цикл «забывает» их)
+        const mergedSig = _typeRestricted ? { ...prevSig } : {};
+        Object.keys(curSig).forEach(id=>{ mergedSig[id]=curSig[id]; });
+        del.forEach(id=>{ delete mergedSig[id]; });
+        saveStockSig(cid, mergedSig);
+        saveSyncSig(cid, "stockAllowed", curSig);
         // === НАСТРОЙКИ (места/категории) — СВОЯ дельта, НЕ на каждое изменение склада ===
         // Шлём ТОЛЬКО если списки реально менялись (иначе смена количества зря переписывала
         // блоб и могла затереть чужие правки). При выгрузке ОБЪЕДИНЯЕМ с облаком (union) —
@@ -6139,12 +6223,24 @@ async function cloudPushNow(){
       // Удаляем только надгробленные id, которые РЕАЛЬНО были в облаке (есть в prevJSig) — по одному разу.
       // БЕЗ .catch у DELETE: сбой должен уйти в общий catch push-а (dirty останется, ретрай повторит) —
       // иначе подпись сохранялась без удаления, и запись жила в облаке вечно.
-      const jrToDel = (Array.isArray(state.delJr)?state.delJr:[]).filter(id=> prevJSig[id]!==undefined);
+      // type-restricted: надгробия только по записям, которые эта роль могла выгружать (иначе снесём чужой тип)
+      const prevJrAllowed = loadSyncSig(cid,"jrAllowed");
+      const haveJrAllowed = prevJrAllowed && Object.keys(prevJrAllowed).length>0;
+      const jrToDel = (Array.isArray(state.delJr)?state.delJr:[]).filter(id=>{
+        if(prevJSig[id]===undefined) return false;
+        if(!_typeRestricted) return true;
+        return haveJrAllowed && prevJrAllowed[id]!==undefined;
+      });
       if(!(jrows.length===0 && Object.keys(prevJSig).length>0)){
         const jup = jrows.filter(r=> curJSig[r.id]!==prevJSig[r.id]);
         if(jup.length) await cloudRestUpsert("journal_entries", jup, tok);
         if(jrToDel.length){ await cloudRestDelete("journal_entries", jrToDel, tok); dropDeliveredTombstones(jrToDel); }
-        saveSyncSig(cid,"jr",curJSig);
+        // merge: скрытые ops остаются в подписи (не считаются «удалёнными» при следующем push)
+        const mergedJ = _typeRestricted ? { ...prevJSig } : {};
+        Object.keys(curJSig).forEach(id=>{ mergedJ[id]=curJSig[id]; });
+        jrToDel.forEach(id=>{ delete mergedJ[id]; });
+        saveSyncSig(cid,"jr",mergedJ);
+        saveSyncSig(cid,"jrAllowed",curJSig);
       } else if(jrToDel.length){
         // wipe-защита пропустила выгрузку (журнал локально «опустел»), но ЯВНЫЕ надгробия всё равно
         // доставляем: пользователь удалил последние записи — они должны уйти и из облака.
@@ -6152,6 +6248,10 @@ async function cloudPushNow(){
         dropDeliveredTombstones(jrToDel);
         const trimmed = { ...prevJSig }; jrToDel.forEach(id=>{ delete trimmed[id]; });
         saveSyncSig(cid,"jr",trimmed);
+        if(_typeRestricted){
+          const ta = { ...prevJrAllowed }; jrToDel.forEach(id=>{ delete ta[id]; });
+          saveSyncSig(cid,"jrAllowed",ta);
+        }
       }
     }
     // ЗАДАЧИ НЕ ВЫГРУЖАЕМ — они общие-локальные (одно расписание на все базы устройства).
