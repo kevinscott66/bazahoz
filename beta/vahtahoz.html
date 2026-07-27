@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v183 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v184 · БЕТА</div>
   </div>
 </div>
 
@@ -1795,8 +1795,9 @@ function renderJournal(kind){
     const expBadge = op.batchExpiry ? `<span class="badge badge-gray">⏰ ${fmtDate(op.batchExpiry)}</span>` : "";
     // зеркальные записи из принятого заказа: редактировать нельзя — это рассинхронизирует с order; удалять можно (deleteOp умеет)
     const linkedToOrder = kind==="receipt" && (state.journals.order||[]).some(o=>o.receiptId===op.id);
+    const oid = safeId(op.id);
     const receiveBtn = (kind==="order" && op.status!=="received")
-      ? `<button class="btn btn-success" onclick="orderReceive('${op.id}')">Принять на склад</button>`
+      ? `<button class="btn btn-success" onclick="orderReceive('${oid}')">Принять на склад</button>`
       : "";
     return `<div class="card">
       <div class="flex items-start gap-2">
@@ -1811,8 +1812,8 @@ function renderJournal(kind){
           ${op.note?`<div class="text-xs opacity-80 mt-1">${esc(op.note)}</div>`:""}
         </div>
         <div class="flex flex-col gap-1">
-          ${linkedToOrder ? `<button class="btn btn-ghost opacity-40" disabled title="Редактируйте исходный заказ" aria-label="Редактировать (через заказ)">✏️</button>` : `<button class="btn btn-ghost" onclick="editOp('${kind}','${op.id}')" aria-label="Редактировать запись">✏️</button>`}
-          <button class="btn btn-ghost" onclick="deleteOp('${kind}','${op.id}')" aria-label="Удалить запись">🗑</button>
+          ${linkedToOrder ? `<button class="btn btn-ghost opacity-40" disabled title="Редактируйте исходный заказ" aria-label="Редактировать (через заказ)">✏️</button>` : `<button class="btn btn-ghost" onclick="editOp('${kind}','${oid}')" aria-label="Редактировать запись">✏️</button>`}
+          <button class="btn btn-ghost" onclick="deleteOp('${kind}','${oid}')" aria-label="Удалить запись">🗑</button>
         </div>
       </div>
       ${receiveBtn?`<div class="mt-2">${receiveBtn}</div>`:""}
@@ -1951,6 +1952,11 @@ function journalEffectSign(kind, op){
   // Заказ НЕ учитывается в ledger: приём заказа (orderReceive) создаёт зеркальную запись
   // в "receipt", она и даёт +qty. Иначе принятый заказ считался бы дважды (раздувал остаток).
   return 0;
+}
+// Тип склада для RLS журнала (data.stockType). Денормализуем при записи — после удаления позиции тип не «сиротеет».
+function journalStockType(product, fallback){
+  const t = (product && product.type) || fallback || "product";
+  return (typeof STOCK_TYPE_KEYS!=="undefined" && STOCK_TYPE_KEYS.includes(t)) ? t : "product";
 }
 function journalRefScore(it){
   let n = 0;
@@ -2218,6 +2224,7 @@ function saveOp(kind){
     qty,
     unit: product?.unit || unit,
     note,
+    stockType: journalStockType(product, "product"),
   };
   if(kind==="order") op.status = "pending";
 
@@ -2272,7 +2279,7 @@ function _impParseDate(v){
   m = /^(\d{1,2})[.\/](\d{1,2})[.\/](\d{2,4})/.exec(s);
   if(m){
     let [,d,mo,y]=m;
-    if(y.length===2){ const yy=+y; const cy=new Date().getFullYear()%100; y = String((yy>cy+10?1900:2000)+yy); }  // «99»→1999, «27»→2027
+    if(y.length===2){ const yy=+y; y = String((yy>=70?1900:2000)+yy); }  // классика: 00–69→2000+, 70–99→1900+
     return `${y}-${String(mo).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
   }
   return "";
@@ -2295,7 +2302,7 @@ function recordReceiptRow(row){
   const note = (typeof row.note==="string" ? row.note.slice(0,200) : "").trim();
   const expiry = _impParseDate(row.expiry);
   const location = cleanCatName(row.location);
-  const op = { id:uid(), ts:new Date().toISOString(), productId:product.id, productName:product.name, qty, unit:product.unit||unit, note: note||"Импорт поступления" };
+  const op = { id:uid(), ts:new Date().toISOString(), productId:product.id, productName:product.name, qty, unit:product.unit||unit, note: note||"Импорт поступления", stockType: journalStockType(product, "product") };
   applyStockDelta(product, 1, qty, op.note, op);
   if(hasBatches(product) && op.batchId){
     const b = (product.batches||[]).find(x=>x.id===op.batchId);
@@ -2309,7 +2316,7 @@ function recordReceiptRow(row){
   return op;
 }
 
-const IMP_MAX_ROWS = 5000;   // жёсткий кап: защита от OOM/фриза на огромном файле
+const IMP_MAX_ROWS = 3000;   // = truncate журнала receipt — иначе остатки вырастут, а движения обрежутся
 const IMP_MAX_BYTES = 8 * 1024 * 1024;  // 8 МБ
 // разбор книги XLSX → массив нормализованных строк
 function _impParseWorkbook(XLSX, data){
@@ -2414,8 +2421,10 @@ function orderReceive(opId){
   op.status = "received";
   op.receivedAt = new Date().toISOString();
   op.productId = product.id;
+  op.stockType = journalStockType(product, op.stockType || "product");
   const receiptId = uid();
   op.receiptId = receiptId;
+  const _st = journalStockType(product, "product");
   if(hasBatches(product)){
     // приём в карточку с партиями — добавляем новую партию (без срока/места, можно отредактировать вручную)
     const newB = { id: uid(), qty: roundQty(op.qty||0), expiry:"", location:"", note: orderNote(op), createdAt:new Date().toISOString() };
@@ -2426,7 +2435,7 @@ function orderReceive(opId){
     state.journals.receipt.unshift({
       id: receiptId, ts: new Date().toISOString(),
       productId: product.id, productName: op.productName,
-      qty: op.qty, unit: op.unit,
+      qty: op.qty, unit: op.unit, stockType: _st,
       batchId: newB.id, batchLocation: "", batchExpiry: "",
       note: orderNote(op, "(новая партия)"),
     });
@@ -2436,7 +2445,7 @@ function orderReceive(opId){
     state.journals.receipt.unshift({
       id: receiptId, ts: new Date().toISOString(),
       productId: product?.id || "", productName: op.productName,
-      qty: op.qty, unit: op.unit,
+      qty: op.qty, unit: op.unit, stockType: _st,
       note: orderNote(op),
     });
   }
@@ -2677,6 +2686,7 @@ async function saveOpEdit(kind, opId){
   op.qty = roundQty(newQty);
   op.unit = newProd?.unit || newUnit;
   op.note = newNote;
+  op.stockType = journalStockType(newProd, op.stockType || "product");
 
   // 4) для принятого заказа — синхронизируем парную запись в receipt
   if(kind==="order" && op.status==="received" && op.receiptId){
@@ -2688,6 +2698,7 @@ async function saveOpEdit(kind, opId){
       r.qty = op.qty;
       r.unit = op.unit;
       r.note = orderNote(op);
+      r.stockType = op.stockType;
     }
   }
 
@@ -2815,7 +2826,7 @@ async function quickAdjust(id, sign){
         it.batches.push(newB);
         syncItemFromBatches(it);
         state.journals.receipt = state.journals.receipt || [];
-        state.journals.receipt.unshift({ id:uid(), ts:new Date().toISOString(), productId:it.id, productName:it.name, qty:n, unit:it.unit||"", batchId:newB.id, batchLocation:newB.location||"", batchExpiry:newB.expiry||"", note:`Новая партия${newB.expiry?` (срок ${fmtDate(newB.expiry)})`:""}${newB.location?` в «${newB.location}»`:""}` });
+        state.journals.receipt.unshift({ id:uid(), ts:new Date().toISOString(), productId:it.id, productName:it.name, qty:n, unit:it.unit||"", stockType:journalStockType(it), batchId:newB.id, batchLocation:newB.location||"", batchExpiry:newB.expiry||"", note:`Новая партия${newB.expiry?` (срок ${fmtDate(newB.expiry)})`:""}${newB.location?` в «${newB.location}»`:""}` });
         logOp("IN", `${it.name} +${fmtQty(n)} ${it.unit||""} [новая партия]`);
         saveState(); render(); return;
       }
@@ -2851,7 +2862,7 @@ async function quickAdjust(id, sign){
     if(targetBatch.expiry)   noteParts.push(`⏰ ${fmtDate(targetBatch.expiry)}`);
     state.journals[kind].unshift({
       id:uid(), ts:new Date().toISOString(), productId:it.id, productName:it.name,
-      qty:n, unit:it.unit||"",
+      qty:n, unit:it.unit||"", stockType: journalStockType(it),
       batchId: targetBatch.id, batchLocation: targetBatch.location||"", batchExpiry: targetBatch.expiry||"",
       note: opNote + (noteParts.length?` ${noteParts.join(" · ")}`:"")
     });
@@ -3036,7 +3047,7 @@ function saveBatch(id){
   state.journals.receipt = state.journals.receipt || [];
   state.journals.receipt.unshift({
     id: uid(), ts: new Date().toISOString(), productId: it.id, productName: it.name,
-    qty, unit: it.unit||"",
+    qty, unit: it.unit||"", stockType: journalStockType(it),
     batchId: newB.id, batchLocation: location, batchExpiry: expiry,
     note: `Новая партия${expiry?` (срок ${fmtDate(expiry)})`:""}${location?` в «${location}»`:""}`
   });
@@ -3557,7 +3568,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v183 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v184 · тестовый канал</div>
   `;
 }
 
@@ -4373,7 +4384,7 @@ async function writeoffExpired(){
       const d = daysLeft(batch.expiry);
       state.journals.writeoff.unshift({
         id: uid(), ts: now, productId: it.id, productName: it.name,
-        qty: roundQty(batch.qty||0), unit: it.unit||"",
+        qty: roundQty(batch.qty||0), unit: it.unit||"", stockType: journalStockType(it),
         batchId: batch.id, batchLocation: batch.location||"", batchExpiry: batch.expiry||"",
         note: `Списано по сроку (просрочено ${-d} дн., ${fmtDate(batch.expiry)}${batch.location?", 📍 "+batch.location:""})`
       });
@@ -4385,7 +4396,8 @@ async function writeoffExpired(){
       const d = daysLeft(it.expiry);
       state.journals.writeoff.unshift({
         id: uid(), ts: now, productId: it.id, productName: it.name,
-        qty: Number(it.qty||0), unit: it.unit||"", note: `Списано по сроку (просрочено ${-d} дн., ${fmtDate(it.expiry)})`
+        qty: Number(it.qty||0), unit: it.unit||"", stockType: journalStockType(it),
+        note: `Списано по сроку (просрочено ${-d} дн., ${fmtDate(it.expiry)})`
       });
       logOp("WRITEOFF", `${it.name} -${fmtQty(it.qty)} ${it.unit||""} (срок)`);
       it.qty = 0; it.updatedAt = now;
@@ -5957,8 +5969,9 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
       const snapQty=Number(snap[r.id]); if(!isFinite(snapQty)) continue;   // нет базы для 3-way
       const cloudQty=Number(cr.qty)||0;
       if(cloudQty===snapQty) continue;                                     // облако не менялось с снимка → конфликта нет, local победит
-      const localQty = Number(r.qty)||0;
-      if(localQty === snapQty && cloudQty < snapQty) continue;   // локально не меняли, облако «упало» — не обнуляем (устаревшее облако / чужой сбой)
+      // НЕ пропускаем «local не менял qty, cloud упал»: иначе правка имени/заметки на офлайн-устройстве
+      // заливала бы старый qty поверх чужого списания (воскрешение остатка). 3-way даёт cloud при
+      // local===snap. Оптовое обнуление облака ловит suspectWipe выше по push.
       const batched = (Array.isArray(r.batches)&&r.batches.length) || (Array.isArray(cr.batches)&&cr.batches.length);
       if(batched){ conflictBatched++; continue; }                          // партийные не сливаем (инвариант) — предупредим
       const merged = Math.max(0, roundQty((Number(r.qty)||0) + cloudQty - snapQty));   // 3-way CRDT-счётчик

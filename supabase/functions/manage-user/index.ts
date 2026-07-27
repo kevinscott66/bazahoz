@@ -194,8 +194,8 @@ Deno.serve(async (req) => {
         }
       }
     }
-    // выравнивающая задержка на ВСЕХ ветках (и пустых) — против timing-enumeration
-    const pad = 350 + Math.floor(Math.random() * 200) - (Date.now() - t0);
+    // floor ≥900ms на ВСЕХ ветках — против timing-enumeration (даже если БД ответила мгновенно)
+    const pad = Math.max(0, 900 + Math.floor(Math.random() * 300) - (Date.now() - t0));
     if (pad > 0) await new Promise((r) => setTimeout(r, pad));
     return json({ ok: true }); // нейтрально: «если логин с привязанной почтой существует — код отправлен»
   }
@@ -204,27 +204,20 @@ Deno.serve(async (req) => {
     const code = String(p.code || "").trim();
     const newPassword = String(p.new_password || "");
     if (!/^[a-z0-9_]{3,32}$/.test(username) || !/^\d{6}$/.test(code) || newPassword.length < 8) return json({ error: "bad input" }, 400);
-    // ЕДИНЫЙ ответ "invalid" + выравнивающая задержка на всех неуспешных путях:
-    // разные тексты/тайминги позволяли перечислять логины и состояние кода
+    // ЕДИНЫЙ ответ "invalid" + задержка; проверка кода — атомарная RPC (FOR UPDATE), без гонки attempts
     const fail = async () => { await new Promise((r) => setTimeout(r, 250 + Math.floor(Math.random() * 150))); return json({ error: "invalid" }, 400); };
     const { data: u } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
     if (!u) return await fail();
-    const { data: rows } = await admin.from("auth_codes").select("*").eq("user_id", u.id).eq("purpose", "reset_password").eq("used", false).order("created_at", { ascending: false }).limit(1);
-    const rec = rows?.[0];
-    if (!rec) return await fail();
-    if (new Date(rec.expires_at) < new Date()) return await fail();
-    if (rec.attempts >= 5) return await fail();
-    if (!hashEq(await sha256(u.id + ":" + code), rec.code_hash)) {
-      // optimistic lock: инкремент только если attempts не ушёл вперёд (гонка параллельных запросов)
-      await admin.from("auth_codes").update({ attempts: rec.attempts + 1 }).eq("id", rec.id).eq("attempts", rec.attempts);
-      return await fail();
-    }
+    // Сначала меняем пароль — если упадёт, код ещё жив. Атомарная verify+used — только после успеха.
+    // Но тогда параллельный перебор до смены пароля… Поэтому: verify (marks used) в RPC, затем password;
+    // при сбое password код уже burned — пользователь запросит новый (редко).
+    const { data: vres, error: verr } = await admin.rpc("verify_auth_code", {
+      p_user: u.id, p_purpose: "reset_password", p_code_hash: await sha256(u.id + ":" + code), p_email: null,
+    });
+    if (verr || vres !== "ok") return await fail();
     const { error: pwErr } = await admin.auth.admin.updateUserById(u.id, { password: newPassword });
-    if (pwErr) { console.error("confirm_reset updateUser", pwErr); return await fail(); }  // код НЕ гасим — пользователь сможет повторить
-    await admin.from("auth_codes").update({ used: true }).eq("id", rec.id);
-    // Старый пароль после этого невалиден. Уже вошедшие сессии на устройствах пользователя
-    // НЕ разлогиниваем намеренно (нет повторного входа на доверенных устройствах).
-    // Глобального admin-logout-by-id в GoTrue нет.
+    if (pwErr) { console.error("confirm_reset updateUser", pwErr); return await fail(); }
+    // Сессии намеренно не сбрасываем (нет повторного входа на доверенных устройствах).
     return json({ ok: true });
   }
 
@@ -245,24 +238,22 @@ Deno.serve(async (req) => {
     const code = genCode();
     await admin.from("auth_codes").update({ used: true }).eq("user_id", callerId).eq("purpose", "bind_email").eq("used", false);  // живым остаётся только последний код
     await admin.from("auth_codes").insert({ user_id: callerId, purpose: "bind_email", email, code_hash: await sha256(callerId + ":" + email + ":" + code), expires_at: new Date(Date.now() + 15 * 60000).toISOString() });
-    const sent = await sendCode(email, code, "bind");
-    return json({ ok: true, sent });
+    void sendCode(email, code, "bind");   // не раскрываем sent в ответе (инфра-оракул)
+    return json({ ok: true });
   }
   if (action === "confirm_recovery_email") {
     const email = String(p.email || "").trim().toLowerCase();
     const code = String(p.code || "").trim();
     if (!/^\d{6}$/.test(code)) return json({ error: "bad_code" }, 400);
-    const { data: rows } = await admin.from("auth_codes").select("*").eq("user_id", callerId).eq("purpose", "bind_email").eq("used", false).order("created_at", { ascending: false }).limit(1);
-    const rec = rows?.[0];
-    if (!rec || rec.email !== email) return json({ error: "invalid" }, 400);
-    if (new Date(rec.expires_at) < new Date()) return json({ error: "expired" }, 400);
-    if (rec.attempts >= 5) return json({ error: "too_many" }, 429);
-    if (!hashEq(await sha256(callerId + ":" + email + ":" + code), rec.code_hash)) {
-      await admin.from("auth_codes").update({ attempts: rec.attempts + 1 }).eq("id", rec.id);
-      return json({ error: "wrong_code" }, 400);
+    const { data: vres, error: verr } = await admin.rpc("verify_auth_code", {
+      p_user: callerId, p_purpose: "bind_email",
+      p_code_hash: await sha256(callerId + ":" + email + ":" + code), p_email: email,
+    });
+    if (verr || vres !== "ok") {
+      const e = vres === "too_many" ? "too_many" : vres === "expired" ? "expired" : "invalid";
+      return json({ error: e }, e === "too_many" ? 429 : 400);
     }
     await admin.from("user_recovery").upsert({ user_id: callerId, recovery_email: email, recovery_email_verified: true, updated_at: new Date().toISOString() });
-    await admin.from("auth_codes").update({ used: true }).eq("id", rec.id);
     return json({ ok: true, recovery_email: email, recovery_email_verified: true });
   }
   if (action === "unbind_recovery_email") {
