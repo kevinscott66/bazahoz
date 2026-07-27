@@ -1,39 +1,48 @@
-# Audit Report — beta v177 (2026-07-17)
+# Audit Report — beta v183 (2026-07-27)
 
 ## Scope
 
-- Beta channel only (`beta/`); stable root unchanged (v175)
-- Supabase migrations + Edge Function `manage-user`
-- Repo hygiene
+- Beta client (`beta/vahtahoz.html`, `beta/sw.js`)
+- Edge Function `manage-user`
+- SQL migrations (`2026-07-20_security_hardening`, `2026-07-27_journal_type_rls`)
 
-## Findings closed
+## Closed in v182–v183
 
 | ID | Severity | Issue | Fix |
 |----|----------|-------|-----|
-| F1 | **Critical** | Beta v176 UI called EF actions (`request_reset`, `set_recovery_email`, …) not in GitHub repo | Synced full `manage-user/index.ts` from local; added migration `2026-07-17_recovery_email_auth_codes.sql` |
-| F2 | **High** | Missing migrations in repo (`2026-07-08_*`) | Added to `supabase/migrations/` |
-| F3 | **High** | EF CORS `*` in GitHub (regression vs prod v16) | Restored `Access-Control-Allow-Origin: https://vahta.razvedchick.ru` |
-| F4 | **Medium** | Public reset endpoints without server-side codes table in repo | `auth_codes` table + RLS deny-all; rate limit 1/min send, 5 verify attempts |
-| F5 | **Low** | Repo bloat: 11× `_backup_stable_v*` folders (~5 MB) | Removed; history preserved in git tags/commits |
+| A1 | **Critical** | Двойной учёт принятых заказов в ledger → сверка раздувала остатки | `journalEffectSign(order)=0`; ключ авто-сверки v3 |
+| A2 | **Critical** | `handover_shift` без авторизации (любой authenticated) | Проверка `can_manage_base` + revoke EXECUTE |
+| A3 | **High** | Триггер `base_members` позволял demote пира | Проверка ранга ЦЕЛИ (OLD.role) |
+| A4 | **High** | Утечка `recovery_email` через `profiles?select=*` | Таблица `user_recovery` (service_role only) + RPC `my_recovery_email` |
+| A5 | **High** | View-only роли «залипали» (dirty после pull) | `cloudMaybePush` не ставит dirty без `canEditStock` |
+| A6 | **High** | Фиктивный admin-logout после сброса пароля | Удалён (эндпоинта нет в GoTrue); сессии намеренно не сбрасываем |
+| A7 | **Medium** | Сверка «вниз» по усечённому журналу могла занизить остатки | Для облачных/усечённых журналов понижение отключено |
+| A8 | **Medium** | Импорт Excel: OOM, `propagateName` на каждую строку, мёртвый UI итога | Кап 5000 строк / 8 МБ; `skipPropagate`; итог через toast |
+| A9 | **Medium** | `orderReceive` помечал заказ «Принят» до резолва товара | Резолв продукта перед мутацией статуса |
+| A10 | **Medium** | Журнал без тип-границы (механик/повар видели все движения) | RLS `journal_*` + `can_see_type` / `journal_entry_type` |
+| A11 | **Medium** | Timing-oracle в `request_reset` | Фоновая отправка письма + выравнивающая задержка |
+| A12 | **Low** | OTP `Math.random`, `!==` хешей, слабый пароль | CSPRNG, `hashEq`, мин. 8 символов на новые пароли |
+| A13 | **Low** | `create_member` принимал org-роли в `base_members` | Whitelist `BASE_ROLES` |
+| A14 | **Low** | Self-update `username` | Колоночный grant: только `display_name` |
 
-## Verified (no change needed)
+## Verified OK
 
-- **XSS**: user-controlled strings in `innerHTML` paths use `esc()`; static nav SVG in HTML (not dynamic)
-- **Shared device**: `purgeCloudProfiles()`, `clearBaseSyncKeys` includes `stockCounts`/`stockVals`, `vahtahoz_cloud_owner`
-- **Offline session**: `cloudSessionExpired` only when `permanent && cloudOnline()`
-- **NS isolation**: all localStorage keys prefixed with `NS` on beta
-- **RLS**: column grants on profiles/bases unchanged; recovery columns not granted to authenticated UPDATE
+- XSS: `esc` / `safeId` / `cleanName40` на пользовательских путях
+- 3-way merge qty + защита от обнуления устаревшим облаком
+- `mergeDuplicateStockByName` сохраняет `batch.id`
+- Существующие сессии не сбрасываются миграциями/деплоем
+- `profiles_username_key` UNIQUE есть в проде
 
-## Deferred (unchanged)
+## Deferred
 
-- `STOCK_MERGE` on beta only — promote to stable after two-device offline test
-- Settings RMW race, row-LWW for batched stock — documented in ops backlog
-- DNS/DKIM publish on reg.ru — user task
+- Per-IP rate-limit на `request_reset` (нужен edge/KV или внешний лимитер)
+- Атомарный `attempts` через SECURITY DEFINER RPC с `FOR UPDATE`
+- `STOCK_MERGE` на stable — после двухдевайсного теста
+- SheetJS CVE hygiene — обновить `xlsx.js` при следующем major
 
-## Post-deploy checklist (manual)
+## Post-deploy checklist
 
-- [ ] Apply `2026-07-17_recovery_email_auth_codes.sql` on prod Supabase
-- [ ] Redeploy EF `manage-user` (verify_jwt=false for public reset actions)
-- [ ] Set EF secrets: `MAIL_SENDCODE_URL`, `MAIL_BROADCAST_SECRET`
-- [ ] Test on device: bind recovery email → forgot password → reset → login
-- [ ] Promote beta → stable after user sign-off
+- [x] Apply `2026-07-20_security_hardening.sql`
+- [x] Apply `2026-07-27_journal_type_rls.sql`
+- [x] Redeploy EF `manage-user` v26 (verify_jwt=false)
+- [ ] Smoke on device: вход без повторного логина; импорт поступления; сверка без «вниз» на облачной базе
