@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v186 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v187 · БЕТА</div>
   </div>
 </div>
 
@@ -1768,7 +1768,7 @@ async function exportJournalsMonth(ym){
   let byKind = null; const cid = activeCloudId();
   if(cid && cloud.ready && cloudOnline() && cloud.session && cloud.session.access_token){
     try{
-      const rows = await cloudRest(`journal_entries?select=kind,data&base_id=eq.${encodeURIComponent(cid)}&data->>ts=like.${encodeURIComponent(ym)}*`, cloud.session.access_token);
+      const rows = await cloudRestAll(`journal_entries?select=kind,data&base_id=eq.${encodeURIComponent(cid)}&data->>ts=like.${encodeURIComponent(ym)}*&order=id`, cloud.session.access_token, {timeout:90000});
       if(Array.isArray(rows)){
         byKind={}; for(const k of JOURNAL_KEYS) byKind[k]=[];
         rows.forEach(r=>{ if(r && r.data && byKind[r.kind]) byKind[r.kind].push(r.data); });
@@ -3615,7 +3615,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v186 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v187 · тестовый канал</div>
   `;
 }
 
@@ -4565,6 +4565,30 @@ async function cloudRest(path, token, opts, _retried){
     return txt ? JSON.parse(txt) : null;
   } finally { clearTimeout(t); }
 }
+// PostgREST по умолчанию отдаёт ≤1000 строк. Без пагинации pull склада (~3k) был неполным →
+// в UI «прыгало» число в наличии, а push мог удалить «пропавшие» id из облака.
+async function cloudRestAll(path, token, opts){
+  opts = opts || {};
+  const page = Math.min(Math.max(Number(opts.pageSize)||1000, 100), 1000);
+  const hardCap = Number(opts.hardCap)||50000;
+  const all = [];
+  let from = 0;
+  for(;;){
+    const headers = Object.assign({}, opts.headers||{}, {
+      Range: `${from}-${from+page-1}`,
+      Prefer: "count=exact",
+    });
+    const r = await cloudRest(path, token, Object.assign({}, opts, { headers, returnResponse:true }));
+    const txt = await r.text();
+    const chunk = txt ? JSON.parse(txt) : [];
+    if(!Array.isArray(chunk)) return chunk;   // неожиданный формат — как есть
+    all.push(...chunk);
+    if(chunk.length < page) break;
+    from += page;
+    if(from >= hardCap){ console.warn("cloudRestAll: hardCap", hardCap, path); break; }
+  }
+  return all;
+}
 /* Своё хранилище сессии (синхронное) — переживает reload от cloudAutoLink, в отличие от
    фонового setSession в supabase-клиенте. Восстановление при запуске идёт отсюда, прямым fetch. */
 function saveCloudSess(d){
@@ -5144,7 +5168,7 @@ async function loadAllBasesStock(){
   const ids=Object.keys(cloud.bases||{});
   if(!ids.length) return [];
   let rows;
-  try{ rows=await cloudRest(`stock_items?select=base_id,name,category,qty,unit,min_stock,expiry,location,type,note,batches&base_id=in.(${ids.map(encodeURIComponent).join(",")})`, tok, {timeout:90000}); }
+  try{ rows=await cloudRestAll(`stock_items?select=base_id,name,category,qty,unit,min_stock,expiry,location,type,note,batches&base_id=in.(${ids.map(encodeURIComponent).join(",")})&order=id`, tok, {timeout:180000, hardCap:100000}); }
   catch(e){ return ids.map(id=>({ id, name:cloud.bases[id], rows:null })); }   // общий сбой → все базы помечаем «не загружено»
   const byBase={}; (Array.isArray(rows)?rows:[]).forEach(r=>{ (byBase[r.base_id]=byBase[r.base_id]||[]).push(r); });
   return ids.map(id=>({ id, name:cloud.bases[id], rows: byBase[id]||[] }));
@@ -5914,8 +5938,9 @@ async function cloudPull(cid){
     // который в iOS standalone-PWA мог ВИСНУТЬ без таймаута («Загрузка из облака» навсегда).
     // cloudRest кидает исключение при ошибке/таймауте → попадём в catch и НЕ затрём локальное пустым.
     const tok = cloud.session && cloud.session.access_token;
-    const items = await cloudRest(`stock_items?select=*&base_id=eq.${encodeURIComponent(cid)}`, tok, {timeout:90000});  // тяжёлый — большой запас под слабую сеть/полевые условия
-    const jr    = await cloudRest(`journal_entries?select=*&base_id=eq.${encodeURIComponent(cid)}`, tok, {timeout:60000});
+    // пагинация обязательна: иначе PostgREST обрезает на 1000 и локальный склад «прыгает»
+    const items = await cloudRestAll(`stock_items?select=*&base_id=eq.${encodeURIComponent(cid)}&order=id`, tok, {timeout:120000});
+    const jr    = await cloudRestAll(`journal_entries?select=*&base_id=eq.${encodeURIComponent(cid)}&order=id`, tok, {timeout:90000});
     const baseArr = await cloudRest(`bases?select=settings&id=eq.${encodeURIComponent(cid)}`, tok);
     const base = Array.isArray(baseArr) ? baseArr[0] : null;
     // ЗАЩИТА ОТ ГОНКИ: пока шла загрузка (долгие await выше), пользователь мог
@@ -5939,12 +5964,12 @@ async function cloudPull(cid){
     // снимок подписей строим ПО СЫРЫМ облачным данным (ДО сверки) — тогда, если сверка что-то
     // поправит, дельта-push увидит расхождение и выгрузит исправление в облако.
     const pulledStSig = {}; state.stock.forEach(s=>{ pulledStSig[s.id]=_sigOf(stockToRow(s,cid)); });
-    // После pull сверяем остатки с полным журналом (облако могло отстать/обнулиться при sync с другого
-    // телефона). ТОЛЬКО для тех, кто может править склад, и только вверх (безопасно, без обнуления).
+    // После pull: только безопасный подъём остатков / создание orphan-карточек.
+    // НЕ вызываем mergeDuplicateStockByName здесь: слияние дублей + dirty→push удаляло «лишние»
+    // id из облака и резко роняло счётчик «в наличии» (дубли с qty схлопывались).
     let _reconChanged = false;
     if(canEditStock()){
       try{
-        mergeDuplicateStockByName();
         relinkJournalOpsToCanonical();
         const created = ensureProductsFromJournalLedger();
         const rec = reconcileLegacyQtyFromJournal(false);
