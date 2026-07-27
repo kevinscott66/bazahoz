@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v190 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v191 · БЕТА</div>
   </div>
 </div>
 
@@ -2352,51 +2352,97 @@ function _impMapUnit(u){
 // эвристика категории продукта по имени — только из списка категорий базы
 function guessProductCategory(name){
   const n = String(name||"").toLowerCase().replace(/ё/g,"е");
+  // бульон/приправы раньше мяса и макарон: иначе «куриный»→мясо, «лапша» ловит бульон
   const rules = [
-    [/макарон|рожок|спагетт|каватапп|cavatappi|фарфалл|бабочк|вермишел|лапш/, "Макаронные изделия"],
+    [/бульон|специ|приправ|ванилин|корица|лавровый|укроп|петрушк|разрыхлител|желатин/, "Приправы, специи и кондитерские ингредиенты"],
+    [/макарон|рожок|спагетт|каватапп|cavatappi|фарфалл|бабочк|вермишел|\bлапш/, "Макаронные изделия"],
     [/крупа|рис\b|гречк|горох\b|овсян|перлов|пшен|манк|чечевиц|киноа/, "Крупы"],
     [/консерв|горошек зел|кукуруз|ананас|сайт|шпрот|тунец|паштет/, "Закуски и консервы"],
     [/блин|вареник|пельмен|смесь|замороз|морож|клубник|брусник|вишня|морковь кубик|гриб|крабов|филе|скумбр|корюшк|минтай/, "Заморозка"],
     [/колбас|сардельк|сосиск|грудинк|шпик|копч|ветчин|карбонад|балык|ребер|рёбер/, "Колбасные изделия и копчёности"],
     [/молоко|сыр\b|творог|сметан|кефир|ряженк|йогурт|масло сливоч/, "Молочные продукты"],
-    [/говядин|свинин|куриц|цыпл|индейк|мясо|окорок|сердце|печень|фарш|стейк/, "Мясо, рыба и мясные продукты"],
+    [/\b(бедро|грудк|крыл|голен|филе кур|говядин|свинин|куриц(?!н)|цыпл|индейк|мясо|окорок|сердце|печень|фарш|стейк)/, "Мясо, рыба и мясные продукты"],
     [/сок\b|чай\b|кофе|напит|вода\b|лимонад|компот|кисель/, "Напитки и ингредиенты для напитков"],
-    [/овощ|фрукт|яблок|капуст|картоф|лук\b|чеснок|огурец|помидор/, "Овощи и фрукты"],
+    [/овощ|фрукт|яблок|капуст|картоф|лук\b|чеснок|огурец|помидор|лимон/, "Овощи и фрукты"],
     [/сахар|соль\b|мука|крахмал/, "Сахар, соль, мучное"],
-    [/варенье|джем|конфет|шоколад|вафл|печенье|пряник|зефир|мармелад|халва|сладк|торт|кекс/, "Сладости и десерты"],
+    [/варенье|джем|конфет|шоколад|вафл|печенье|пряник|зефир|мармелад|халва|сладк|торт|кекс|козинак|сушк/, "Сладости и десерты"],
     [/соус|кетчуп|майонез|аджик|горчиц|уксус/, "Соусы и заправки"],
     [/орех|изюм|курага|чернослив|сухофрукт|семечк/, "Сухофрукты и орехи"],
-    [/специ|приправ|ванилин|корица|лавровый|бульон|укроп|петрушк/, "Приправы, специи и кондитерские ингредиенты"],
   ];
   const allowed = Array.isArray(state.categories?.product) ? state.categories.product : [];
+  const pick = (want)=>{
+    const hit = allowed.find(c=> _impNormHeader(c)===_impNormHeader(want) || String(c).toLowerCase().includes(want.toLowerCase().slice(0,12)));
+    return hit || (allowed.includes(want) ? want : null);
+  };
   for(const [re, cat] of rules){
     if(!re.test(n)) continue;
-    const hit = allowed.find(c=> _impNormHeader(c)===_impNormHeader(cat) || String(c).toLowerCase().includes(cat.toLowerCase().slice(0,12)));
+    const hit = pick(cat);
     if(hit) return hit;
-    if(allowed.includes(cat)) return cat;
   }
   return allowed.find(c=>/проч/i.test(c)) || allowed[0] || "Прочие продукты";
 }
+// ключ для сопоставления импорта с каталогом: убираем фасовку/ТМ/кавычки
+function stockKeyImport(s){
+  let t = String(s||"").toLowerCase().replace(/ё/g,"е");
+  t = t.replace(/[«»"'`]/g, " ");
+  t = t.replace(/\([^)]*\)/g, " ");
+  t = t.replace(/\bт\.?\s*м\.?\b/g, " ");
+  t = t.replace(/\b(вес|зам\.?|с\/м|в\/к|в\/уп|ж\/б|ст\/б|м\/уп|полиамид)\b/g, " ");
+  t = t.replace(/\b\d+\s*[xх*×]\s*\d+\s*(г|гр|кг|мл|л|шт)?\b/gi, " ");
+  t = t.replace(/\b\d+\/\d+\s*(шт|кг|г|гр|мл|л|кор|уп)?\b/gi, " ");
+  t = t.replace(/\b\d+([.,]\d+)?\s*(гр|г|кг|мл|л|шт)\b/gi, " ");
+  t = t.replace(/[^a-zа-я0-9]+/g, " ");
+  t = t.replace(/\b(гр)\b/g, "г");
+  return t.replace(/\s+/g, " ").trim();
+}
+function _impTokens(s){
+  return stockKeyImport(s).split(" ").filter(w=> w.length>=3 && !/^\d+$/.test(w));
+}
+function _impTokenScore(a, b){
+  const A = new Set(_impTokens(a)), B = new Set(_impTokens(b));
+  if(!A.size || !B.size) return 0;
+  let inter = 0;
+  for(const x of A) if(B.has(x)) inter++;
+  return inter / Math.max(A.size, B.size);
+}
+// импорт: сначала существующая карточка; новая — только если нет похожей
+function findStockForImport(name, unit){
+  const types = ["product"];
+  const wantUnit = _impMapUnit(unit);
+  const exact = stockNormName(name);
+  const key = stockKeyImport(name);
+  const pool = state.stock.filter(s=> types.includes(s.type));
+  const rank = (s)=>{
+    const sameU = _impMapUnit(s.unit)===wantUnit ? 1 : 0;
+    const inSt = totalQtyOf(s)>0 ? 1 : 0;
+    return inSt*10 + sameU*3 + Math.min(totalQtyOf(s), 99)/100;
+  };
+  let hits = pool.filter(s=> stockNormName(s.name)===exact);
+  if(hits.length) return hits.slice().sort((a,b)=> rank(b)-rank(a))[0];
+  if(key.length >= 8){
+    hits = pool.filter(s=> stockKeyImport(s.name)===key);
+    if(hits.length) return hits.slice().sort((a,b)=> rank(b)-rank(a))[0];
+  }
+  let best=null, bestScore=0;
+  for(const s of pool){
+    const sk = stockKeyImport(s.name);
+    if(sk.length < 8 || key.length < 8) continue;
+    let score = _impTokenScore(name, s.name);
+    if(key.includes(sk) || sk.includes(key)){
+      const cov = Math.min(key.length, sk.length) / Math.max(key.length, sk.length);
+      score = Math.max(score, cov);
+    }
+    if(score > bestScore){ bestScore=score; best=s; }
+  }
+  // порог высокий: лучше создать новое, чем приклеить к чужой карточке
+  if(best && bestScore >= 0.72) return best;
+  return null;
+}
 function stockNormLoose(s){
-  return stockNormName(String(s||"").replace(/\([^)]*\)/g," ").replace(/[«»"']/g,""));
+  return stockKeyImport(s);
 }
 function findStockByNameLoose(name, type){
-  const n = stockNormLoose(name);
-  if(!n || n.length < 10) return null;
-  const types = type ? [type] : allowedTypeKeys();
-  let hit = state.stock.find(s=> types.includes(s.type) && stockNormLoose(s.name)===n);
-  if(hit) return hit;
-  let best=null, bestScore=0;
-  for(const s of state.stock){
-    if(!types.includes(s.type)) continue;
-    const cn = stockNormLoose(s.name);
-    if(cn.length < 10) continue;
-    if(cn===n || n.includes(cn) || cn.includes(n)){
-      const score = Math.min(cn.length, n.length) / Math.max(cn.length, n.length);
-      if(score > bestScore && score >= 0.55){ bestScore=score; best=s; }
-    }
-  }
-  return best;
+  return findStockForImport(name, type==="product" ? "шт" : "шт");
 }
 // одна строка импорта → поступление (мутирует склад/журнал; saveState — у вызывающего через logOp/saveState)
 function recordReceiptRow(row){
@@ -2404,17 +2450,24 @@ function recordReceiptRow(row){
   const qty = roundQty(parseNum(row.qty));
   if(!name || !(qty>0)) return null;
   const unit = _impMapUnit(row.unit);
-  let product = findStockByName(name, "product") || findStockByNameLoose(name, "product");
+  // только существующие; новое имя — лишь если в каталоге нет похожего
+  let product = findStockForImport(name, unit);
+  let created = false;
   if(!product){
     product = createCatalogStockItem("product", name, unit);
     state.stock.push(product);
+    created = true;
     if(!row.skipPropagate){ try{ propagateName("product", name, product.unit); }catch(e){} }
   }
-  const cat = cleanCatName(row.category) || (!product.category ? guessProductCategory(name) : "");
+  // категорию ставим только новой карточке или если у старой пусто/«Прочие»/ошибочные макароны у бульона
+  const guessed = guessProductCategory(product.name || name);
+  const curCat = String(product.category||"").trim();
+  const weakCat = !curCat || /^проч/i.test(curCat) || (/макарон/i.test(curCat) && /бульон/i.test(product.name||name));
+  const cat = cleanCatName(row.category) || (created || weakCat ? guessed : "");
   if(cat){
     state.categories.product = state.categories.product || [];
     if(!state.categories.product.includes(cat)) state.categories.product.push(cat);
-    if(!product.category) product.category = cat;
+    if(created || weakCat) product.category = cat;
   }
   const note = (typeof row.note==="string" ? row.note.slice(0,200) : "").trim();
   const expiry = _impParseDate(row.expiry);
@@ -3810,7 +3863,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v190 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v191 · тестовый канал</div>
   `;
 }
 
