@@ -22,6 +22,7 @@ alwaysApply: true
 ## Сделано (не повторять как «дыры»)
 
 - v185–v188: journal RLS, type-restricted merge, пагинация pull, app_private journal_row_type, orphan fail-closed, handover multi_base.
+- v194: мясо/кур — окорочок/грудка в мясо; готовые блюда в заморозку; не путать с кукурузой/курагой.
 - v193: категории — без \b/\w для кириллицы; бульон/бедро/лапша; правка «Прочих» в Детрине.
 - v192: cleanNameImport без прайс-мусора.
 - v191: импорт не размножает имена (`findStockForImport`); бульон→приправы, бедро→мясо.
