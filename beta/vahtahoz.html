@@ -1986,10 +1986,14 @@ function ledgerQtyForProduct(product){
 }
 function ledgerByNormName(){
   const m = new Map();
+  const stockIds = new Set((state.stock||[]).map(s=>s.id));
   for(const kind of JOURNAL_KEYS){
     for(const op of (state.journals[kind]||[])){
       const sign = journalEffectSign(kind, op);
       if(!sign) continue;
+      // с productId учитываем только orphan (id нет на складе) — иначе чужая живая карточка
+      // «по имени» раздувала ledger и ensureProducts перепривязывал чужие ops
+      if(op.productId && stockIds.has(op.productId)) continue;
       const n = stockNormName(op.productName);
       if(!n) continue;
       m.set(n, roundQty((m.get(n)||0) + sign * Number(op.qty||0)));
@@ -2069,6 +2073,7 @@ function mergeDuplicateStockByName(){
 function ensureProductsFromJournalLedger(){
   let created = 0;
   const ledgers = ledgerByNormName();
+  const stockIds = new Set((state.stock||[]).map(s=>s.id));
   for(const [n, ledger] of ledgers){
     if(!(ledger > 0)) continue;
     if(findStockByName(n)) continue;
@@ -2082,10 +2087,14 @@ function ensureProductsFromJournalLedger(){
     const p = createCatalogStockItem("product", sampleName, sampleUnit);
     p.qty = ledger;
     state.stock.push(p);
+    stockIds.add(p.id);
     try{ propagateName("product", p.name, p.unit); }catch(e){}
+    // перепривязываем ТОЛЬКО orphan-записи (без productId или id нет на складе)
     for(const kind of JOURNAL_KEYS){
       for(const op of (state.journals[kind]||[])){
-        if(stockNormName(op.productName)===n){ op.productId = p.id; op.productName = p.name; }
+        if(stockNormName(op.productName)!==n) continue;
+        if(op.productId && stockIds.has(op.productId)) continue;
+        op.productId = p.id; op.productName = p.name;
       }
     }
     created++;
@@ -2262,7 +2271,7 @@ function _impMapHeaders(headerRow){
   }
   return map;
 }
-// Excel-серийная дата (дней от 1899-12-30) → YYYY-MM-DD
+// Excel-серийная дата (дней от 1899-12-30) → YYYY-MM-DD (UTC calendar — у serial нет TZ)
 function _excelSerialToISO(n){
   const ms = Math.round((Number(n) - 25569) * 86400 * 1000);
   const d = new Date(ms);
@@ -2271,7 +2280,11 @@ function _excelSerialToISO(n){
 // нормализация даты: число (серийная) / Date / строка (YYYY-MM-DD | DD.MM.YYYY | DD/MM/YYYY)
 function _impParseDate(v){
   if(v==null || v==="") return "";
-  if(v instanceof Date) return isNaN(v.getTime()) ? "" : v.toISOString().slice(0,10);
+  if(v instanceof Date){
+    if(isNaN(v.getTime())) return "";
+    // локальный календарный день (не UTC — иначе UTC+11 полуночь → «вчера»)
+    return new Date(v.getTime() - v.getTimezoneOffset()*60000).toISOString().slice(0,10);
+  }
   if(typeof v==="number") return _excelSerialToISO(v);
   const s = String(v).trim();
   let m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s);
@@ -2279,7 +2292,7 @@ function _impParseDate(v){
   m = /^(\d{1,2})[.\/](\d{1,2})[.\/](\d{2,4})/.exec(s);
   if(m){
     let [,d,mo,y]=m;
-    if(y.length===2){ const yy=+y; y = String((yy>=70?1900:2000)+yy); }  // классика: 00–69→2000+, 70–99→1900+
+    if(y.length===2){ const yy=+y; y = String((yy>=70?1900:2000)+yy); }
     return `${y}-${String(mo).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
   }
   return "";
@@ -4855,7 +4868,7 @@ function openHandover(fromUid){
   openSheet(`<div class="font-bold text-xl mb-3">Передать смену</div>
     <div class="text-sm opacity-70 mb-2">От «${esc(from.username)}» — кому передать смену и задачи?</div>
     <div class="space-y-2">
-      ${others.map(o=>`<button class="btn btn-ghost w-full text-left" style="min-width:0" onclick="doHandover('${fromUid}','${o.user_id}')"><span class="truncate">${esc(o.username)}</span> <span class="opacity-60 text-xs">(${esc(roleLabel(o.role))})</span></button>`).join("")}
+      ${others.map(o=>`<button class="btn btn-ghost w-full text-left" style="min-width:0" onclick="doHandover('${safeId(fromUid)}','${safeId(o.user_id)}')"><span class="truncate">${esc(o.username)}</span> <span class="opacity-60 text-xs">(${esc(roleLabel(o.role))})</span></button>`).join("")}
     </div>
     <button class="btn btn-ghost w-full mt-3" data-close>Отмена</button>`);
 }
@@ -5825,6 +5838,21 @@ async function cloudActivate(cid, attempt){
 async function cloudPull(cid){
   if(!cid || !cloudOnline()) return;
   if(isOffShift(cid)) return;   // снят со смены: RLS вернёт пусто — НЕ затираем локальные данные пустотой
+  // dirty без прав редактирования: push невозможен → иначе pull навсегда no-op (бухгалтер/демоут).
+  // Сохраняем локальную копию и снимаем dirty, затем тянем облако.
+  if(localStorage.getItem(cloudDirtyKey(cid)) && typeof canEditStock==="function" && !canEditStock()){
+    try{
+      const raw = localStorage.getItem(STORE_KEY);
+      if(raw){
+        const bkId = uid();
+        localStorage.setItem(slotKey(bkId), raw);
+        profiles.list.push({ id:bkId, name: cleanName40((cloud.bases[cid]||"База")+" (локальная копия)") });
+        saveProfiles(profiles);
+        toast("Локальные правки сохранены копией — прав на выгрузку нет, загружаем облако");
+      }
+    }catch(_){}
+    try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(_){}
+  }
   // защита: не затирать НЕсинхронизированные локальные правки облачными данными
   if(cloud.pushPending || localStorage.getItem(cloudDirtyKey(cid))){ cloudMaybePush(); return; }
   const perm = activeMember();
@@ -5867,8 +5895,9 @@ async function cloudPull(cid){
       try{
         mergeDuplicateStockByName();
         relinkJournalOpsToCanonical();
+        const created = ensureProductsFromJournalLedger();
         const rec = reconcileLegacyQtyFromJournal(false);
-        _reconChanged = !!(rec.fixed);
+        _reconChanged = !!(rec.fixed || created);
       }catch(e){ console.warn("post-pull stock reconcile", e); }
     }
     for(const k in J) J[k] = J[k].slice(0,500);
@@ -6093,8 +6122,17 @@ async function cloudPushNow(){
         }
       }
       // === ЖУРНАЛЫ (дельта upsert; удаление — только явное, под порогом архива) ===
+      // как склад: пушим только типы, видимые роли (иначе RLS-403 → push в retry, sync залипает)
+      const _jrType = (op)=>{
+        if(op && STOCK_TYPE_KEYS.includes(op.stockType)) return op.stockType;
+        if(op && op.productId){ const s=state.stock.find(x=>x.id===op.productId); if(s && s.type) return s.type; }
+        return "product";
+      };
       const jrows=[]; const curJSig={};
-      for(const k of JOURNAL_KEYS) for(const op of (state.journals?.[k]||[])){ jrows.push({id:op.id,base_id:cid,kind:k,data:op}); curJSig[op.id]=_sigOf({kind:k,data:op}); }
+      for(const k of JOURNAL_KEYS) for(const op of (state.journals?.[k]||[])){
+        if(!_at.includes(_jrType(op))) continue;
+        jrows.push({id:op.id,base_id:cid,kind:k,data:op}); curJSig[op.id]=_sigOf({kind:k,data:op});
+      }
       const prevJSig = loadSyncSig(cid,"jr");
       // УСЕЧЕНИЕ по квоте (slice 500) НЕ удаляет из облака — архив полный (нет надгробия).
       // ЯВНОЕ удаление пользователя (deleteOp → tombJr) удаляет из облака — иначе pull воскрешал бы запись.

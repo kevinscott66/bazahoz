@@ -1,7 +1,7 @@
 /* ВахтаХоз service worker — network-first для оболочки + offline fallback.
    network-first важен: после деплоя фикса пользователь получает свежий vahtahoz.html
    сразу при наличии сети, а кэш используется только как офлайн-резерв. */
-const CACHE = "vahtahoz-BETA-v184";
+const CACHE = "vahtahoz-BETA-v185";
 const PRECACHE = [
   "./vahtahoz.html",
   "./manifest.webmanifest",
@@ -47,6 +47,12 @@ self.addEventListener("fetch", e => {
       finally { clearTimeout(to); }
       if (fresh && fresh.status === 200 && (fresh.type === "basic" || fresh.type === "cors")) {
         cache.put(req, fresh.clone()).catch(() => {});
+        return fresh;
+      }
+      // не-OK (4xx/5xx): не отдаём сломанный деплой/шлюз — лучше кэш
+      if (fresh && !fresh.ok) {
+        const cached = await cache.match(req, { ignoreSearch: true });
+        if (cached) return cached;
       }
       return fresh;
     } catch (_) {
