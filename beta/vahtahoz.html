@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v189 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v190 · БЕТА</div>
   </div>
 </div>
 
@@ -2280,12 +2280,13 @@ function saveOp(kind){
 }
 
 /* ===================== ИМПОРТ ПОСТУПЛЕНИЯ ИЗ EXCEL =====================
-   Файл .xlsx/.csv с колонками (обязателен только «Наименование»):
-   Наименование | Количество | Ед. изм. | Категория | Срок годности | Место | Примечание
-   Каждая строка = одно поступление: остаток пополняется (или создаётся каталожная позиция). */
+   Два формата:
+   1) Простой шаблон: первая строка — заголовки (Наименование | Количество | …)
+   2) УПД / счёт-фактура (.xlsx от поставщика): строки товаров + дата «от ДД.ММ.ГГГГ»
+   Каждая строка = поступление на склад + запись в журнал. */
 
-// канонизация заголовка колонки: нижний регистр, без точек/пробелов/ё
-const _impNormHeader = (h) => String(h||"").toLowerCase().replace(/ё/g,"е").replace(/[\s.\-_]+/g,"").trim();
+const cleanNameImport = (s) => String(s??"").replace(/[<>'"\\\r\n]/g,"").trim().slice(0,200);
+const _impNormHeader = (h) => String(h||"").toLowerCase().replace(/ё/g,"е").replace(/[\s.\-_№#\/]+/g,"").trim();
 const _IMP_HEADER_MAP = {
   name:     ["наименование","название","товар","номенклатура","name","item","product"],
   qty:      ["количество","колво","кол","qty","quantity","count","приход","поступило"],
@@ -2294,6 +2295,7 @@ const _IMP_HEADER_MAP = {
   expiry:   ["срокгодности","срок","годендо","expiry","expirydate","bestbefore"],
   location: ["место","локация","склад","ячейка","location","place"],
   note:     ["примечание","коммент","комментарий","note","comment","поставщик","supplier"],
+  date:     ["дата","датапоступления","датаприхода","date","receiptdate"],
 };
 function _impMapHeaders(headerRow){
   const map = {};
@@ -2305,18 +2307,15 @@ function _impMapHeaders(headerRow){
   }
   return map;
 }
-// Excel-серийная дата (дней от 1899-12-30) → YYYY-MM-DD (UTC calendar — у serial нет TZ)
 function _excelSerialToISO(n){
   const ms = Math.round((Number(n) - 25569) * 86400 * 1000);
   const d = new Date(ms);
   return isNaN(d.getTime()) ? "" : d.toISOString().slice(0,10);
 }
-// нормализация даты: число (серийная) / Date / строка (YYYY-MM-DD | DD.MM.YYYY | DD/MM/YYYY)
 function _impParseDate(v){
   if(v==null || v==="") return "";
   if(v instanceof Date){
     if(isNaN(v.getTime())) return "";
-    // локальный календарный день (не UTC — иначе UTC+11 полуночь → «вчера»)
     return new Date(v.getTime() - v.getTimezoneOffset()*60000).toISOString().slice(0,10);
   }
   if(typeof v==="number") return _excelSerialToISO(v);
@@ -2331,16 +2330,87 @@ function _impParseDate(v){
   }
   return "";
 }
-// одна строка импорта → запись поступления (мутирует склад/журнал; saveState делает вызывающий)
+function _impPad2(n){ return String(n).padStart(2,"0"); }
+function _impExtractDocDate(text){
+  const s = String(text||"");
+  const m = s.match(/от\s+(\d{1,2})[.\/](\d{1,2})[.\/](\d{2,4})/i);
+  if(!m) return "";
+  let y = m[3];
+  if(y.length===2){ const yy=+y; y = String((yy>=70?1900:2000)+yy); }
+  return `${y}-${_impPad2(m[2])}-${_impPad2(m[1])}`;
+}
+function _impMapUnit(u){
+  const s = String(u||"").trim().toLowerCase().replace(/\.$/,"");
+  if(UNITS.includes(s)) return s;
+  if(s==="штука"||s==="штук"||s==="шт") return "шт";
+  if(s==="килограмм"||s==="кг") return "кг";
+  if(s==="грамм"||s==="г") return "г";
+  if(s==="литр"||s==="л") return "л";
+  if(s==="миллилитр"||s==="мл") return "мл";
+  return "шт";
+}
+// эвристика категории продукта по имени — только из списка категорий базы
+function guessProductCategory(name){
+  const n = String(name||"").toLowerCase().replace(/ё/g,"е");
+  const rules = [
+    [/макарон|рожок|спагетт|каватапп|cavatappi|фарфалл|бабочк|вермишел|лапш/, "Макаронные изделия"],
+    [/крупа|рис\b|гречк|горох\b|овсян|перлов|пшен|манк|чечевиц|киноа/, "Крупы"],
+    [/консерв|горошек зел|кукуруз|ананас|сайт|шпрот|тунец|паштет/, "Закуски и консервы"],
+    [/блин|вареник|пельмен|смесь|замороз|морож|клубник|брусник|вишня|морковь кубик|гриб|крабов|филе|скумбр|корюшк|минтай/, "Заморозка"],
+    [/колбас|сардельк|сосиск|грудинк|шпик|копч|ветчин|карбонад|балык|ребер|рёбер/, "Колбасные изделия и копчёности"],
+    [/молоко|сыр\b|творог|сметан|кефир|ряженк|йогурт|масло сливоч/, "Молочные продукты"],
+    [/говядин|свинин|куриц|цыпл|индейк|мясо|окорок|сердце|печень|фарш|стейк/, "Мясо, рыба и мясные продукты"],
+    [/сок\b|чай\b|кофе|напит|вода\b|лимонад|компот|кисель/, "Напитки и ингредиенты для напитков"],
+    [/овощ|фрукт|яблок|капуст|картоф|лук\b|чеснок|огурец|помидор/, "Овощи и фрукты"],
+    [/сахар|соль\b|мука|крахмал/, "Сахар, соль, мучное"],
+    [/варенье|джем|конфет|шоколад|вафл|печенье|пряник|зефир|мармелад|халва|сладк|торт|кекс/, "Сладости и десерты"],
+    [/соус|кетчуп|майонез|аджик|горчиц|уксус/, "Соусы и заправки"],
+    [/орех|изюм|курага|чернослив|сухофрукт|семечк/, "Сухофрукты и орехи"],
+    [/специ|приправ|ванилин|корица|лавровый|бульон|укроп|петрушк/, "Приправы, специи и кондитерские ингредиенты"],
+  ];
+  const allowed = Array.isArray(state.categories?.product) ? state.categories.product : [];
+  for(const [re, cat] of rules){
+    if(!re.test(n)) continue;
+    const hit = allowed.find(c=> _impNormHeader(c)===_impNormHeader(cat) || String(c).toLowerCase().includes(cat.toLowerCase().slice(0,12)));
+    if(hit) return hit;
+    if(allowed.includes(cat)) return cat;
+  }
+  return allowed.find(c=>/проч/i.test(c)) || allowed[0] || "Прочие продукты";
+}
+function stockNormLoose(s){
+  return stockNormName(String(s||"").replace(/\([^)]*\)/g," ").replace(/[«»"']/g,""));
+}
+function findStockByNameLoose(name, type){
+  const n = stockNormLoose(name);
+  if(!n || n.length < 10) return null;
+  const types = type ? [type] : allowedTypeKeys();
+  let hit = state.stock.find(s=> types.includes(s.type) && stockNormLoose(s.name)===n);
+  if(hit) return hit;
+  let best=null, bestScore=0;
+  for(const s of state.stock){
+    if(!types.includes(s.type)) continue;
+    const cn = stockNormLoose(s.name);
+    if(cn.length < 10) continue;
+    if(cn===n || n.includes(cn) || cn.includes(n)){
+      const score = Math.min(cn.length, n.length) / Math.max(cn.length, n.length);
+      if(score > bestScore && score >= 0.55){ bestScore=score; best=s; }
+    }
+  }
+  return best;
+}
+// одна строка импорта → поступление (мутирует склад/журнал; saveState — у вызывающего через logOp/saveState)
 function recordReceiptRow(row){
-  const name = cleanName40(row.name);
+  const name = cleanNameImport(row.name);
   const qty = roundQty(parseNum(row.qty));
   if(!name || !(qty>0)) return null;
-  const unit = UNITS.includes(String(row.unit||"").trim()) ? String(row.unit).trim() : "шт";
-  // skipPropagate: bulk-импорт не должен на каждое имя гонять JSON.parse/stringify чужих баз
-  const product = resolveIncomingProduct({ manualName:name, unit, type:"product", skipPropagate:true });
-  if(!product) return null;
-  const cat = cleanCatName(row.category);
+  const unit = _impMapUnit(row.unit);
+  let product = findStockByName(name, "product") || findStockByNameLoose(name, "product");
+  if(!product){
+    product = createCatalogStockItem("product", name, unit);
+    state.stock.push(product);
+    if(!row.skipPropagate){ try{ propagateName("product", name, product.unit); }catch(e){} }
+  }
+  const cat = cleanCatName(row.category) || (!product.category ? guessProductCategory(name) : "");
   if(cat){
     state.categories.product = state.categories.product || [];
     if(!state.categories.product.includes(cat)) state.categories.product.push(cat);
@@ -2349,11 +2419,23 @@ function recordReceiptRow(row){
   const note = (typeof row.note==="string" ? row.note.slice(0,200) : "").trim();
   const expiry = _impParseDate(row.expiry);
   const location = cleanCatName(row.location);
-  const op = { id:uid(), ts:new Date().toISOString(), productId:product.id, productName:product.name, qty, unit:product.unit||unit, note: note||"Импорт поступления", stockType: journalStockType(product, "product") };
+  const day = _impParseDate(row.receiptDate) || "";
+  const ts = day ? `${day}T09:00:00.000Z` : new Date().toISOString();
+  const op = {
+    id:uid(), ts, productId:product.id, productName:product.name, qty,
+    unit:product.unit||unit, note: note||"Импорт поступления",
+    stockType: journalStockType(product, "product"),
+  };
   applyStockDelta(product, 1, qty, op.note, op);
   if(hasBatches(product) && op.batchId){
     const b = (product.batches||[]).find(x=>x.id===op.batchId);
-    if(b){ if(expiry) b.expiry=expiry; if(location) b.location=location; op.batchExpiry=b.expiry||""; op.batchLocation=b.location||""; syncItemFromBatches(product); }
+    if(b){
+      if(expiry) b.expiry=expiry;
+      if(location) b.location=location;
+      if(day) b.createdAt = ts;
+      op.batchExpiry=b.expiry||""; op.batchLocation=b.location||"";
+      syncItemFromBatches(product);
+    }
   } else {
     if(expiry && !product.expiry) product.expiry = expiry;
     if(location && !product.location) product.location = location;
@@ -2363,20 +2445,76 @@ function recordReceiptRow(row){
   return op;
 }
 
-const IMP_MAX_ROWS = 3000;   // = truncate журнала receipt — иначе остатки вырастут, а движения обрежутся
-const IMP_MAX_BYTES = 8 * 1024 * 1024;  // 8 МБ
-// разбор книги XLSX → массив нормализованных строк
-function _impParseWorkbook(XLSX, data){
-  const wb = XLSX.read(data, { type:"array" });
-  const wsName = wb.SheetNames[0];
-  if(!wsName) return { rows:[], error:"Файл пуст" };
-  const ws = wb.Sheets[wsName];
-  const aoa = XLSX.utils.sheet_to_json(ws, { header:1, raw:true, defval:"" });
-  if(!aoa.length) return { rows:[], error:"Нет строк" };
-  if(aoa.length > IMP_MAX_ROWS + 1) return { rows:[], error:`Слишком много строк (макс. ${IMP_MAX_ROWS}). Разбейте файл на части.` };
-  const headerRow = aoa[0].map(x=>String(x));
+const IMP_MAX_ROWS = 3000;
+const IMP_MAX_BYTES = 8 * 1024 * 1024;
+const IMP_MAX_FILES = 20;
+
+// УПД / счёт-фактура: ищем шапку «Наименование товара» + № п/п + количество + ед.изм.
+function _impParseUpdAoa(aoa, fileHint){
+  let looksUpd = false, receiptDate = "";
+  for(let r=0; r<Math.min(30, aoa.length); r++){
+    for(const cell of (aoa[r]||[])){
+      const s = String(cell||"");
+      if(/УПД|счет[\s-]*фактур|счёт[\s-]*фактур/i.test(s)) looksUpd = true;
+      if(/фактур|УПД|отгрузк/i.test(s)){
+        const d = _impExtractDocDate(s);
+        if(d) receiptDate = d;
+      }
+    }
+  }
+  if(!looksUpd) return null;
+  let hdr = -1, idxName = -1, idxQty = -1, idxUnit = -1, idxNum = -1;
+  for(let r=0; r<Math.min(45, aoa.length); r++){
+    const row = aoa[r]||[];
+    for(let c=0; c<row.length; c++){
+      const n = _impNormHeader(row[c]);
+      if(n.includes("наименованиетовара") || (n.includes("наименование") && n.includes("товар"))){
+        hdr = r; idxName = c; break;
+      }
+    }
+    if(hdr!==r) continue;
+    for(let c=0; c<row.length; c++){
+      const n = _impNormHeader(row[c]);
+      const n2 = _impNormHeader((aoa[r+1]||[])[c]);
+      if(n.includes("количество") || n2.includes("количество") || n.includes("объем") || n2.includes("объем")) idxQty = c;
+      if(n.includes("условноеобозначение") || n2.includes("условноеобозначение") || n2.includes("национал")) idxUnit = c;
+      else if(idxUnit<0 && (n.includes("единицаизмерения") || n2.includes("единица"))) idxUnit = c;
+      if(n==="пп" || n.endsWith("пп") || n.includes("пп") && n.length<=4) idxNum = c;
+    }
+    const row2 = aoa[r+1]||[];
+    for(let c=0; c<row2.length; c++){
+      const n = _impNormHeader(row2[c]);
+      if(idxQty<0 && (n.includes("количество")||n.includes("объем"))) idxQty = c;
+      if(n.includes("условноеобозначение") || n.includes("национал")) idxUnit = c;
+    }
+    break;
+  }
+  if(idxName<0 || idxQty<0) return { rows:[], error:"Это похоже на УПД, но не найдены колонки «Наименование» / «Количество».", format:"upd" };
+  const label = fileHint || "УПД";
+  const rows = [];
+  for(let r=hdr+1; r<aoa.length; r++){
+    const arr = aoa[r]||[];
+    const name = String(arr[idxName]??"").trim();
+    if(!name || name==="-" || /^итого/i.test(name) || /наименование/i.test(name)) continue;
+    if(idxNum>=0){
+      const num = arr[idxNum];
+      const okNum = typeof num==="number" || /^\d+$/.test(String(num??"").trim());
+      if(!okNum) continue;
+    }
+    const qty = arr[idxQty];
+    if(!(roundQty(parseNum(qty))>0)) continue;
+    rows.push({
+      name, qty, unit: idxUnit>=0 ? (arr[idxUnit]||"шт") : "шт",
+      category:"", receiptDate, note:`Импорт УПД ${label}`, skipPropagate:true
+    });
+  }
+  return { rows, format:"upd", receiptDate };
+}
+
+function _impParseTemplateAoa(aoa){
+  const headerRow = (aoa[0]||[]).map(x=>String(x));
   const hmap = _impMapHeaders(headerRow);
-  if(!Object.values(hmap).includes("name")) return { rows:[], error:"Не найден столбец «Наименование». Проверьте заголовки (первая строка)." };
+  if(!Object.values(hmap).includes("name")) return { rows:[], error:"Не найден столбец «Наименование». Для УПД загрузите исходный .xlsx поставщика; для своего файла — скачайте шаблон." };
   const idxOf = {};
   headerRow.forEach((h,i)=>{ if(hmap[h]) idxOf[hmap[h]] = i; });
   const rows = [];
@@ -2385,21 +2523,40 @@ function _impParseWorkbook(XLSX, data){
     const get = (f)=> idxOf[f]!=null ? arr[idxOf[f]] : "";
     const nm = String(get("name")||"").trim();
     if(!nm) continue;
-    rows.push({ name:nm, qty:get("qty"), unit:get("unit"), category:get("category"), expiry:get("expiry"), location:get("location"), note:get("note") });
+    rows.push({
+      name:nm, qty:get("qty"), unit:get("unit"), category:get("category"),
+      expiry:get("expiry"), location:get("location"), note:get("note"),
+      receiptDate:get("date"), skipPropagate:true
+    });
   }
-  return { rows };
+  return { rows, format:"template" };
+}
+
+function _impParseWorkbook(XLSX, data, fileHint){
+  const wb = XLSX.read(data, { type:"array" });
+  const wsName = wb.SheetNames[0];
+  if(!wsName) return { rows:[], error:"Файл пуст" };
+  const ws = wb.Sheets[wsName];
+  const aoa = XLSX.utils.sheet_to_json(ws, { header:1, raw:true, defval:"" });
+  if(!aoa.length) return { rows:[], error:"Нет строк" };
+  if(aoa.length > IMP_MAX_ROWS + 40) return { rows:[], error:`Слишком много строк (макс. ${IMP_MAX_ROWS}). Разбейте файл на части.` };
+  const upd = _impParseUpdAoa(aoa, fileHint);
+  if(upd) return upd;
+  return _impParseTemplateAoa(aoa);
 }
 
 function openReceiptImportSheet(){
   if(!ensureCanEdit()) return;
   openSheet(`
-    <div class="font-bold text-xl mb-2">📥 Импорт поступления из Excel</div>
-    <div class="text-sm opacity-80 mb-2">Загрузите файл <b>.xlsx</b> или <b>.csv</b>. Первая строка — заголовки. Каждая строка добавит поступление на склад и запись в журнал.</div>
-    <div class="text-xs opacity-70 mb-3">Столбцы (обязателен только «Наименование»):<br>
-      <b>Наименование</b> · Количество · Ед. изм. · Категория · Срок годности (ГГГГ-ММ-ДД или ДД.ММ.ГГГГ) · Место · Примечание<br>
-      До ${IMP_MAX_ROWS} строк · до 8 МБ</div>
+    <div class="font-bold text-xl mb-2">📥 Импорт поступления</div>
+    <div class="text-sm opacity-80 mb-2">Можно залить сразу несколько файлов УПД (счёт-фактура от поставщика) или свой Excel по шаблону.</div>
+    <div class="text-xs opacity-70 mb-3">
+      <b>УПД .xlsx</b> — как приходит от поставщика: наименование, количество, ед. изм. и дата «от …» подставятся сами.<br>
+      <b>Шаблон</b> — столбцы: Наименование · Количество · Ед. изм. · Категория · Срок · Место · Примечание · Дата<br>
+      До ${IMP_MAX_FILES} файлов · до ${IMP_MAX_ROWS} строк суммарно · до 8 МБ каждый
+    </div>
     <button class="btn btn-ghost w-full mb-2" onclick="downloadReceiptTemplate()">⬇️ Скачать шаблон .xlsx</button>
-    <label class="btn btn-primary w-full">Выбрать файл…<input type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hidden" onchange="importReceiptsExcel(event)"></label>
+    <label class="btn btn-primary w-full">Выбрать файл(ы)…<input type="file" multiple accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hidden" onchange="importReceiptsExcel(event)"></label>
     <div id="impReceiptOut" class="text-sm mt-3 whitespace-pre-line opacity-80"></div>
   `);
 }
@@ -2407,55 +2564,90 @@ function openReceiptImportSheet(){
 async function downloadReceiptTemplate(){
   let XLSX; try{ XLSX = await ensureXlsx(); }catch(e){ toast("Не удалось загрузить Excel-модуль (нужна сеть в первый раз)"); return; }
   const sample = [
-    { "Наименование":"Манная крупа", "Количество":7, "Ед. изм.":"кг", "Категория":"Крупы", "Срок годности":"", "Место":"Склад А", "Примечание":"" },
-    { "Наименование":"Молоко сгущённое", "Количество":24, "Ед. изм.":"шт", "Категория":"Молочные продукты", "Срок годности":"2027-01-15", "Место":"", "Примечание":"Поставщик X" },
+    { "Наименование":"Манная крупа", "Количество":7, "Ед. изм.":"кг", "Категория":"Крупы", "Срок годности":"", "Место":"Склад А", "Примечание":"", "Дата":"2026-07-22" },
+    { "Наименование":"Молоко сгущённое", "Количество":24, "Ед. изм.":"шт", "Категория":"Молочные продукты", "Срок годности":"2027-01-15", "Место":"", "Примечание":"Поставщик X", "Дата":"2026-07-24" },
   ];
   const ws = xlsxGuard(XLSX.utils.json_to_sheet(sample));
-  ws["!cols"] = [{wch:28},{wch:12},{wch:10},{wch:20},{wch:14},{wch:14},{wch:22}];
+  ws["!cols"] = [{wch:28},{wch:12},{wch:10},{wch:20},{wch:14},{wch:14},{wch:22},{wch:12}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Поступление");
   saveXlsx(wb, `vahtahoz-шаблон-поступление.xlsx`);
 }
 
+function _impFileHint(name){
+  const m = String(name||"").match(/(\d{4,})/);
+  return m ? m[1] : String(name||"").replace(/\.[^.]+$/,"").slice(0,24);
+}
+
 async function importReceiptsExcel(ev){
-  const f = ev.target.files && ev.target.files[0];
+  const list = ev.target.files ? Array.from(ev.target.files) : [];
   const inputEl = ev.target;
-  if(!f){ return; }
+  if(!list.length) return;
   if(!ensureCanEdit()){ inputEl.value=""; return; }
   const out = ()=>document.getElementById("impReceiptOut");
-  if(f.size > IMP_MAX_BYTES){ if(out()) out().textContent=`Файл слишком большой (макс. ${Math.round(IMP_MAX_BYTES/1024/1024)} МБ).`; inputEl.value=""; return; }
-  if(out()) out().textContent = "Чтение файла…";
+  if(list.length > IMP_MAX_FILES){ if(out()) out().textContent=`Слишком много файлов (макс. ${IMP_MAX_FILES}).`; inputEl.value=""; return; }
+  for(const f of list){
+    if(f.size > IMP_MAX_BYTES){ if(out()) out().textContent=`«${f.name}» слишком большой (макс. ${Math.round(IMP_MAX_BYTES/1024/1024)} МБ).`; inputEl.value=""; return; }
+  }
+  if(out()) out().textContent = list.length>1 ? `Чтение ${list.length} файлов…` : "Чтение файла…";
   let XLSX;
   try{ XLSX = await ensureXlsx(); }
   catch(e){ if(out()) out().textContent="Не удалось загрузить Excel-модуль (нужна сеть в первый раз)."; inputEl.value=""; return; }
-  const reader = new FileReader();
-  reader.onload = async () => {
-    inputEl.value = "";
-    let parsed;
-    try{ parsed = _impParseWorkbook(XLSX, new Uint8Array(reader.result)); }
-    catch(e){ console.warn("import parse", e); if(out()) out().textContent="Не удалось прочитать файл — проверьте формат (.xlsx/.csv)."; return; }
-    if(parsed.error){ if(out()) out().textContent = parsed.error; return; }
-    const rows = parsed.rows || [];
-    const valid = rows.filter(r=> cleanName40(r.name) && roundQty(parseNum(r.qty))>0);
-    const skipped = rows.length - valid.length;
-    if(!valid.length){ if(out()) out().textContent = `Не найдено ни одной строки с наименованием и количеством > 0 (всего строк: ${rows.length}).`; return; }
-    const preview = valid.slice(0,8).map(r=>`• ${cleanName40(r.name)} — ${fmtQty(roundQty(parseNum(r.qty)))} ${UNITS.includes(String(r.unit||"").trim())?String(r.unit).trim():"шт"}`).join("\n");
-    const go = await confirmSheet(
-      `Импортировать поступлений: ${valid.length}${skipped?`\nБудет пропущено (нет имени/кол-ва): ${skipped}`:""}\n\n${preview}${valid.length>8?`\n…и ещё ${valid.length-8}`:""}`,
-      { yes:"Импортировать", no:"Отмена", title:"Подтверждение импорта" }
-    );
-    if(!go) return;
-    let ok = 0;
-    for(const r of valid){ try{ if(recordReceiptRow(r)) ok++; }catch(e){ console.warn("recordReceiptRow", e); } }
-    if(Array.isArray(state.journals.receipt) && state.journals.receipt.length>3000) state.journals.receipt = state.journals.receipt.slice(0,3000);
-    // logOp сам зовёт saveState — отдельный вызов не нужен
-    logOp("IMPORT", `Поступление из Excel: ${ok} поз.`);
-    try{ render(); }catch(_){}
-    // confirmSheet уже закрыл шит импорта (#impReceiptOut нет) — итог только toast
-    toast(`Импортировано поступлений: ${ok}${skipped?` · пропущено: ${skipped}`:""}`);
-  };
-  reader.onerror = ()=>{ if(out()) out().textContent="Ошибка чтения файла."; };
-  reader.readAsArrayBuffer(f);
+
+  const readOne = (f)=> new Promise((resolve,reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=>resolve(new Uint8Array(reader.result));
+    reader.onerror = ()=>reject(new Error("read"));
+    reader.readAsArrayBuffer(f);
+  });
+
+  const allRows = [];
+  const meta = [];
+  try{
+    for(const f of list){
+      const buf = await readOne(f);
+      const hint = _impFileHint(f.name);
+      let parsed;
+      try{ parsed = _impParseWorkbook(XLSX, buf, hint); }
+      catch(e){ console.warn("import parse", f.name, e); if(out()) out().textContent=`Не удалось прочитать «${f.name}».`; inputEl.value=""; return; }
+      if(parsed.error){ if(out()) out().textContent = `${f.name}: ${parsed.error}`; inputEl.value=""; return; }
+      const rows = parsed.rows||[];
+      meta.push({ name:f.name, n:rows.length, format:parsed.format||"?", date:parsed.receiptDate||"" });
+      allRows.push(...rows);
+    }
+  }catch(e){
+    console.warn("import read", e);
+    if(out()) out().textContent="Ошибка чтения файла.";
+    inputEl.value=""; return;
+  }
+  inputEl.value = "";
+  if(allRows.length > IMP_MAX_ROWS){ if(out()) out().textContent=`Слишком много строк суммарно (${allRows.length}, макс. ${IMP_MAX_ROWS}).`; return; }
+
+  const valid = allRows.filter(r=> cleanNameImport(r.name) && roundQty(parseNum(r.qty))>0);
+  const skipped = allRows.length - valid.length;
+  if(!valid.length){ if(out()) out().textContent = `Не найдено строк с наименованием и количеством > 0 (всего: ${allRows.length}).`; return; }
+
+  const filesLine = meta.map(m=>{
+    const d = m.date ? m.date.split("-").reverse().join(".") : "";
+    const tag = m.format==="upd" ? ` (УПД${d?`, ${d}`:""})` : "";
+    return `• ${m.name}: ${m.n} поз.${tag}`;
+  }).join("\n");
+  const preview = valid.slice(0,8).map(r=>{
+    const u = _impMapUnit(r.unit);
+    const d = _impParseDate(r.receiptDate);
+    return `• ${cleanNameImport(r.name).slice(0,48)} — ${fmtQty(roundQty(parseNum(r.qty)))} ${u}${d?` · ${d.split("-").reverse().join(".")}`:""}`;
+  }).join("\n");
+  const go = await confirmSheet(
+    `Импортировать поступлений: ${valid.length}${skipped?`\nПропущено: ${skipped}`:""}\n\nФайлы:\n${filesLine}\n\n${preview}${valid.length>8?`\n…и ещё ${valid.length-8}`:""}`,
+    { yes:"Импортировать", no:"Отмена", title:"Подтверждение импорта" }
+  );
+  if(!go) return;
+  let ok = 0;
+  for(const r of valid){ try{ if(recordReceiptRow(r)) ok++; }catch(e){ console.warn("recordReceiptRow", e); } }
+  if(Array.isArray(state.journals.receipt) && state.journals.receipt.length>3000) state.journals.receipt = state.journals.receipt.slice(0,3000);
+  logOp("IMPORT", `Поступление из Excel: ${ok} поз. (${list.length} файл.)`);
+  try{ render(); }catch(_){}
+  toast(`Импортировано: ${ok}${skipped?` · пропущено: ${skipped}`:""}`);
 }
 
 function orderReceive(opId){
@@ -3618,7 +3810,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v189 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v190 · тестовый канал</div>
   `;
 }
 
@@ -4496,6 +4688,7 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   openCloudSheet,openExportSheet,openBackupSheet,openJournalSheet,openStockReconcileSheet,openBroadcastSheet,sendBroadcast,
   openAboutSheet,openFaqSheet,openPrivacySheet,openTermsSheet,openRecoveryEmailSheet,
   openMove,doMove,
+  openReceiptImportSheet,downloadReceiptTemplate,importReceiptsExcel,
   openMembersSheet,openMemberRole,setMemberRole,memberRotate,memberRemove,openAddMember,openResetPwd,
   openShift,openHandover,doHandover,
   openOrgRolesSheet,openAddOrgMember,doAddOrgMember,_omToggleParty,openAssignExisting,_aeToggleParty,doAssignExisting,orgRoleRemove,
