@@ -1,0 +1,38 @@
+---
+description: VahtaHoz (bazahoz) security backlog and invariants for future agents
+globs:
+  - beta/**
+  - supabase/**
+  - docs/**
+alwaysApply: true
+---
+
+# VahtaХоз — память для агентов
+
+## Инварианты (не ломать)
+
+- Существующие сессии не revoke при reset пароля (пользователь так решил).
+- Beta канал: `beta/vahtahoz.html` + `beta/sw.js`; версия: `сборка vNNN` + `vahtahoz-BETA-vNNN`.
+- Pull склада/журнала — **только через `cloudRestAll`** (PostgREST `max_rows=1000`).
+- На post-pull **не** вызывать `mergeDuplicateStockByName` (только ручная сверка).
+- `journalEffectSign(order)=0` (заказ не двойнит ledger).
+- Type-restricted push: merge подписей + `stockAllowed`/`jrAllowed`, не replace-only `_at`.
+
+## Сделано (не повторять как «дыры»)
+
+- v185–v187: journal RLS EXECUTE hotfix, dirty view-only backup, type-restricted sig merge, пагинация pull, no auto-merge on pull, ledger `type::name`, parseNum EU.
+
+## Открыто / сделать при следующем hardening
+
+1. **`journal_row_type` RPC-оракул** — вынести из exposed `public` в `app_private` (PostgREST schemas = `public,graphql_public`).
+2. **Orphan → `'product'`** — fail-closed (`__none__` + whitelist в `can_see_type`), не слепой fallback.
+3. **`DROP FUNCTION journal_entry_type`** — leftover footgun.
+4. **`handover_shift`**: tasks без `base_id` (аккаунт-скоуп); запрещать перенос если есть членство в других базах (не только `active`).
+5. **Клиент**: legacy `quickAdjust` без партий — писать `stockType` (ветка ~2931).
+6. Deferred: per-IP rate-limit `request_reset`; SheetJS update; prod `vahtahoz.html` без `stockType` (не beta).
+
+## Деплой
+
+- SQL: Management API `database/query` с PAT из `~/Desktop/vahtahoz-supabase-keys.txt`.
+- EF: `manage-user`; клиент — push в GitHub Pages.
+- После миграций journal: проверить SELECT журнала у authenticated и что `/rest/v1/rpc/journal_row_type` недоступен.

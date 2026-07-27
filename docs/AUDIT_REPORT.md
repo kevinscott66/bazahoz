@@ -1,18 +1,32 @@
-# Audit Report — beta v187 (2026-07-28)
+# Audit Report — beta v188 (2026-07-28)
 
-## Critical fix this pass
+## Memory
+
+- `.cursor/rules/vahtahoz-security.mdc` — инварианты + backlog для агентов
+- `docs/BACKLOG_SECURITY.md` — чеклист
+
+## Closed this pass
 
 | ID | Severity | Issue | Fix |
 |----|----------|-------|-----|
-| E1 | **Critical** | `cloudPull` без пагинации: PostgREST ≤1000 строк при ~3k на базе → неполный склад, «прыгающий» счётчик в наличии, риск delete лишних id | `cloudRestAll` + `Range`/`order=id` для stock/journal/сводка/экспорт месяца |
-| E2 | **High** | post-pull `mergeDuplicateStockByName` + dirty→push удалял дубли из облака → схлопывание «~200 → ~129» | Auto-merge убран с pull; merge только в ручной сверке |
+| H1 | **High** | `public.journal_row_type` RPC-оракул | `app_private.journal_row_type` (вне PostgREST schemas) |
+| H2 | **High** | Orphan → `'product'` type-leak | Whitelist stockType; else `__none__`; `can_see_type` reject unknown |
+| M1 | **Medium** | leftover `journal_entry_type` | `DROP FUNCTION` |
+| M2 | **Medium** | handover tasks при членстве в др. базах | `multi_base` на **любое** членство, не только active |
+| M3 | **Medium** | legacy quickAdjust без `stockType` | Пишем `journalStockType(it)` |
 
-## Cloud check (Детрин)
+## Prior critical (v187)
 
-- ~3060 product rows total, ~160–170 with qty>0
-- ~129 distinct names among qty>0 (дубли имён дают «лишние» карточки до merge)
-- Счётчик в UI = `inStock` (qty>0), не весь каталог
+- Pull пагинация `cloudRestAll` (max_rows=1000)
+- No auto-merge on pull
 
-## Prior (v186)
+## Deferred
 
-type-restricted sig merge, atomic view-only backup, ledger type::name, parseNum EU, password fields
+- Per-IP `request_reset`
+- Session revoke after reset (не делать без запроса)
+- SheetJS / prod HTML parity
+
+## Deploy
+
+- [x] SQL `2026-07-28_journal_private_orphan_handover.sql` on prod
+- [x] Beta v188

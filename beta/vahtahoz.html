@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v187 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v188 · БЕТА</div>
   </div>
 </div>
 
@@ -2928,7 +2928,10 @@ async function quickAdjust(id, sign){
   if(next<0){ toast("Не хватает на складе"); return; }
   it.qty = next; it.updatedAt = new Date().toISOString();
   state.journals[kind] = state.journals[kind]||[];
-  state.journals[kind].unshift({ id:uid(), ts:new Date().toISOString(), productId:it.id, productName:it.name, qty:n, unit:it.unit||"", note:opNote });
+  state.journals[kind].unshift({
+    id:uid(), ts:new Date().toISOString(), productId:it.id, productName:it.name,
+    qty:n, unit:it.unit||"", stockType: journalStockType(it), note:opNote
+  });
   const tag = opTag(kind);
   logOp(tag, `${it.name} ${sign>0?"+":"-"}${fmtQty(n)} ${it.unit||""}`);
   saveState(); render();
@@ -3615,7 +3618,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v187 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v188 · тестовый канал</div>
   `;
 }
 
