@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v191 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v192 · БЕТА</div>
   </div>
 </div>
 
@@ -2285,7 +2285,28 @@ function saveOp(kind){
    2) УПД / счёт-фактура (.xlsx от поставщика): строки товаров + дата «от ДД.ММ.ГГГГ»
    Каждая строка = поступление на склад + запись в журнал. */
 
-const cleanNameImport = (s) => String(s??"").replace(/[<>'"\\\r\n]/g,"").trim().slice(0,200);
+// убираем из наименования прайс/логистический мусор поставщика
+// (\b в JS не видит кириллицу)
+function cleanNameImport(s){
+  let t = String(s??"").replace(/[<>'"\\\r\n]/g,"").trim();
+  t = t.replace(/^\*+\s*/, "").replace(/\s*\*+$/, "");
+  // цена / прайс (без \b — иначе кириллица не матчится)
+  t = t.replace(/цена\s*за\s*(штуку|шт\.?|блочок|блок|коробку|кор\.?|уп\.?|упаковку|\d+\s*листов?)/gi, " ");
+  t = t.replace(/цена\s*[=:]\s*[\d.,]+\s*(руб\.?|₽|р\.?)?/gi, " ");
+  t = t.replace(/по\s+цене\s+[\dхxХ]+/gi, " ");
+  t = t.replace(/\d+[.,]\d{2}\s*(руб\.?|₽|р\.)(?![0-9A-Za-zА-Яа-яЁё])/gi, " ");
+  t = t.replace(/(?<![0-9A-Za-zА-Яа-яЁё])\d+\s*(руб\.?|₽)(?![0-9A-Za-zА-Яа-яЁё])/gi, " ");
+  // условия отгрузки / маркетинг (в т.ч. слитно: молочныеТОЛЬКО БЛОЧКАМИ)
+  t = t.replace(/только\s+(блочками|местами|коробками|штуками|упаковками)/gi, " ");
+  t = t.replace(/промо[- ]?пак/gi, " ");
+  t = t.replace(/\(\s*\d+\s*\+\s*\d+\s*в\s+подарок[^)]*\)/gi, " ");
+  t = t.replace(/\+\s*\d+\s*гр?\.?\s*в\s+подарок/gi, " ");
+  t = t.replace(/\[\s*[дс]\s*\]/gi, " ");
+  // хвост даты поставки из УПД: (23.06.2026, РОССИЯ) / * (04.06–06.06.2026, РОССИЯ)
+  t = t.replace(/\s*\*?\s*\(\s*\d{1,2}[./]\d{1,2}[./]\d{2,4}(?:\s*[-–]\s*\d{1,2}[./]\d{1,2}[./]\d{2,4})?\s*,\s*[А-ЯA-ZЁ][^)]*\)\s*$/u, "");
+  t = t.replace(/\s{2,}/g, " ").replace(/\s+([,.;])/g, "$1").replace(/[,\s.;\-–—*]+$/g, "").trim();
+  return t.slice(0, 200);
+}
 const _impNormHeader = (h) => String(h||"").toLowerCase().replace(/ё/g,"е").replace(/[\s.\-_№#\/]+/g,"").trim();
 const _IMP_HEADER_MAP = {
   name:     ["наименование","название","товар","номенклатура","name","item","product"],
@@ -3863,7 +3884,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v191 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v192 · тестовый канал</div>
   `;
 }
 

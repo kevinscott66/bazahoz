@@ -17,11 +17,12 @@ alwaysApply: true
 - На post-pull **не** вызывать `mergeDuplicateStockByName` (только ручная сверка).
 - `journalEffectSign(order)=0` (заказ не двойнит ledger).
 - Type-restricted push: merge подписей + `stockAllowed`/`jrAllowed`, не replace-only `_at`.
-- Импорт УПД/Excel: `findStockForImport` — сначала существующие карточки (exact → stockKey → Jaccard ≥0.72); новое имя только если нет похожего. Категория: бульон→приправы раньше мяса/макарон; бедро→мясо (`куриц(?!н)`).
+- Импорт УПД/Excel: `cleanNameImport` срезает «цена за шт»/«только местами»/промо; `findStockForImport` — сначала существующие карточки (exact → stockKey → Jaccard ≥0.72); новое имя только если нет похожего. Категория: бульон→приправы раньше мяса/макарон; бедро→мясо (`куриц(?!н)`).
 
 ## Сделано (не повторять как «дыры»)
 
 - v185–v188: journal RLS, type-restricted merge, пагинация pull, app_private journal_row_type, orphan fail-closed, handover multi_base.
+- v192: cleanNameImport без прайс-мусора.
 - v191: импорт не размножает имена (`findStockForImport`); бульон→приправы, бедро→мясо.
 - v189: pull обновляет `stockAllowed`/`jrAllowed` (иначе delete у cook/mechanic не уходил в облако); hardCap бросает ошибку; type-restrict backup атомарный.
 
