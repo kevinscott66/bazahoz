@@ -1,34 +1,18 @@
-# Audit Report — beta v186 (2026-07-28)
+# Audit Report — beta v187 (2026-07-28)
 
-## Scope
-
-- Beta client v186 + SW
-- EF `manage-user` v28 (без изменений в этом проходе)
-- SQL: journal RLS EXECUTE уже на проде (v185 hotfix)
-
-## Closed this pass (v186)
+## Critical fix this pass
 
 | ID | Severity | Issue | Fix |
 |----|----------|-------|-----|
-| D1 | **High** | dirty + `!canEditStock`: dirty снимался даже если backup упал | Clear dirty только после успешного backup; иначе abort pull |
-| D2 | **High** | type-restricted push: `saveStockSig(curSig)` затирал скрытые типы → потеря правок при демоуте | Merge `prevSig` + `stockAllowed`; delete только из allowed-снимка; backup слота |
-| D3 | **High** | journal filter + `saveSyncSig(jr, curJSig)` → скрытые ops «забывались», dirty clear | Merge `prevJSig` + `jrAllowed`; tombstones только по allowed |
-| D4 | **Medium** | `ensureProducts` всегда `type:"product"`; ledger без типа | Ключ `type::name`; тип из `op.stockType` |
-| D5 | **Medium** | relink/findStock без учёта типа при одинаковых именах | `preferType` из `stockType` |
-| D6 | **Medium** | view-only backup плодил профили на каждый pull | Один слот на `cloudId` |
-| D7 | **Low** | EU qty `1.000` → 1 в импорте | `parseNum` thousands/decimal heuristics |
-| D8 | **Low** | ручной приход всегда product | Тип с вкладки `stockTab` |
-| D9 | **Low** | пароли в `type=text` в формах сброса | `type=password` |
-| D10 | **Low** | HTML v184 при SW v185 | Выровнено на v186 |
+| E1 | **Critical** | `cloudPull` без пагинации: PostgREST ≤1000 строк при ~3k на базе → неполный склад, «прыгающий» счётчик в наличии, риск delete лишних id | `cloudRestAll` + `Range`/`order=id` для stock/journal/сводка/экспорт месяца |
+| E2 | **High** | post-pull `mergeDuplicateStockByName` + dirty→push удалял дубли из облака → схлопывание «~200 → ~129» | Auto-merge убран с pull; merge только в ручной сверке |
 
-## Intentional / deferred
+## Cloud check (Детрин)
 
-- Сессии после reset не revoke (нет повторного входа)
-- Per-IP rate-limit на `request_reset`
-- SheetJS update
-- Post-pull reconcile-up → dirty→push оставлен (поднимает недосчитанное; order double-count уже 0)
+- ~3060 product rows total, ~160–170 with qty>0
+- ~129 distinct names among qty>0 (дубли имён дают «лишние» карточки до merge)
+- Счётчик в UI = `inStock` (qty>0), не весь каталог
 
-## Deploy
+## Prior (v186)
 
-- [ ] Beta v186 (GitHub Pages)
-- [x] SQL/EF — без новых миграций в этом проходе
+type-restricted sig merge, atomic view-only backup, ledger type::name, parseNum EU, password fields
