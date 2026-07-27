@@ -177,6 +177,7 @@ Deno.serve(async (req) => {
   // Безопасность: код уходит ТОЛЬКО на ПОДТВЕРЖДЁННУЮ резервную почту; rate-limit + лимит попыток;
   // ответ нейтральный (не раскрываем, существует ли логин). Функция задеплоена с verify_jwt=false.
   if (action === "request_reset") {
+    const t0 = Date.now();
     const username = String(p.username || "").trim().toLowerCase().replace(/@.*$/, "");
     if (/^[a-z0-9_]{3,32}$/.test(username)) {
       const { data: u } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
@@ -188,17 +189,21 @@ Deno.serve(async (req) => {
           // старые неиспользованные коды гасим: живым остаётся только последний (сужает окно перебора)
           await admin.from("auth_codes").update({ used: true }).eq("user_id", u.id).eq("purpose", "reset_password").eq("used", false);
           await admin.from("auth_codes").insert({ user_id: u.id, purpose: "reset_password", email: rec2.recovery_email, code_hash: await sha256(u.id + ":" + code), expires_at: new Date(Date.now() + 15 * 60000).toISOString() });
-          await sendCode(rec2.recovery_email, code, "reset");
+          // письмо — без await на критическом пути ответа: иначе timing выдаёт «логин с почтой существует»
+          void sendCode(rec2.recovery_email, code, "reset");
         }
       }
     }
+    // выравнивающая задержка на ВСЕХ ветках (и пустых) — против timing-enumeration
+    const pad = 350 + Math.floor(Math.random() * 200) - (Date.now() - t0);
+    if (pad > 0) await new Promise((r) => setTimeout(r, pad));
     return json({ ok: true }); // нейтрально: «если логин с привязанной почтой существует — код отправлен»
   }
   if (action === "confirm_reset") {
     const username = String(p.username || "").trim().toLowerCase().replace(/@.*$/, "");
     const code = String(p.code || "").trim();
     const newPassword = String(p.new_password || "");
-    if (!/^[a-z0-9_]{3,32}$/.test(username) || !/^\d{6}$/.test(code) || newPassword.length < 6) return json({ error: "bad input" }, 400);
+    if (!/^[a-z0-9_]{3,32}$/.test(username) || !/^\d{6}$/.test(code) || newPassword.length < 8) return json({ error: "bad input" }, 400);
     // ЕДИНЫЙ ответ "invalid" + выравнивающая задержка на всех неуспешных путях:
     // разные тексты/тайминги позволяли перечислять логины и состояние кода
     const fail = async () => { await new Promise((r) => setTimeout(r, 250 + Math.floor(Math.random() * 150))); return json({ error: "invalid" }, 400); };
@@ -210,15 +215,16 @@ Deno.serve(async (req) => {
     if (new Date(rec.expires_at) < new Date()) return await fail();
     if (rec.attempts >= 5) return await fail();
     if (!hashEq(await sha256(u.id + ":" + code), rec.code_hash)) {
-      await admin.from("auth_codes").update({ attempts: rec.attempts + 1 }).eq("id", rec.id);
+      // optimistic lock: инкремент только если attempts не ушёл вперёд (гонка параллельных запросов)
+      await admin.from("auth_codes").update({ attempts: rec.attempts + 1 }).eq("id", rec.id).eq("attempts", rec.attempts);
       return await fail();
     }
-    await admin.auth.admin.updateUserById(u.id, { password: newPassword });
+    const { error: pwErr } = await admin.auth.admin.updateUserById(u.id, { password: newPassword });
+    if (pwErr) { console.error("confirm_reset updateUser", pwErr); return await fail(); }  // код НЕ гасим — пользователь сможет повторить
     await admin.from("auth_codes").update({ used: true }).eq("id", rec.id);
-    // разлогиниваем все устройства: старые refresh-токены не должны переживать смену пароля
-    try {
-      await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${u.id}/logout`, { method: "POST", headers: { apikey: SERVICE, Authorization: `Bearer ${SERVICE}` } });
-    } catch (_) { /* не критично: пароль уже сменён */ }
+    // Старый пароль после этого невалиден. Уже вошедшие сессии на устройствах пользователя
+    // НЕ разлогиниваем намеренно (нет повторного входа на доверенных устройствах).
+    // Глобального admin-logout-by-id в GoTrue нет.
     return json({ ok: true });
   }
 
@@ -295,7 +301,7 @@ Deno.serve(async (req) => {
     const password = String(p.password || "");
     const role = String(p.role || "worker");
     if (!/^[a-z0-9_]{3,32}$/.test(username)) return json({ error: "Логин: 3-32 символа a-z 0-9 _" }, 400);
-    if (password.length < 6) return json({ error: "Пароль не короче 6 символов" }, 400);
+    if (password.length < 8) return json({ error: "Пароль не короче 8 символов" }, 400);
     // ТОЛЬКО базовые роли: org-роли (party_chief/director/…) в base_members дали бы can_manage
     // в обход триггера рангов (service_role его не проходит). Для них — create_org_member.
     if (!BASE_ROLES.has(role)) return json({ error: "Неизвестная роль" }, 400);
@@ -338,7 +344,7 @@ Deno.serve(async (req) => {
     const role = String(p.role || "");
     const partyId = String(p.party_id || "");
     if (!/^[a-z0-9_]{3,32}$/.test(username)) return json({ error: "Логин: 3-32 символа a-z 0-9 _" }, 400);
-    if (password.length < 6) return json({ error: "Пароль не короче 6 символов" }, 400);
+    if (password.length < 8) return json({ error: "Пароль не короче 8 символов" }, 400);
     if (!PRESETS[role] || BASE_ROLES.has(role)) return json({ error: "Неизвестная роль" }, 400);
     if (PARTY_ROLES.has(role) && !uuid(partyId)) return json({ error: "Не указана партия" }, 400);
     const caps = await callerCaps(admin, callerId);
@@ -449,7 +455,7 @@ Deno.serve(async (req) => {
     const targetId = String(p.user_id || "");
     const password = String(p.password || "");
     if (!uuid(targetId)) return json({ error: "user_id" }, 400);
-    if (password.length < 6) return json({ error: "Пароль не короче 6 символов" }, 400);
+    if (password.length < 8) return json({ error: "Пароль не короче 8 символов" }, 400);
     const { data: mem } = await admin.from("base_members")
       .select("can_manage").eq("base_id", baseId).eq("user_id", targetId).maybeSingle();
     if (!mem) return json({ error: "Работник не в этой базе" }, 400);
