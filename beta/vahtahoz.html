@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v199 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v200 · БЕТА</div>
   </div>
 </div>
 
@@ -897,7 +897,13 @@ function ensureTomb(){
 // пометить журнальную запись удалённой (append-only облако удаляет только помеченные — усечение квоты надгробий НЕ ставит)
 // Кап — АВАРИЙНЫЙ клапан от неограниченного роста (высокий: доставленные надгробия снимаются на синке, см. dropDeliveredTombstones,
 // поэтому в норме delJr держит лишь НЕдоставленные — их дропать нельзя, иначе удалённая запись воскреснет на pull).
-function tombJr(id){ if(!id) return; ensureTomb(); if(!state.delJr.includes(id)){ state.delJr.push(id); if(state.delJr.length>12000) state.delJr=state.delJr.slice(-10000); } }
+function tombJr(id){
+  if(!id) return; ensureTomb();
+  if(!state.delJr.includes(id)) state.delJr.push(id);
+  // НЕ срезаем хвост: недоставленное надгробие нельзя терять — иначе pull воскресит запись.
+  // Доставленные снимает dropDeliveredTombstones после успешного DELETE.
+  if(state.delJr.length>20000) console.warn("delJr oversized", state.delJr.length);
+}
 // после ПОДТВЕРЖДЁННОГО удаления из облака надгробие больше не нужно (запись там уже мертва и на pull не придёт) —
 // убираем из delJr, чтобы он не рос и слепой кап не выбросил ЕЩЁ НЕ доставленные надгробия.
 function dropDeliveredTombstones(ids){
@@ -1918,13 +1924,23 @@ function defaultCategoryForType(type){
   if(type!=="product") return "";
   return (state.categories.product||[]).includes("Прочие продукты") ? "Прочие продукты" : ((state.categories.product||[])[0] || "");
 }
-function findStockByName(name, type){
+function findStockByName(name, type, unit){
   const n = stockNormName(name);
   if(!n) return null;
-  // type задан → ищем строго в нём (не перепутать product/tool с одним именем)
-  if(type) return state.stock.find(s=> s.type===type && stockNormName(s.name)===n) || null;
-  const types = allowedTypeKeys();
-  return state.stock.find(s=> types.includes(s.type) && stockNormName(s.name)===n) || null;
+  const wantU = (unit!=null && unit!=="" && typeof _impMapUnit==="function") ? _impMapUnit(unit) : (unit!=null && unit!=="" ? String(unit).toLowerCase() : null);
+  const pool = type
+    ? state.stock.filter(s=> s.type===type && stockNormName(s.name)===n)
+    : state.stock.filter(s=> allowedTypeKeys().includes(s.type) && stockNormName(s.name)===n);
+  if(!pool.length) return null;
+  if(wantU){
+    const same = pool.filter(s=>{
+      const su = typeof _impMapUnit==="function" ? _impMapUnit(s.unit) : String(s.unit||"").toLowerCase();
+      return su===wantU;
+    });
+    if(same.length) return same[0];
+    return null;   // имя есть, но другая ед. — не приклеиваем (кг≠шт)
+  }
+  return pool[0];
 }
 function createCatalogStockItem(type, name, unit){
   return {
@@ -1941,9 +1957,9 @@ function resolveIncomingProduct({ productId, manualName, unit, type, skipPropaga
   let product = productId ? state.stock.find(s=>s.id===productId) : null;
   const name = String(product ? product.name : (manualName||"")).trim();
   if(!name) return null;
-  if(!product) product = findStockByName(name, type);
+  if(!product) product = findStockByName(name, type, unit);
   if(!product){
-    product = createCatalogStockItem(type, name, unit);
+    product = createCatalogStockItem(type, name, unit||"шт");
     state.stock.push(product);
     if(!skipPropagate){ try{ propagateName(type, name, product.unit); }catch(e){ console.warn("propagateName", e); } }
   }
@@ -2017,7 +2033,8 @@ function ledgerByNormName(){
       const n = stockNormName(op.productName);
       if(!n) continue;
       const typ = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : "product";
-      const key = typ + "::" + n;
+      const u = (typeof _impMapUnit==="function" ? (_impMapUnit(op.unit)||null) : null) || String(op.unit||"шт").toLowerCase() || "шт";
+      const key = typ + "::" + n + "::" + u;
       m.set(key, roundQty((m.get(key)||0) + sign * Number(op.qty||0)));
     }
   }
@@ -2031,7 +2048,7 @@ function relinkJournalOpsToCanonical(){
       if(!name) continue;
       let canon = op.productId ? state.stock.find(s=>s.id===op.productId) : null;
       const preferType = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : null;
-      if(!canon) canon = findStockByName(name, preferType || undefined);
+      if(!canon) canon = findStockByName(name, preferType || undefined, op.unit);
       if(!canon) continue;
       if(op.productId!==canon.id || op.productName!==canon.name){
         op.productId = canon.id;
@@ -2102,18 +2119,21 @@ function ensureProductsFromJournalLedger(){
   const stockIds = new Set((state.stock||[]).map(s=>s.id));
   for(const [key, ledger] of ledgers){
     if(!(ledger > 0)) continue;
-    const sep = key.indexOf("::");
-    const typ = sep>=0 ? key.slice(0,sep) : "product";
-    const n = sep>=0 ? key.slice(sep+2) : key;
+    const parts = key.split("::");
+    const typ = parts[0] || "product";
+    const n = parts[1] || "";
+    const wantU = parts[2] || "шт";
     const type = STOCK_TYPE_KEYS.includes(typ) ? typ : "product";
-    if(findStockByName(n, type)) continue;
-    let sampleName = "", sampleUnit = "шт";
+    if(findStockByName(n, type, wantU)) continue;
+    let sampleName = "", sampleUnit = wantU;
     outer: for(const kind of JOURNAL_KEYS){
       for(const op of (state.journals[kind]||[])){
         if(stockNormName(op.productName)!==n) continue;
         const ot = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : "product";
         if(ot!==type) continue;
-        sampleName = op.productName.trim(); sampleUnit = op.unit||"шт"; break outer;
+        const ou = (typeof _impMapUnit==="function" ? (_impMapUnit(op.unit)||null) : null) || String(op.unit||"шт").toLowerCase();
+        if(ou!==wantU) continue;
+        sampleName = op.productName.trim(); sampleUnit = op.unit||wantU; break outer;
       }
     }
     if(!sampleName) continue;
@@ -2122,12 +2142,13 @@ function ensureProductsFromJournalLedger(){
     state.stock.push(p);
     stockIds.add(p.id);
     try{ propagateName(type, p.name, p.unit); }catch(e){}
-    // перепривязываем ТОЛЬКО orphan-записи того же типа (без productId или id нет на складе)
     for(const kind of JOURNAL_KEYS){
       for(const op of (state.journals[kind]||[])){
         if(stockNormName(op.productName)!==n) continue;
         const ot = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : "product";
         if(ot!==type) continue;
+        const ou = (typeof _impMapUnit==="function" ? (_impMapUnit(op.unit)||null) : null) || String(op.unit||"шт").toLowerCase();
+        if(ou!==wantU) continue;
         if(op.productId && stockIds.has(op.productId)) continue;
         op.productId = p.id; op.productName = p.name; op.stockType = type;
       }
@@ -2376,7 +2397,7 @@ function _impExtractDocDate(text){
 }
 function _impMapUnit(u){
   const raw = String(u||"").trim();
-  if(!raw) return "шт";
+  if(!raw) return null;   // пустая ед. — fail-closed (не подменять на шт)
   const s = raw.toLowerCase().replace(/\.$/,"");
   // частые коды ОКЕИ из УПД — не молча в «шт»
   const okei = { "796":"шт","778":"уп","625":"шт","168":"т","166":"кг","163":"г","112":"л","111":"мл","055":"м2","006":"метр","004":"шт","018":"метр" };
@@ -2493,8 +2514,8 @@ function findStockForImport(name, unit){
 function stockNormLoose(s){
   return stockKeyImport(s);
 }
-function findStockByNameLoose(name, type){
-  return findStockForImport(name, type==="product" ? "шт" : "шт");
+function findStockByNameLoose(name, type, unit){
+  return findStockForImport(name, unit||"шт");
 }
 // фасовка из имени «1/24шт», «1/360шт»
 function _impPackSize(name){
@@ -3963,7 +3984,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v199 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v200 · тестовый канал</div>
   `;
 }
 
@@ -4518,24 +4539,25 @@ function importData(ev){
       if(mode==="replace"){
         merged.stock = obj.stock||[];
       } else {
-        // двухпроходный матчинг: строгий (type|cat|name), затем мягкий (type|name) — чтобы не дублить позиции, у которых где-то пустая категория
-        const strict = new Map(); // type|cat|name
-        const loose  = new Map(); // type|name -> массив кандидатов
+        // матчинг с unit: type|cat|name|unit, затем type|name|unit (не сливать кг+шт)
+        const unitKey = (u)=> (typeof _impMapUnit==="function" ? (_impMapUnit(u)||null) : null) || String(u||"шт").toLowerCase() || "шт";
+        const strict = new Map(); // type|cat|name|unit
+        const loose  = new Map(); // type|name|unit -> массив кандидатов
         const looseAdd = (lk,it)=>{ if(!loose.has(lk)) loose.set(lk,[]); loose.get(lk).push(it); };
         (merged.stock||[]).forEach(it=>{
-          strict.set(`${it.type}|${norm(it.category)}|${norm(it.name)}`, it);
-          looseAdd(`${it.type}|${norm(it.name)}`, it);
+          const uk = unitKey(it.unit);
+          strict.set(`${it.type}|${norm(it.category)}|${norm(it.name)}|${uk}`, it);
+          looseAdd(`${it.type}|${norm(it.name)}|${uk}`, it);
         });
         let added=0, updated=0;
         (obj.stock||[]).forEach(src=>{
           const t = src.type||"product";
-          const key = `${t}|${norm(src.category)}|${norm(src.name)}`;
-          const looseKey = `${t}|${norm(src.name)}`;
+          const uk = unitKey(src.unit);
+          const key = `${t}|${norm(src.category)}|${norm(src.name)}|${uk}`;
+          const looseKey = `${t}|${norm(src.name)}|${uk}`;
           let found = strict.get(key);
           if(!found){
             const cands = loose.get(looseKey) || [];
-            // мягкое совпадение разрешаем, только если одна из категорий пустая;
-            // среди одноимённых выбираем приёмник с пустой категорией, иначе — любого при пустой категории src
             found = cands.find(c=> !norm(c.category)) || (norm(src.category) ? null : cands[0]) || null;
           }
           if(found){
@@ -4586,7 +4608,7 @@ function importData(ev){
             if(!found.note && src.note) found.note = src.note;
             found.updatedAt = new Date().toISOString();
             // переиндексация strict, если категорию только что заполнили
-            if(catChanged) strict.set(`${found.type}|${norm(found.category)}|${norm(found.name)}`, found);
+            if(catChanged) strict.set(`${found.type}|${norm(found.category)}|${norm(found.name)}|${unitKey(found.unit)}`, found);
             updated++;
           } else {
             merged.stock.push({...src, id: src.id || uid()});
@@ -5395,6 +5417,7 @@ function openGrantBasesSheet(){
       ${_loginFieldHTML("gb","Логин работника (уже есть аккаунт)")}
       <div><div class="text-sm opacity-70 mb-1">Роль на выбранных базах</div>
         <select class="input" id="gbr">${roles}</select></div>
+      <label class="flex items-center gap-2 text-sm"><input type="checkbox" id="gbOnShift" checked /> Сразу на смене (active). Снимите, если нужен только доступ без смены — тогда «Передать смену» на других базах не ломается сильнее обычного multi_base.</label>
       <div class="flex gap-2 flex-wrap">
         <button type="button" class="btn btn-ghost text-sm px-2" id="gbWest23">Западная 2+3</button>
         <button type="button" class="btn btn-ghost text-sm px-2" id="gbAll">Все</button>
@@ -5407,7 +5430,7 @@ function openGrantBasesSheet(){
       <button class="btn btn-success flex-1" id="gbGrant">Выдать</button>
     </div>
     <button class="btn btn-ghost w-full mt-2" id="gbRevoke">Снять с выбранных баз</button>
-    <div class="text-xs opacity-60 mt-2">Выдача: добавить или обновить роль и вернуть на смену. Снятие: убрать из базы (если это последний нач. участка — отказ).</div>`);
+    <div class="text-xs opacity-60 mt-2">Выдача: добавить или обновить роль. «На смене» по галочке. Снятие: убрать из базы (последний нач. участка — отказ). Несколько баз → «Передать смену» недоступна.</div>`);
   const mark = (pred)=>{ document.querySelectorAll(".gbBase").forEach(el=>{ el.checked = !!pred(el); }); };
   const w=document.getElementById("gbWest23"); if(w) w.onclick=()=>mark(el=>el.getAttribute("data-west23")==="1");
   const a=document.getElementById("gbAll"); if(a) a.onclick=()=>mark(()=>true);
@@ -5419,6 +5442,7 @@ async function doGrantBases(remove){
   if(!(cloud.profile && cloud.profile.is_admin)){ toast("Только владелец"); return; }
   const username=(document.getElementById("gbu")?.value||"").trim().toLowerCase();
   const role=document.getElementById("gbr")?.value||"worker";
+  const on_shift = !!(document.getElementById("gbOnShift")?.checked);
   const base_ids=[...document.querySelectorAll(".gbBase:checked")].map(el=>el.value).filter(Boolean);
   if(_badLogin(username)) return;
   if(!base_ids.length){ toast("Выберите хотя бы одну базу"); return; }
@@ -5426,12 +5450,12 @@ async function doGrantBases(remove){
   const title = remove ? "Снять доступ" : "Выдать доступ";
   const msg = remove
     ? `Снять «${username}» с ${base_ids.length} баз(ы)?`
-    : `Выдать «${username}» роль «${roleLabel(role)}» на ${base_ids.length} баз(ы)?`;
+    : `Выдать «${username}» роль «${roleLabel(role)}» на ${base_ids.length} баз(ы)${on_shift?" (на смене)":" (без смены)"}?`;
   if(!await confirmSheet(msg,{ title, yes: remove?"Снять":"Выдать", danger:!!remove })) return;
   const btn = document.getElementById(remove?"gbRevoke":"gbGrant");
   if(btn){ btn.disabled=true; btn.textContent = remove?"Снятие…":"Выдача…"; }
   try{
-    const d=await cloudCallFn("grant_bases", { username, role, base_ids, remove: !!remove });
+    const d=await cloudCallFn("grant_bases", { username, role, base_ids, remove: !!remove, on_shift });
     if(remove){
       toast(`Снято с ${(d.bases||[]).length} баз`);
     } else {
@@ -6516,7 +6540,19 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
       // заливала бы старый qty поверх чужого списания (воскрешение остатка). 3-way даёт cloud при
       // local===snap. Оптовое обнуление облака ловит suspectWipe выше по push.
       const batched = (Array.isArray(r.batches)&&r.batches.length) || (Array.isArray(cr.batches)&&cr.batches.length);
-      if(batched){ conflictBatched++; continue; }                          // партийные не сливаем (инвариант) — предупредим
+      if(batched){
+        // не LWW: при расхождении партий берём облако (иначе локальный upsert воскресит старые партии)
+        conflictBatched++;
+        r.qty = cloudQty;
+        if(Array.isArray(cr.batches)) r.batches = cr.batches;
+        curSig[r.id]=_sigOf(r);
+        const it=state.stock.find(s=>s.id===r.id);
+        if(it){
+          if(Number(it.qty)!==cloudQty){ it.qty=cloudQty; localChanged=true; }
+          if(Array.isArray(cr.batches)){ it.batches = cr.batches; localChanged=true; }
+        }
+        continue;
+      }
       const merged = Math.max(0, roundQty((Number(r.qty)||0) + cloudQty - snapQty));   // 3-way CRDT-счётчик
       r.qty = merged; curSig[r.id]=_sigOf(r);                              // упсертим merged; снимок = merged (local сойдётся с cloud)
       const it=state.stock.find(s=>s.id===r.id); if(it && Number(it.qty)!==merged){ it.qty=merged; localChanged=true; }

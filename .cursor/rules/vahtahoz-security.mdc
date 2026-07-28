@@ -25,6 +25,7 @@ alwaysApply: true
 
 ## Сделано (не повторять как «дыры»)
 
+- v200: пустая ед. импорта → skip; findStockByName/relink/ledger/ensure/JSON-merge с unit; tombJr без среза недоставленных; партийный конфликт → cloud; grant_bases `on_shift`.
 - v199: владелец — `grant_bases` (выдача/снятие доступа логина на несколько баз сразу); UI «Выдача доступа к базам» + быстрый выбор Западная 2+3.
 - v198: raise по усечённому журналу off; merge+unit; import exact same-unit; skip-toast ед.; applying-mutex; 3-way no-snap→cloud qty.
 - v197: auto-reconcile без merge; `_impMapUnit` fail-closed + ОКЕИ/коробка; align qty fail-closed; fuzzy same-unit; 3-way push chunk; tasks `cloudRestAll`; Детрин — reattach 62 orphan journal → живые id.
