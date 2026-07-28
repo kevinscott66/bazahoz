@@ -10,6 +10,14 @@
 - [x] `handover_shift`: multi_base на любое членство в других базах
 - [x] Beta legacy quickAdjust: `stockType`
 
+## Закрыто в v198
+
+- [x] Raise/create по усечённому/облачному локальному журналу отключены (`journalLooksIncomplete`)
+- [x] Merge дублей по `type|name|unit`
+- [x] Import exact/stockKey только same-unit; toast «пропущено ед.»
+- [x] `cloudOnRemote` ждёт `cloud.applying`
+- [x] 3-way без snap: qty из cloud, не LWW
+
 ## Закрыто в v197
 
 - [x] Auto-reconcile больше не вызывает `mergeDuplicateStockByName`
@@ -25,8 +33,9 @@
 - [ ] Revoke сессий после reset — **только по явной просьбе**
 - [ ] Обновить SheetJS
 - [ ] Подтянуть prod `vahtahoz.html` к beta (stockType / пагинация)
-- [ ] Полный journal pull без усечения 500 (сейчас «вниз» по сверке отключён при облаке)
-- [ ] Исторически завышенные qty vs неполный ledger — только ручная сверка / полный журнал
+- [ ] Полный journal в localStorage без усечения 500 (сейчас raise — только post-pull по полному)
+- [ ] Исторически завышенные qty vs неполный ledger — не авто-чинить вниз
+- [ ] Cap undelivered journal tombstones / batched 3-way merge
 
 ## Не баги
 
