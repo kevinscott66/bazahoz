@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v201 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v202 · БЕТА</div>
   </div>
 </div>
 
@@ -2012,6 +2012,8 @@ function ledgerQtyForProduct(product){
     for(const op of (state.journals[kind]||[])){
       const sign = journalEffectSign(kind, op);
       if(!sign) continue;
+      // партия удалена → qty уже снят с карточки; не поднимать остаток сверкой
+      if(/\[партия удалена\]/.test(op.note||"")) continue;
       const matchId = op.productId && op.productId===pid;
       // по имени учитываем ТОЛЬКО записи без productId (иначе движение с чужим/удалённым
       // productId, но совпавшим именем, приписалось бы не той карточке)
@@ -2034,10 +2036,12 @@ function ledgerByNormName(){
       // с productId учитываем только orphan (id нет на складе) — иначе чужая живая карточка
       // «по имени» раздувала ledger и ensureProducts перепривязывал чужие ops
       if(op.productId && stockIds.has(op.productId)) continue;
+      if(/\[партия удалена\]/.test(op.note||"")) continue;
       const n = stockNormName(op.productName);
       if(!n) continue;
       const typ = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : "product";
-      const u = _impUnitKey(op.unit) || "шт";
+      const u = _impUnitKey(op.unit);
+      if(!u) continue;   // неизвестная ед. — не создаём фантом «шт»
       const key = typ + "::" + n + "::" + u;
       m.set(key, roundQty((m.get(key)||0) + sign * Number(op.qty||0)));
     }
@@ -2051,8 +2055,9 @@ function relinkJournalOpsToCanonical(){
       const name = (op.productName||"").trim();
       if(!name) continue;
       let canon = op.productId ? state.stock.find(s=>s.id===op.productId) : null;
-      const preferType = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : null;
-      if(!canon) canon = findStockByName(name, preferType || undefined, op.unit);
+      // без stockType — как ledger/ensure: «product» (не any-type → не цеплять tool и плодить product)
+      const preferType = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : "product";
+      if(!canon) canon = findStockByName(name, preferType, op.unit);
       if(!canon) continue;
       if(op.productId!==canon.id || op.productName!==canon.name){
         op.productId = canon.id;
@@ -2136,7 +2141,7 @@ function ensureProductsFromJournalLedger(){
         if(stockNormName(op.productName)!==n) continue;
         const ot = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : "product";
         if(ot!==type) continue;
-        if((_impUnitKey(op.unit)||"шт")!==wantU) continue;
+        if((_impUnitKey(op.unit)||"")!==wantU) continue;
         sampleName = op.productName.trim(); sampleUnit = _impUnitKey(op.unit)||wantU; break outer;
       }
     }
@@ -2151,7 +2156,7 @@ function ensureProductsFromJournalLedger(){
         if(stockNormName(op.productName)!==n) continue;
         const ot = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : "product";
         if(ot!==type) continue;
-        if((_impUnitKey(op.unit)||"шт")!==wantU) continue;
+        if((_impUnitKey(op.unit)||"")!==wantU) continue;
         if(op.productId && stockIds.has(op.productId)) continue;
         op.productId = p.id; op.productName = p.name; op.stockType = type;
       }
@@ -2461,22 +2466,72 @@ function guessProductCategory(name){
   }
   return allowed.find(c=>/проч/i.test(c)) || allowed[0] || "Прочие продукты";
 }
-// ключ для сопоставления импорта с каталогом: убираем фасовку/ТМ/кавычки
+// ключ для сопоставления импорта с каталогом: бренд/% /вес/N×M; 1/N — в _impPackToken; порядок слов не важен
 function stockKeyImport(s){
   let t = String(s||"").toLowerCase().replace(/ё/g,"е");
+  let brand = "";
+  const bm = t.match(/(?:^|[^а-яa-z0-9])т\.?\s*м\.?\s+([a-zа-я0-9][a-zа-я0-9\-\s]{1,40})\s*$/i)
+          || t.match(/\(([a-zа-я0-9][^)]{1,40})\)\s*$/);
+  if(bm) brand = bm[1].replace(/\s+/g," ").trim();
   t = t.replace(/[«»"'`]/g, " ");
   t = t.replace(/\([^)]*\)/g, " ");
-  t = t.replace(/\bт\.?\s*м\.?\b/g, " ");
-  t = t.replace(/\b(вес|зам\.?|с\/м|в\/к|в\/уп|ж\/б|ст\/б|м\/уп|полиамид)\b/g, " ");
-  t = t.replace(/\b\d+\s*[xх*×]\s*\d+\s*(г|гр|кг|мл|л|шт)?\b/gi, " ");
-  t = t.replace(/\b\d+\/\d+\s*(шт|кг|г|гр|мл|л|кор|уп)?\b/gi, " ");
-  t = t.replace(/\b\d+([.,]\d+)?\s*(гр|г|кг|мл|л|шт)\b/gi, " ");
-  t = t.replace(/[^a-zа-я0-9]+/g, " ");
-  t = t.replace(/\b(гр)\b/g, "г");
-  return t.replace(/\s+/g, " ").trim();
+  t = t.replace(/(^|[^а-яa-z0-9])т\.?\s*м\.?(?![а-яa-z0-9])/gi, " ");
+  t = t.replace(/(^|[^а-яa-z0-9])(вес|зам\.?|с\/м|в\/к|в\/уп|ж\/б|ст\/б|м\/уп|полиамид|гост)(?![а-яa-z0-9])/gi, " ");
+  t = t.replace(/(\d+),(\d+)/g, "$1.$2");   // 8,5% → 8.5% до чистки
+  t = t.replace(/(\d+)\s*[xх*×]\s*(\d+(?:\.\d+)?)\s*(г|гр|кг|мл|л|шт)?(?![а-яa-z0-9])/gi, " $1x$2$3 ");
+  // 1/N НЕ в ключе — иначе карточка без «1/45шт» не матчится с УПД; фильтр в _impSpecCompatible
+  t = t.replace(/(\d+)\s*\/\s*(\d+)\s*(шт|кг|г|гр|мл|л|кор|уп)?(?![а-яa-z0-9])/gi, " ");
+  t = t.replace(/(\d+(?:\.\d+)?)\s*%/g, " $1pct ");
+  t = t.replace(/гр(?![а-яa-z])/g, "г");
+  t = t.replace(/(\d+(?:\.\d+)?)\s+(кг|г|мл|л)(?![а-яa-z])/g, "$1$2");
+  t = t.replace(/[^a-zа-я0-9.]+/g, " ");  // точка в 8.5pct / 12x1.5
+  if(brand) t += " " + brand;
+  const parts = t.replace(/\s+/g, " ").trim().split(" ").filter(w=> w.length>=2 || /^\d/.test(w));
+  return [...new Set(parts)].sort().join(" ");
+}
+// нетто из имени: «180 г», «500гр», «720мл» — не путать с «1/24шт»
+function _impSizeToken(name){
+  let t = String(name||"").toLowerCase().replace(/ё/g,"е");
+  t = t.replace(/1\s*\/\s*\d+\s*шт/g, " ");
+  t = t.replace(/\d+\s*[xх*×]\s*\d+/g, " ");
+  t = t.replace(/гр(?![а-яa-z])/g, "г");
+  // без \b: в JS граница слова не видит кириллицу (180г ломалось)
+  const ms = [...t.matchAll(/(\d+(?:[.,]\d+)?)\s*(кг|г|мл|л)(?![а-яa-z])/g)];
+  if(!ms.length) return "";
+  const m = ms[ms.length-1];
+  return (m[1].replace(",", ".") + m[2]);
+}
+// коробочная фасовка: берём ПОСЛЕДНИЙ 1/N (SKU 1/250 + короб 1/24 → 1/24)
+function _impPackToken(name){
+  const ms = [...String(name||"").toLowerCase().replace(/ё/g,"е").matchAll(/1\s*\/\s*(\d+)(?:\s*шт)?/g)];
+  if(!ms.length) return "";
+  return "1/"+ms[ms.length-1][1];
+}
+// мультипак «12*100», «6x1л»
+function _impMultiPackToken(name){
+  const m = String(name||"").toLowerCase().replace(/ё/g,"е").match(/(\d+)\s*[xх*×]\s*(\d+(?:[.,]\d+)?)\s*(г|гр|кг|мл|л|шт)?/);
+  if(!m) return "";
+  const u = (m[3]||"").replace("гр","г");
+  return m[1]+"x"+m[2].replace(",",".")+u;
+}
+function _impPctToken(name){
+  const m = String(name||"").toLowerCase().replace(/ё/g,"е").match(/(\d+(?:[.,]\d+)?)\s*%/);
+  return m ? (m[1].replace(",",".")+"%") : "";
+}
+// soft-match: конфликт только если ОБЕ стороны задали признак и он разный
+function _impSpecCompatible(impName, catName){
+  const sa = _impSizeToken(impName), sb = _impSizeToken(catName);
+  if(sa && sb && sa !== sb) return false;
+  const pa = _impPackToken(impName), pb = _impPackToken(catName);
+  if(pa && pb && pa !== pb) return false;
+  const ma = _impMultiPackToken(impName), mb = _impMultiPackToken(catName);
+  if(ma && mb && ma !== mb) return false;
+  const fa = _impPctToken(impName), fb = _impPctToken(catName);
+  if(fa && fb && fa !== fb) return false;
+  return true;
 }
 function _impTokens(s){
-  return stockKeyImport(s).split(" ").filter(w=> w.length>=3 && !/^\d+$/.test(w));
+  return stockKeyImport(s).split(" ").filter(w=> w.length>=3 && !/^\d+$/.test(w) && !/^\d+\/\d+$/.test(w));
 }
 function _impTokenScore(a, b){
   const A = new Set(_impTokens(a)), B = new Set(_impTokens(b));
@@ -2494,18 +2549,30 @@ function findStockForImport(name, unit){
   const pool = state.stock.filter(s=> types.includes(s.type));
   const rank = (s)=>{
     const sameU = _impUnitKey(s.unit)===wantUnit ? 1 : 0;
+    const sameSz = _impSizeToken(s.name)===_impSizeToken(name) ? 1 : 0;
+    const samePk = _impPackToken(s.name)===_impPackToken(name) ? 1 : 0;
     const inSt = totalQtyOf(s)>0 ? 1 : 0;
-    return sameU*50 + inSt*10 + Math.min(totalQtyOf(s), 99)/100;
+    return sameU*50 + sameSz*20 + samePk*20 + inSt*10 + Math.min(totalQtyOf(s), 99)/100;
   };
   let hits = pool.filter(s=> stockNormName(s.name)===exact && (!wantUnit || _impUnitKey(s.unit)===wantUnit));
   if(hits.length) return hits.slice().sort((a,b)=> rank(b)-rank(a))[0];
   if(key.length >= 8){
-    hits = pool.filter(s=> stockKeyImport(s.name)===key && (!wantUnit || _impUnitKey(s.unit)===wantUnit));
+    hits = pool.filter(s=> stockKeyImport(s.name)===key && (!wantUnit || _impUnitKey(s.unit)===wantUnit) && _impSpecCompatible(name, s.name));
+    // голое имя vs несколько разных 1/N в каталоге — не угадываем
+    if(!_impPackToken(name)){
+      const packs = [...new Set(hits.map(s=>_impPackToken(s.name)).filter(Boolean))];
+      if(packs.length > 1) hits = hits.filter(s=>!_impPackToken(s.name));
+    }
+    if(!_impSizeToken(name)){
+      const sizes = [...new Set(hits.map(s=>_impSizeToken(s.name)).filter(Boolean))];
+      if(sizes.length > 1) hits = hits.filter(s=>!_impSizeToken(s.name));
+    }
     if(hits.length) return hits.slice().sort((a,b)=> rank(b)-rank(a))[0];
   }
   let best=null, bestScore=0;
   for(const s of pool){
     if(wantUnit && _impUnitKey(s.unit) !== wantUnit) continue;
+    if(!_impSpecCompatible(name, s.name)) continue;   // 180г≠360г, 1/12≠1/24
     const sk = stockKeyImport(s.name);
     if(sk.length < 8 || key.length < 8) continue;
     let score = _impTokenScore(name, s.name);
@@ -2525,10 +2592,11 @@ function stockNormLoose(s){
 function findStockByNameLoose(name, type, unit){
   return findStockForImport(name, unit||"шт");
 }
-// фасовка из имени «1/24шт», «1/360шт»
+// фасовка из имени «1/24шт», «1/360шт», «1/360»
 function _impPackSize(name){
-  const m = String(name||"").toLowerCase().replace(/ё/g,"е").match(/1\s*\/\s*(\d+)\s*шт/);
-  return m ? (+m[1]||0) : 0;
+  const ms = [...String(name||"").toLowerCase().replace(/ё/g,"е").matchAll(/1\s*\/\s*(\d+)(?:\s*шт)?/g)];
+  if(!ms.length) return 0;
+  return +ms[ms.length-1][1]||0;
 }
 // яйца 1/360шт в УПД — штуки → коробки; иначе qty оставляем в шт
 function _impNormalizePackQty(name, qty, unit){
@@ -2547,7 +2615,9 @@ function _impAlignQtyToProduct(product, name, qty, unit){
   const pu = _impUnitKey(product?.unit);   // пустая карточка ≈ шт
   if(u==null || pu==null) return null;
   if(pu===u) return { qty:q, unit:pu };
-  const pack = _impPackSize(product?.name) || _impPackSize(name);
+  const packP = _impPackSize(product?.name), packN = _impPackSize(name);
+  if(packP > 1 && packN > 1 && packP !== packN) return null;   // 1/30 ≠ 1/360
+  const pack = packP || packN;
   if(pack > 1){
     if(pu==="кор" && u==="шт" && q >= pack && Math.abs(q % pack) < 1e-6) return { qty: roundQty(q/pack), unit:"кор" };
     if(pu==="шт" && u==="кор") return { qty: roundQty(q*pack), unit:"шт" };
@@ -2566,7 +2636,15 @@ function recordReceiptRow(row){
   if(unit==null){ console.warn("import skip: неизвестная ед.", row.unit, name); return null; }
   ({ qty, unit } = _impNormalizePackQty(name, qty, unit));
   // только существующие; новое имя — лишь если в каталоге нет похожего
+  // сначала same-unit; если нет — карточка с фасовкой (кор/уп↔шт), иначе align мёртв и плодятся дубли
   let product = findStockForImport(name, unit);
+  if(!product){
+    const pack = _impPackSize(name);
+    if(pack > 1){
+      const alts = unit==="шт" ? ["кор","уп"] : (unit==="кор"||unit==="уп") ? ["шт"] : [];
+      for(const au of alts){ const cand = findStockForImport(name, au); if(cand){ product = cand; break; } }
+    }
+  }
   let created = false;
   if(!product){
     product = createCatalogStockItem("product", name, unit);
@@ -2676,7 +2754,7 @@ function _impParseUpdAoa(aoa, fileHint){
     const qty = arr[idxQty];
     if(!(roundQty(parseNum(qty))>0)) continue;
     rows.push({
-      name, qty, unit: idxUnit>=0 ? (arr[idxUnit]||"шт") : "шт",
+      name, qty, unit: idxUnit>=0 ? String(arr[idxUnit]??"").trim() : "",
       category:"", receiptDate, note:`Импорт УПД ${label}`, skipPropagate:true
     });
   }
@@ -3992,7 +4070,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v201 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v202 · тестовый канал</div>
   `;
 }
 
@@ -5091,7 +5169,19 @@ function activeMember(){
 // (cloudPushNow её молча отбрасывает) и затиралась следующим pull — потеря без обратной связи.
 // работник СНЯТ СО СМЕНЫ на активной облачной базе (его base_members.active=false). Владелец(is_admin) — никогда.
 // Тогда RLS на сервере режет доступ к складу/журналам → делаем базу read-only локально и не долбим сервер бесполезным push (иначе «REST 403»).
-function isOffShift(cid){ cid=cid||activeCloudId(); if(!cid) return false; if(cloud.profile && cloud.profile.is_admin) return false; const m=memberOf(cid); return !!(m && m.active===false); }
+function isOffShift(cid){
+  cid=cid||activeCloudId(); if(!cid) return false;
+  if(cloud.profile && cloud.profile.is_admin) return false;
+  const m=memberOf(cid);
+  if(m && m.active===false) return true;   // снят со смены
+  // удалён с базы / нет орг-доступа: RLS пустой — как off-shift, не затираем локальное
+  if(cloud.ready && !m){
+    const partyId=(cloud._baseParty||{})[cid];
+    const orgOk=(cloud.orgRoles||[]).some(o=>o.active!==false && (o.party_id==null || o.party_id===partyId));
+    if(!orgOk) return true;
+  }
+  return false;
+}
 function canEditStock(){
   const m=activeMember();
   if(m) return !!m.can_edit_stock && m.active!==false;
@@ -5102,6 +5192,8 @@ function canEditStock(){
     const cid=activeCloudId(); const partyId=(cloud._baseParty||{})[cid];
     return (cloud.orgRoles||[]).some(o=>o.active!==false && o.can_edit_stock && (o.party_id==null || o.party_id===partyId));
   }
+  // облако онлайн + активна облачная база, но членства/орг-роли нет (удалили с базы) — НЕ fail-open «локальный режим»
+  if(cloud.ready && activeCloudId()) return false;
   return true;   // локальная/оффлайн база без облачных ролей — одиночный режим
 }
 function ensureCanEdit(){ if(!canEditStock()){ toast(isOffShift()?"Вы сняты со смены — редактирование недоступно":"У вас нет прав на редактирование — обратитесь к начальнику участка"); return false; } return true; }
@@ -5425,7 +5517,7 @@ function openGrantBasesSheet(){
       ${_loginFieldHTML("gb","Логин работника (уже есть аккаунт)")}
       <div><div class="text-sm opacity-70 mb-1">Роль на выбранных базах</div>
         <select class="input" id="gbr">${roles}</select></div>
-      <label class="flex items-center gap-2 text-sm"><input type="checkbox" id="gbOnShift" checked /> Сразу на смене (active). Снимите, если нужен только доступ без смены — тогда «Передать смену» на других базах не ломается сильнее обычного multi_base.</label>
+      <label class="flex items-center gap-2 text-sm"><input type="checkbox" id="gbOnShift" checked /> Сразу на смене (active). Снимите галочку — доступ без смены. Несколько баз всё равно блокируют «Передать смену» (задачи личные).</label>
       <div class="flex gap-2 flex-wrap">
         <button type="button" class="btn btn-ghost text-sm px-2" id="gbWest23">Западная 2+3</button>
         <button type="button" class="btn btn-ghost text-sm px-2" id="gbAll">Все</button>
@@ -5705,9 +5797,19 @@ async function netProbe(){
     finally{ clearTimeout(to); }
   }catch(e){ return false; }
 }
-/* «ограниченный» пользователь — вошёл в облако и НЕ имеет права на задачи (начальник):
-   ему показываем только складскую часть (журнал операций без задач). */
-function isRestrictedUser(){ const m = activeMember(); return !!(m && !m.can_view_tasks); }
+/* «ограниченный» пользователь — вошёл в облако и НЕ имеет права на задачи:
+   base_members ИЛИ org_roles (бухгалтер без членства базы всё равно не видит задачи). */
+function isRestrictedUser(){
+  const m = activeMember();
+  if(m) return !m.can_view_tasks;
+  if(cloud.profile && cloud.profile.is_admin) return false;
+  if(cloud.ready && (cloud.orgRoles||[]).some(o=>o.active!==false)){
+    const cid=activeCloudId(); const partyId=(cloud._baseParty||{})[cid];
+    const roles=(cloud.orgRoles||[]).filter(o=>o.active!==false && (o.party_id==null || o.party_id===partyId));
+    if(roles.length) return !roles.some(o=>o.can_view_tasks);
+  }
+  return false;
+}
 // Кухня нужна повару и управляющим (надзор). Скрываем у хозрабочего/механика/бухгалтерии.
 // Локальная/оффлайн база без облачных ролей — показываем (одиночный режим).
 function canSeeKitchen(){
@@ -6295,7 +6397,7 @@ async function cloudActivate(cid, attempt){
     cloud._conflictAsked = cloud._conflictAsked || {};
     // view-only участник (нет прав на правку) с локальными офлайн-данными на ещё не привязанной базе:
     // диалог ему не показываем (правки всё равно не выгружаются), но НЕ теряем данные молча — сохраняем копией перед pull.
-    if(!dirty && !cloudEmpty && localHasData && neverSynced && (!perm || !perm.can_edit_stock) && !cloud._conflictAsked[cid]){
+    if(!dirty && !cloudEmpty && localHasData && neverSynced && !canEditStock() && !cloud._conflictAsked[cid]){
       cloud._conflictAsked[cid] = true;
       try{
         const raw = localStorage.getItem(STORE_KEY);
@@ -6303,15 +6405,25 @@ async function cloudActivate(cid, attempt){
       }catch(_){}
       // дальше — обычный pull ниже (для view-only облако источник истины)
     }
-    if(!dirty && !cloudEmpty && localHasData && neverSynced && perm && perm.can_edit_stock && !cloud._conflictAsked[cid]){
+    if(!dirty && !cloudEmpty && localHasData && neverSynced && canEditStock() && !cloud._conflictAsked[cid]){
       cloud._conflictAsked[cid] = true;
       const choice = await chooseSheet(
         `В базе «${cloud.bases[cid]||"облачная"}» есть данные и на этом телефоне, и в общей базе бригады. Какие оставить главными?`,
         [ { label:"Оставить общую базу бригады (данные с телефона сохраним копией)", value:"cloud", color:"btn-primary" },
           { label:"Отправить данные с телефона (станут общими для бригады)", value:"local", color:"btn-ghost" } ]);
       if(choice==="local"){
-        saveStockSig(cid,{}); saveSyncSig(cid,"jr",{});   // локальное — источник: полная выгрузка поверх облака
-        try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){}   // dirty ДО push: при сбое выгрузки pull не затрёт выбранное юзером локальное (как в ветке ниже)
+        // снимок = id из облака → push удалит cloud-only; иначе пустой prevSig не чистит сирот
+        try{
+          const tok = cloud.session && cloud.session.access_token;
+          const cSt = await cloudRestAll(`stock_items?select=id&base_id=eq.${encodeURIComponent(cid)}`, tok, {timeout:120000});
+          const fakeSt={}; (cSt||[]).forEach(r=>{ if(r&&r.id) fakeSt[r.id]="0"; });
+          saveStockSig(cid, fakeSt);
+          saveSyncSig(cid,"stockAllowed", fakeSt);
+          const cJr = await cloudRestAll(`journal_entries?select=id,kind&base_id=eq.${encodeURIComponent(cid)}`, tok, {timeout:90000});
+          const fakeJ={}; (cJr||[]).forEach(r=>{ if(r&&r.id) fakeJ[r.id]="0"; });
+          saveSyncSig(cid,"jr",fakeJ); saveSyncSig(cid,"jrAllowed",fakeJ);
+        }catch(_){ saveStockSig(cid,{}); saveSyncSig(cid,"jr",{}); }
+        try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){}
         await cloudPushNow();
         return;
       }
@@ -6329,7 +6441,7 @@ async function cloudActivate(cid, attempt){
       await cloudPull(cid);
       return;
     }
-    if((dirty || (cloudEmpty && localHasData)) && perm && perm.can_edit_stock){
+    if((dirty || (cloudEmpty && localHasData)) && canEditStock()){
       // локальное — источник (первый раз или были оффлайн-правки).
       // dirty снимает САМ cloudPushNow и ТОЛЬКО при успехе — здесь снимать нельзя,
       // иначе при сбое выгрузки маркер «не синхронизировано» потеряется и pull затрёт правки.
@@ -6413,19 +6525,21 @@ async function cloudPull(cid){
     (jr||[]).forEach(r=>{ const rid=safeId(r.id); if(_delJrSet.has(rid)) return; if(J[r.kind]) J[r.kind].push({ ...(r.data||{}), id:rid }); });
     for(const k in J) J[k] = J[k].sort((a,b)=>(b.ts||"").localeCompare(a.ts||""));
     state.journals = J;
-    // снимок подписей строим ПО СЫРЫМ облачным данным (ДО сверки) — тогда, если сверка что-то
-    // поправит, дельта-push увидит расхождение и выгрузит исправление в облако.
-    const pulledStSig = {}; state.stock.forEach(s=>{ pulledStSig[s.id]=_sigOf(stockToRow(s,cid)); });
+    // снимок подписей/qty/jr — ПО СЫРЫМ облачным данным (ДО сверки/relink).
+    // Иначе: (1) stockVals после raise → 3-way откатывает qty; (2) jr sig после relink → productId-фиксы не upsert.
+    const pulledStSig = {}; const pulledVals = {};
+    state.stock.forEach(s=>{ pulledStSig[s.id]=_sigOf(stockToRow(s,cid)); pulledVals[s.id]=Number(s.qty)||0; });
+    const pulledJSig={}; for(const k of JOURNAL_KEYS) for(const op of (J[k]||[])) pulledJSig[op.id]=_sigOf({kind:k,data:op});
     // После pull: только безопасный подъём остатков / создание orphan-карточек.
     // НЕ вызываем mergeDuplicateStockByName здесь: слияние дублей + dirty→push удаляло «лишние»
     // id из облака и резко роняло счётчик «в наличии» (дубли с qty схлопывались).
     let _reconChanged = false;
     if(canEditStock()){
       try{
-        relinkJournalOpsToCanonical();
+        const relinked = relinkJournalOpsToCanonical();
         const created = ensureProductsFromJournalLedger();
         const rec = reconcileLegacyQtyFromJournal(false);
-        _reconChanged = !!(rec.fixed || created);
+        _reconChanged = !!(rec.fixed || created || relinked);
       }catch(e){ console.warn("post-pull stock reconcile", e); }
     }
     for(const k in J) J[k] = J[k].slice(0,500);
@@ -6450,17 +6564,16 @@ async function cloudPull(cid){
       // подпись настроек = только что загруженное → не будем зря пере-выгружать на следующем push
       try{ saveSyncSig(cid,"settings",{ v:_sigOf({ locations:state.locations, categories:state.categories, deletedLocations:state.delLoc, deletedCategories:state.delCat }) }); }catch(_){}
     }
-    saveState();                              // cloud.applying=true → push не сработает (без эха)
-    // снимок подписей = СЫРОЕ облачное (до сверки) → если сверка исправила остаток,
-    // следующий push увидит дельту и выгрузит исправление; иначе — пусто, лишнего трафика нет.
+    cloud._pullSaving = true;
+    try{ saveState(); }finally{ cloud._pullSaving = false; }   // без ложного dirty от saveState
+    // снимок = СЫРОЕ облачное (до сверки) + raw stockVals; jr — до relink
     try{
-      saveStockSig(cid, pulledStSig);
+      saveStockSig(cid, pulledStSig, pulledVals);
       // allowed-снимки = то, что RLS реально отдал этой роли (иначе type-restricted
       // delete ждёт stockAllowed с push и после pull удаления не уходят в облако)
       saveSyncSig(cid, "stockAllowed", pulledStSig);
-      const jSig={}; for(const k of JOURNAL_KEYS) for(const op of (state.journals[k]||[])) jSig[op.id]=_sigOf({kind:k,data:op});
-      saveSyncSig(cid,"jr",jSig);
-      saveSyncSig(cid,"jrAllowed",jSig);
+      saveSyncSig(cid,"jr",pulledJSig);
+      saveSyncSig(cid,"jrAllowed",pulledJSig);
     }catch(_){}
     // исправления сверки (только у редакторов) — помечаем к выгрузке, чтобы облако тоже обновилось
     if(_reconChanged){ try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){} }
@@ -6480,6 +6593,7 @@ async function cloudPull(cid){
 }
 function cloudMaybePush(){
   if(!cloud.ready) return;
+  if(cloud._pullSaving) return;   // saveState из cloudPull — dirty только через _reconChanged
   const cid = activeCloudId(); if(!cid) return;
   // РОЛИ ТОЛЬКО ДЛЯ ПРОСМОТРА (бухгалтер / снят со смены): пушить нечего и НЕЛЬЗЯ по RLS.
   // НЕ ставим dirty — иначе saveState() после pull пометил бы базу «грязной», push вышел бы
@@ -6513,7 +6627,7 @@ function saveSyncSig(cid, kind, map){ try{ localStorage.setItem(`${NS}vahtahoz_s
 function stockTypeCounts(){ const c={}; for(const k of STOCK_TYPE_KEYS) c[k]=0; for(const s of (state.stock||[])){ if(c[s.type]!=null) c[s.type]++; } return c; }
 // снимок КОЛИЧЕСТВ по позициям (id→qty) на момент синка — база для 3-стороннего слияния (STOCK_MERGE).
 function stockValsSnap(){ const v={}; for(const s of (state.stock||[])) v[s.id]=Number(s.qty)||0; return v; }
-function saveStockSig(cid, map){ saveSyncSig(cid,"stock",map); saveSyncSig(cid,"stockCounts", stockTypeCounts()); saveSyncSig(cid,"stockVals", stockValsSnap()); }
+function saveStockSig(cid, map, vals){ saveSyncSig(cid,"stock",map); saveSyncSig(cid,"stockCounts", stockTypeCounts()); saveSyncSig(cid,"stockVals", vals || stockValsSnap()); }
 // 3-стороннее слияние количества ПЕРЕД выгрузкой изменённых позиций: правит upsert-строки, curSig и локальный
 // state.stock так, чтобы конкурентные списания с двух устройств складывались (merged = local + cloud − снимок).
 // Только позиции БЕЗ партий; партийные при расхождении не трогаем (qty=Σпартий) — предупреждаем о ручной сверке.
@@ -6575,7 +6689,37 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
     }
     if(localChanged){ const _w=cloud.applying; cloud.applying=true; try{ saveState(); }finally{ cloud.applying=_w; } try{ render(); }catch(_){} }
     if(conflictBatched){ try{ toast(`Расхождение остатков по ${conflictBatched} позиц. с партиями — проверьте вручную и при необходимости сверьте экспортом`); }catch(_){} }
-  }catch(e){ console.warn("stock 3-way merge → без слияния (прежнее LWW)", e); }   // при сбое — прежнее поведение, без потери доступности
+  }catch(e){
+    console.warn("stock 3-way merge failed — fail-closed: cloud qty", e);
+    // не LWW: ещё раз тянем облако и подставляем qty (иначе локальный upsert затрёт чужие списания)
+    try{
+      const ids = upsert.map(r=>r.id); if(!ids.length) return;
+      const cloudById={}; const size=100;
+      for(let i=0;i<ids.length;i+=size){
+        const chunk = ids.slice(i,i+size);
+        const cloudRows = await cloudRest(`stock_items?select=id,qty,batches&base_id=eq.${encodeURIComponent(cid)}&id=in.(${chunk.map(encodeURIComponent).join(",")})`, tok);
+        if(Array.isArray(cloudRows)) cloudRows.forEach(cr=>cloudById[cr.id]=cr);
+      }
+      let localChanged=false;
+      for(const r of upsert){
+        const cr=cloudById[r.id]; if(!cr) continue;
+        const cloudQty=Number(cr.qty)||0;
+        r.qty = cloudQty;
+        if(Array.isArray(cr.batches) && ((Array.isArray(r.batches)&&r.batches.length) || cr.batches.length)) r.batches = cr.batches;
+        curSig[r.id]=_sigOf(r);
+        const it=state.stock.find(s=>s.id===r.id);
+        if(it){
+          if(Number(it.qty)!==cloudQty){ it.qty=cloudQty; localChanged=true; }
+          if(Array.isArray(cr.batches) && ((Array.isArray(it.batches)&&it.batches.length) || cr.batches.length)){ it.batches=cr.batches; localChanged=true; }
+        }
+      }
+      if(localChanged){ const _w=cloud.applying; cloud.applying=true; try{ saveState(); }finally{ cloud.applying=_w; } }
+      try{ toast("Слияние остатков сбой — взяты количества из облака, проверьте вручную"); }catch(_){}
+    }catch(e2){
+      console.warn("3-way fail-closed retry failed — abort push", e2);
+      throw e2;   // не LWW: пусть cloudPushNow сохранит dirty
+    }
+  }
 }
 // ОБЪЕДИНЕНИЕ настроек (места/категории) с облаком — union списков по каждому типу.
 // Так одновременная выгрузка двух устройств НЕ затирает чужие добавления (последний-победил
@@ -6619,12 +6763,12 @@ async function cloudPushNow(){
   const cid = activeCloudId();
   // на раннем выходе снимаем pushPending (dirty остаётся durable-маркером несинхронизации)
   if(!cid || !cloud.ready || cloud.applying || !cloudOnline() || isOffShift(cid) || !canEditStock()){ cloud.pushPending=false; return; }   // off-shift/только-просмотр: нет доступа по RLS, dirty храним (не сбрасываем молча) до прав/возврата на смену
-  const perm = activeMember(); if(!perm){ cloud.pushPending=false; return; }
+  // org-роль без base_members: activeMember()=null, но canEditStock()=true — пушим
   await ensureSB(); const _outerBusy=cloud.busy; cloud.busy=true;   // re-entrant: если нас вызвал cloudActivate (уже busy), НЕ сбрасываем общий busy в своём finally
   try{
     const tok = cloud.session && cloud.session.access_token;
     let _suspectWipe=false;   // склад подозрительно усох → не снимаем dirty, не рапортуем «synced» (см. ниже)
-    if(perm.can_edit_stock){
+    if(canEditStock()){
       // === СКЛАД (ДЕЛЬТА: только изменённые/удалённые позиции, прямым fetch) ===
       // синкаем ТОЛЬКО типы, доступные роли (Механик/Электрик — tool, Повар — без tool): иначе push
       // ограниченной роли попытался бы upsert/удалить чужой тип и упёрся бы в RLS-403. pull всё равно
@@ -6722,7 +6866,7 @@ async function cloudPushNow(){
             state.delLoc=merged.deletedLocations; state.delCat=merged.deletedCategories;
             const _wasApplying=cloud.applying; cloud.applying=true; try{ saveState(); }finally{ cloud.applying=_wasApplying; }   // пишем merged в localStorage (память↔диск), applying — чтобы saveState не дёрнул новый push
             saveSyncSig(cid,"settings",{ v:_sigOf(merged) });
-          }catch(e){ console.warn("settings push", e); }
+          }catch(e){ console.warn("settings push", e); throw e; }   // не снимаем dirty при сбое настроек
         }
       }
       // === ЖУРНАЛЫ (дельта upsert; удаление — только явное, под порогом архива) ===
