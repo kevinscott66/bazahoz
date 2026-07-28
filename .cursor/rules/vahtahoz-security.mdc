@@ -15,13 +15,17 @@ alwaysApply: true
 - Beta канал: `beta/vahtahoz.html` + `beta/sw.js`; версия: `сборка vNNN` + `vahtahoz-BETA-vNNN`.
 - Pull склада/журнала — **только через `cloudRestAll`** (PostgREST `max_rows=1000`); tasks pull тоже через `cloudRestAll`.
 - На post-pull **и** на auto-reconcile boot **не** вызывать `mergeDuplicateStockByName` (только ручная «Сверка»).
+- При `journalLooksIncomplete()` (облако / ≥500 записей локально): **не** raise/create/down по журналу — только merge+relink вручную. Raise по полному журналу — в post-pull **до** `slice(0,500)`.
+- `mergeDuplicateStockByName` ключ: `type|name|unit` (не сливать кг+шт).
 - `journalEffectSign(order)=0` (заказ не двойнит ledger).
 - Type-restricted push: merge подписей + `stockAllowed`/`jrAllowed`, не replace-only `_at`.
-- Импорт УПД/Excel: `cleanNameImport` срезает «цена за шт»/«только местами»/промо; `findStockForImport` — exact → stockKey → Jaccard ≥0.72 **только при той же unit**; неизвестная ед. / unit mismatch без фасовки — **skip строки** (не подменять на шт/unit карточки).
-- `mergeStockQtyBeforePush`: чанковать `id=in.(...)` (≤100).
+- Импорт УПД/Excel: `findStockForImport` — exact/stockKey/Jaccard **только при той же unit**; неизвестная ед. / mismatch без фасовки — skip.
+- `mergeStockQtyBeforePush`: чанк `id=in` ≤100; без `stockVals` snap — не LWW qty (брать cloud).
+- `cloudOnRemote` не стартует pull при `cloud.applying`.
 
 ## Сделано (не повторять как «дыры»)
 
+- v198: raise по усечённому журналу off; merge+unit; import exact same-unit; skip-toast ед.; applying-mutex; 3-way no-snap→cloud qty.
 - v197: auto-reconcile без merge; `_impMapUnit` fail-closed + ОКЕИ/коробка; align qty fail-closed; fuzzy same-unit; 3-way push chunk; tasks `cloudRestAll`; Детрин — reattach 62 orphan journal → живые id.
 - v185–v188: journal RLS, type-restricted merge, пагинация pull, app_private journal_row_type, orphan fail-closed, handover multi_base.
 - v194–v196: категории мясо/кур/яйца/доширак pack align.
