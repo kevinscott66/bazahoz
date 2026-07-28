@@ -25,6 +25,7 @@ alwaysApply: true
 
 ## Сделано (не повторять как «дыры»)
 
+- v201: `_impUnitKey` (пусто≈шт; unknown fail-closed); `упаковка`→`уп`; findStockByName не fail-open; ensureProducts parse `lastIndexOf`; no-snap партий → cloud batches; normalizeStockItem канон ед.
 - v200: пустая ед. импорта → skip; findStockByName/relink/ledger/ensure/JSON-merge с unit; tombJr без среза недоставленных; партийный конфликт → cloud; grant_bases `on_shift`.
 - v199: владелец — `grant_bases` (выдача/снятие доступа логина на несколько баз сразу); UI «Выдача доступа к базам» + быстрый выбор Западная 2+3.
 - v198: raise по усечённому журналу off; merge+unit; import exact same-unit; skip-toast ед.; applying-mutex; 3-way no-snap→cloud qty.

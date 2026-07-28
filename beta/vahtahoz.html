@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v200 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v201 · БЕТА</div>
   </div>
 </div>
 
@@ -778,6 +778,12 @@ function normalizeStockItem(s){
   if(!s || typeof s!=="object") return s;
   if(!STOCK_TYPE_KEYS.includes(s.type)) s.type = "product";
   if(s.qty!=="" && s.qty!=null) s.qty = roundQty(s.qty);
+  // канон ед.: пустая→шт, упаковка→уп (иначе unit-aware match плодит дубли)
+  if(typeof _impUnitKey==="function"){
+    const uk = _impUnitKey(s.unit);
+    if(uk) s.unit = uk;
+    else if(!String(s.unit||"").trim()) s.unit = "шт";
+  } else if(!String(s.unit||"").trim()) s.unit = "шт";
   if(typeof s.expiry==="string" && s.expiry && !/^\d{4}-\d{2}-\d{2}$/.test(s.expiry)) s.expiry = "";   // невалидную дату карточки не держим
   if(Array.isArray(s.batches)){
     s.batches = s.batches.filter(b => b && typeof b==="object").map(b => ({
@@ -1927,18 +1933,16 @@ function defaultCategoryForType(type){
 function findStockByName(name, type, unit){
   const n = stockNormName(name);
   if(!n) return null;
-  const wantU = (unit!=null && unit!=="" && typeof _impMapUnit==="function") ? _impMapUnit(unit) : (unit!=null && unit!=="" ? String(unit).toLowerCase() : null);
   const pool = type
     ? state.stock.filter(s=> s.type===type && stockNormName(s.name)===n)
     : state.stock.filter(s=> allowedTypeKeys().includes(s.type) && stockNormName(s.name)===n);
   if(!pool.length) return null;
-  if(wantU){
-    const same = pool.filter(s=>{
-      const su = typeof _impMapUnit==="function" ? _impMapUnit(s.unit) : String(s.unit||"").toLowerCase();
-      return su===wantU;
-    });
-    if(same.length) return same[0];
-    return null;   // имя есть, но другая ед. — не приклеиваем (кг≠шт)
+  // unit передан (в т.ч. "") → строгий ключ; неизвестная ед. — не приклеиваем к pool[0]
+  if(arguments.length >= 3){
+    const wantU = _impUnitKey(unit);
+    if(wantU==null) return null;
+    const same = pool.filter(s=> _impUnitKey(s.unit)===wantU);
+    return same[0] || null;
   }
   return pool[0];
 }
@@ -2011,8 +2015,8 @@ function ledgerQtyForProduct(product){
       const matchId = op.productId && op.productId===pid;
       // по имени учитываем ТОЛЬКО записи без productId (иначе движение с чужим/удалённым
       // productId, но совпавшим именем, приписалось бы не той карточке)
-      const matchNameOnly = !op.productId && stockNormName(op.productName)===pname
-        && (!op.unit || !product.unit || (typeof _impMapUnit==="function" ? _impMapUnit(op.unit)===_impMapUnit(product.unit) : String(op.unit).toLowerCase()===String(product.unit).toLowerCase()));
+      const ou = _impUnitKey(op.unit), pu = _impUnitKey(product.unit);
+      const matchNameOnly = !op.productId && stockNormName(op.productName)===pname && !!ou && !!pu && ou===pu;
       if(matchId || matchNameOnly)
         sum += sign * Number(op.qty||0);
     }
@@ -2033,7 +2037,7 @@ function ledgerByNormName(){
       const n = stockNormName(op.productName);
       if(!n) continue;
       const typ = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : "product";
-      const u = (typeof _impMapUnit==="function" ? (_impMapUnit(op.unit)||null) : null) || String(op.unit||"шт").toLowerCase() || "шт";
+      const u = _impUnitKey(op.unit) || "шт";
       const key = typ + "::" + n + "::" + u;
       m.set(key, roundQty((m.get(key)||0) + sign * Number(op.qty||0)));
     }
@@ -2064,7 +2068,7 @@ function mergeDuplicateStockByName(){
   const groups = new Map();
   for(const s of (state.stock||[])){
     // unit в ключе: иначе «кг» и «шт» с одним именем схлопывались и суммировали qty
-    const u = (typeof _impMapUnit==="function" ? (_impMapUnit(s.unit)||String(s.unit||"").toLowerCase()) : String(s.unit||"").toLowerCase()) || "шт";
+    const u = _impUnitKey(s.unit) || "шт";
     const key = `${s.type}|${stockNormName(s.name)}|${u}`;
     if(!groups.has(key)) groups.set(key, []);
     groups.get(key).push(s);
@@ -2119,10 +2123,11 @@ function ensureProductsFromJournalLedger(){
   const stockIds = new Set((state.stock||[]).map(s=>s.id));
   for(const [key, ledger] of ledgers){
     if(!(ledger > 0)) continue;
-    const parts = key.split("::");
-    const typ = parts[0] || "product";
-    const n = parts[1] || "";
-    const wantU = parts[2] || "шт";
+    // typ::name::unit — name может содержать «::», unit всегда последний сегмент
+    const i1 = key.indexOf("::"), i2 = key.lastIndexOf("::");
+    const typ = i1>=0 ? key.slice(0,i1) : "product";
+    const wantU = (i2>i1) ? key.slice(i2+2) : "шт";
+    const n = (i1>=0 && i2>i1) ? key.slice(i1+2, i2) : (i1>=0 ? key.slice(i1+2) : key);
     const type = STOCK_TYPE_KEYS.includes(typ) ? typ : "product";
     if(findStockByName(n, type, wantU)) continue;
     let sampleName = "", sampleUnit = wantU;
@@ -2131,9 +2136,8 @@ function ensureProductsFromJournalLedger(){
         if(stockNormName(op.productName)!==n) continue;
         const ot = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : "product";
         if(ot!==type) continue;
-        const ou = (typeof _impMapUnit==="function" ? (_impMapUnit(op.unit)||null) : null) || String(op.unit||"шт").toLowerCase();
-        if(ou!==wantU) continue;
-        sampleName = op.productName.trim(); sampleUnit = op.unit||wantU; break outer;
+        if((_impUnitKey(op.unit)||"шт")!==wantU) continue;
+        sampleName = op.productName.trim(); sampleUnit = _impUnitKey(op.unit)||wantU; break outer;
       }
     }
     if(!sampleName) continue;
@@ -2147,8 +2151,7 @@ function ensureProductsFromJournalLedger(){
         if(stockNormName(op.productName)!==n) continue;
         const ot = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : "product";
         if(ot!==type) continue;
-        const ou = (typeof _impMapUnit==="function" ? (_impMapUnit(op.unit)||null) : null) || String(op.unit||"шт").toLowerCase();
-        if(ou!==wantU) continue;
+        if((_impUnitKey(op.unit)||"шт")!==wantU) continue;
         if(op.productId && stockIds.has(op.productId)) continue;
         op.productId = p.id; op.productName = p.name; op.stockType = type;
       }
@@ -2397,25 +2400,32 @@ function _impExtractDocDate(text){
 }
 function _impMapUnit(u){
   const raw = String(u||"").trim();
-  if(!raw) return null;   // пустая ед. — fail-closed (не подменять на шт)
+  if(!raw) return null;   // пустая из файла — fail-closed (import skip)
   const s = raw.toLowerCase().replace(/\.$/,"");
-  // частые коды ОКЕИ из УПД — не молча в «шт»
   const okei = { "796":"шт","778":"уп","625":"шт","168":"т","166":"кг","163":"г","112":"л","111":"мл","055":"м2","006":"метр","004":"шт","018":"метр" };
   if(/^\d{2,4}$/.test(s) && okei[s]) return okei[s];
   if(/^\d{2,4}$/.test(s)) return null;
-  if(UNITS.includes(s)) return s;
+  // ДО UNITS.includes: иначе «упаковка» из списка остаётся ≠ «уп» из импорта/ОКЕИ
+  if(s==="упаковка"||s==="уп"||/^упаков/.test(s)) return "уп";
   if(s==="штука"||s==="штук"||s==="штуки"||s==="шт"||s==="ед"||s==="единица") return "шт";
   if(s==="килограмм"||s==="килограмма"||s==="кг") return "кг";
   if(s==="грамм"||s==="грамма"||s==="гр"||s==="г") return "г";
   if(s==="литр"||s==="литра"||s==="л") return "л";
   if(s==="миллилитр"||s==="мл") return "мл";
   if(/^короб/.test(s)||s==="кор") return "кор";
-  if(/^упаков/.test(s)||s==="уп") return "уп";
-  if(/^пачк/.test(s)) return "пачка";
-  if(/^рулон/.test(s)) return "рулон";
-  if(/^меш/.test(s)) return "меш";
-  if(/^метр/.test(s)||s==="м") return "метр";
-  return null;   // неизвестная ед. — fail-closed (не подменять на шт)
+  if(/^пачк/.test(s)||s==="пачка") return "пачка";
+  if(/^рулон/.test(s)||s==="рулон") return "рулон";
+  if(/^меш/.test(s)||s==="меш") return "меш";
+  if(/^метр/.test(s)||s==="м"||s==="метр") return "метр";
+  if(UNITS.includes(s)) return s;
+  return null;
+}
+// ключ ед. для СОПОСТАВЛЕНИЯ карточек: пустая ≈ «шт»; неизвестная → null (fail-closed)
+function _impUnitKey(u){
+  const m = _impMapUnit(u);
+  if(m) return m;
+  if(!String(u||"").trim()) return "шт";
+  return null;
 }
 // эвристика категории продукта по имени — только из списка категорий базы
 function guessProductCategory(name){
@@ -2478,26 +2488,24 @@ function _impTokenScore(a, b){
 // импорт: сначала существующая карточка; новая — только если нет похожей
 function findStockForImport(name, unit){
   const types = ["product"];
-  const wantUnit = _impMapUnit(unit);
+  const wantUnit = _impMapUnit(unit);   // import: пустая/unknown уже отсеяны в recordReceiptRow
   const exact = stockNormName(name);
   const key = stockKeyImport(name);
   const pool = state.stock.filter(s=> types.includes(s.type));
   const rank = (s)=>{
-    const sameU = _impMapUnit(s.unit)===wantUnit ? 1 : 0;
+    const sameU = _impUnitKey(s.unit)===wantUnit ? 1 : 0;
     const inSt = totalQtyOf(s)>0 ? 1 : 0;
     return sameU*50 + inSt*10 + Math.min(totalQtyOf(s), 99)/100;
   };
-  // exact/key — тоже только та же unit (иначе кг→шт через pack-эвристику)
-  let hits = pool.filter(s=> stockNormName(s.name)===exact && (!wantUnit || _impMapUnit(s.unit)===wantUnit));
+  let hits = pool.filter(s=> stockNormName(s.name)===exact && (!wantUnit || _impUnitKey(s.unit)===wantUnit));
   if(hits.length) return hits.slice().sort((a,b)=> rank(b)-rank(a))[0];
   if(key.length >= 8){
-    hits = pool.filter(s=> stockKeyImport(s.name)===key && (!wantUnit || _impMapUnit(s.unit)===wantUnit));
+    hits = pool.filter(s=> stockKeyImport(s.name)===key && (!wantUnit || _impUnitKey(s.unit)===wantUnit));
     if(hits.length) return hits.slice().sort((a,b)=> rank(b)-rank(a))[0];
   }
   let best=null, bestScore=0;
   for(const s of pool){
-    // fuzzy только при той же единице — иначе «24 кор» приклеится к «шт»
-    if(wantUnit && _impMapUnit(s.unit) !== wantUnit) continue;
+    if(wantUnit && _impUnitKey(s.unit) !== wantUnit) continue;
     const sk = stockKeyImport(s.name);
     if(sk.length < 8 || key.length < 8) continue;
     let score = _impTokenScore(name, s.name);
@@ -2536,9 +2544,9 @@ function _impNormalizePackQty(name, qty, unit){
 // если карточка в других единицах — привести qty к unit карточки по фасовке
 function _impAlignQtyToProduct(product, name, qty, unit){
   let q = roundQty(qty), u = _impMapUnit(unit);
-  const pu = _impMapUnit(product?.unit);
+  const pu = _impUnitKey(product?.unit);   // пустая карточка ≈ шт
   if(u==null || pu==null) return null;
-  if(pu===u) return { qty:q, unit:u };
+  if(pu===u) return { qty:q, unit:pu };
   const pack = _impPackSize(product?.name) || _impPackSize(name);
   if(pack > 1){
     if(pu==="кор" && u==="шт" && q >= pack && Math.abs(q % pack) < 1e-6) return { qty: roundQty(q/pack), unit:"кор" };
@@ -3302,7 +3310,7 @@ async function quickAdjust(id, sign){
   saveState(); render();
 }
 
-const UNITS = ["шт","кг","г","л","мл","упаковка","пачка","рулон","метр","кор","уп","меш"];
+const UNITS = ["шт","кг","г","л","мл","уп","пачка","рулон","метр","кор","меш"];   // «упаковка» → «уп» через _impMapUnit
 
 function openStockEdit(id, typeDefault){
   if(!id && typeDefault && !allowedTypeKeys().includes(typeDefault)) typeDefault = allowedTypeKeys()[0] || "product";   // роль не может создавать недоступный тип
@@ -3984,7 +3992,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v200 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v201 · тестовый канал</div>
   `;
 }
 
@@ -4540,7 +4548,7 @@ function importData(ev){
         merged.stock = obj.stock||[];
       } else {
         // матчинг с unit: type|cat|name|unit, затем type|name|unit (не сливать кг+шт)
-        const unitKey = (u)=> (typeof _impMapUnit==="function" ? (_impMapUnit(u)||null) : null) || String(u||"шт").toLowerCase() || "шт";
+        const unitKey = (u)=> _impUnitKey(u) || "шт";
         const strict = new Map(); // type|cat|name|unit
         const loose  = new Map(); // type|name|unit -> массив кандидатов
         const looseAdd = (lk,it)=>{ if(!loose.has(lk)) loose.set(lk,[]); loose.get(lk).push(it); };
@@ -6528,8 +6536,16 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
       const cloudQty=Number(cr.qty)||0;
       const snapQty=Number(snap[r.id]);
       if(!isFinite(snapQty)){
-        // нет базы 3-way — не LWW-затираем облачный qty (риск воскрешения остатка)
-        if(cloudQty !== (Number(r.qty)||0)){
+        // нет базы 3-way — не LWW; партийные: qty+batches из cloud (иначе qty облака + локальные партии)
+        const batched = (Array.isArray(r.batches)&&r.batches.length) || (Array.isArray(cr.batches)&&cr.batches.length);
+        if(batched){
+          conflictBatched++;
+          r.qty = cloudQty;
+          if(Array.isArray(cr.batches)) r.batches = cr.batches;
+          curSig[r.id]=_sigOf(r);
+          const it=state.stock.find(s=>s.id===r.id);
+          if(it){ it.qty=cloudQty; if(Array.isArray(cr.batches)) it.batches=cr.batches; localChanged=true; }
+        } else if(cloudQty !== (Number(r.qty)||0)){
           r.qty = cloudQty; curSig[r.id]=_sigOf(r);
           const it=state.stock.find(s=>s.id===r.id); if(it && Number(it.qty)!==cloudQty){ it.qty=cloudQty; localChanged=true; }
         }
