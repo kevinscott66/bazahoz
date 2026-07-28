@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v198 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v199 · БЕТА</div>
   </div>
 </div>
 
@@ -3925,6 +3925,7 @@ function renderMore(){
   if(canManageBase()) acc.push(row("Работники и роли","openMembersSheet()"));
   if(canManageOrgRoles()) acc.push(row("Роли по регионам","openOrgRolesSheet()"));
   if(canSeeAllBases()) acc.push(row("Сводка по всем базам","openAllBasesSheet()"));
+  if(isOwner) acc.push(row("Выдача доступа к базам","openGrantBasesSheet()",{ sub:"несколько баз одному логину" }));
   if(isOwner) acc.push(row("Рассылка уведомлений","openBroadcastSheet()"));
 
   const data = [];
@@ -3962,7 +3963,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v198 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v199 · тестовый канал</div>
   `;
 }
 
@@ -4837,7 +4838,7 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   openProfilesSheet,switchProfile,addProfile,renameProfile,deleteProfile,exportAllProfiles,mergeCatalogs,
   toggleCheck,addCheck,resetChecklist,removeCheck,
   exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,exportJournalsMonth,clearLog,wipeAll,toggleTheme,setTheme,
-  openCloudSheet,openExportSheet,openBackupSheet,openJournalSheet,openStockReconcileSheet,openBroadcastSheet,sendBroadcast,
+  openCloudSheet,openExportSheet,openBackupSheet,openJournalSheet,openStockReconcileSheet,openGrantBasesSheet,doGrantBases,openBroadcastSheet,sendBroadcast,
   openAboutSheet,openFaqSheet,openPrivacySheet,openTermsSheet,openRecoveryEmailSheet,
   openMove,doMove,
   openReceiptImportSheet,downloadReceiptTemplate,importReceiptsExcel,
@@ -5375,6 +5376,73 @@ function openResetPwd(uid){
     try{ await cloudCallFn("reset_password", { base_id:activeCloudId(), user_id:uid, password:pwd }); toast("Пароль изменён"); await openMembersSheet(); }
     catch(e){ toast("Не удалось. "+(e.message||"Проверьте интернет и повторите")); if(document.getElementById("rpGo")){ btn.disabled=false; btn.textContent="Сменить"; } }
   };
+}
+
+/* ===== Владелец: выдача / снятие доступа существующего логина на несколько баз ===== */
+function openGrantBasesSheet(){
+  if(!(cloud.profile && cloud.profile.is_admin)){ toast("Только владелец"); return; }
+  if(!cloudOnline()){ toast("Нужен интернет"); return; }
+  const bases = Object.entries(cloud.bases||{}).sort((a,b)=> String(a[1]).localeCompare(String(b[1]),"ru"));
+  if(!bases.length){ toast("Сначала дождитесь загрузки баз"); return; }
+  const roles = MEMBER_ROLES.map(r=>`<option value="${r.key}">${esc(r.label)}</option>`).join("");
+  const boxes = bases.map(([id,name])=>{
+    const west23 = /^(2|3)\s+отряд\s+РоГРП\s*[«"]?Западн/i.test(String(name));
+    return `<label class="flex items-start gap-2 text-sm py-1"><input type="checkbox" class="gbBase" value="${esc(id)}" ${west23?"data-west23=1":""}/><span>${esc(name)}</span></label>`;
+  }).join("");
+  openSheet(`<div class="font-bold text-xl mb-2">🔑 Выдача доступа к базам</div>
+    <div class="text-xs opacity-70 mb-3">Только владелец. Существующий логин получает членство на выбранных базах (или снимается). «Передать смену» при нескольких базах недоступна — снимайте вручную.</div>
+    <div class="space-y-3">
+      ${_loginFieldHTML("gb","Логин работника (уже есть аккаунт)")}
+      <div><div class="text-sm opacity-70 mb-1">Роль на выбранных базах</div>
+        <select class="input" id="gbr">${roles}</select></div>
+      <div class="flex gap-2 flex-wrap">
+        <button type="button" class="btn btn-ghost text-sm px-2" id="gbWest23">Западная 2+3</button>
+        <button type="button" class="btn btn-ghost text-sm px-2" id="gbAll">Все</button>
+        <button type="button" class="btn btn-ghost text-sm px-2" id="gbNone">Снять выбор</button>
+      </div>
+      <div class="max-h-56 overflow-y-auto pr-1 border border-white/10 rounded-lg p-2 space-y-0.5">${boxes}</div>
+    </div>
+    <div class="flex gap-2 mt-3">
+      <button class="btn btn-ghost flex-1" data-close>Отмена</button>
+      <button class="btn btn-success flex-1" id="gbGrant">Выдать</button>
+    </div>
+    <button class="btn btn-ghost w-full mt-2" id="gbRevoke">Снять с выбранных баз</button>
+    <div class="text-xs opacity-60 mt-2">Выдача: добавить или обновить роль и вернуть на смену. Снятие: убрать из базы (если это последний нач. участка — отказ).</div>`);
+  const mark = (pred)=>{ document.querySelectorAll(".gbBase").forEach(el=>{ el.checked = !!pred(el); }); };
+  const w=document.getElementById("gbWest23"); if(w) w.onclick=()=>mark(el=>el.getAttribute("data-west23")==="1");
+  const a=document.getElementById("gbAll"); if(a) a.onclick=()=>mark(()=>true);
+  const n=document.getElementById("gbNone"); if(n) n.onclick=()=>mark(()=>false);
+  document.getElementById("gbGrant").onclick=()=>doGrantBases(false);
+  document.getElementById("gbRevoke").onclick=()=>doGrantBases(true);
+}
+async function doGrantBases(remove){
+  if(!(cloud.profile && cloud.profile.is_admin)){ toast("Только владелец"); return; }
+  const username=(document.getElementById("gbu")?.value||"").trim().toLowerCase();
+  const role=document.getElementById("gbr")?.value||"worker";
+  const base_ids=[...document.querySelectorAll(".gbBase:checked")].map(el=>el.value).filter(Boolean);
+  if(_badLogin(username)) return;
+  if(!base_ids.length){ toast("Выберите хотя бы одну базу"); return; }
+  if(!remove && !MEMBER_ROLES.some(r=>r.key===role)){ toast("Выберите роль"); return; }
+  const title = remove ? "Снять доступ" : "Выдать доступ";
+  const msg = remove
+    ? `Снять «${username}» с ${base_ids.length} баз(ы)?`
+    : `Выдать «${username}» роль «${roleLabel(role)}» на ${base_ids.length} баз(ы)?`;
+  if(!await confirmSheet(msg,{ title, yes: remove?"Снять":"Выдать", danger:!!remove })) return;
+  const btn = document.getElementById(remove?"gbRevoke":"gbGrant");
+  if(btn){ btn.disabled=true; btn.textContent = remove?"Снятие…":"Выдача…"; }
+  try{
+    const d=await cloudCallFn("grant_bases", { username, role, base_ids, remove: !!remove });
+    if(remove){
+      toast(`Снято с ${(d.bases||[]).length} баз`);
+    } else {
+      const n=(d.added||[]).length + (d.updated||[]).length;
+      toast(`Готово: ${n} баз (новых ${(d.added||[]).length}, обновлено ${(d.updated||[]).length})`);
+    }
+    closeSheet();
+  }catch(e){
+    toast("Не удалось. "+(e.message||"Проверьте логин и интернет"));
+    if(btn){ btn.disabled=false; btn.textContent = remove?"Снять с выбранных баз":"Выдать"; }
+  }
 }
 
 /* ===== Территориальные/глобальные роли (нач. партии по региону, директор/бухгалтерия глобально) ===== */
