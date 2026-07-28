@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v195 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v196 · БЕТА</div>
   </div>
 </div>
 
@@ -2438,7 +2438,7 @@ function findStockForImport(name, unit){
   const rank = (s)=>{
     const sameU = _impMapUnit(s.unit)===wantUnit ? 1 : 0;
     const inSt = totalQtyOf(s)>0 ? 1 : 0;
-    return inSt*10 + sameU*3 + Math.min(totalQtyOf(s), 99)/100;
+    return sameU*50 + inSt*10 + Math.min(totalQtyOf(s), 99)/100;
   };
   let hits = pool.filter(s=> stockNormName(s.name)===exact);
   if(hits.length) return hits.slice().sort((a,b)=> rank(b)-rank(a))[0];
@@ -2467,17 +2467,33 @@ function stockNormLoose(s){
 function findStockByNameLoose(name, type){
   return findStockForImport(name, type==="product" ? "шт" : "шт");
 }
-// яйца «1/360шт» в УПД часто приходят штуками — переводим в коробки
+// фасовка из имени «1/24шт», «1/360шт»
+function _impPackSize(name){
+  const m = String(name||"").toLowerCase().replace(/ё/g,"е").match(/1\s*\/\s*(\d+)\s*шт/);
+  return m ? (+m[1]||0) : 0;
+}
+// яйца 1/360шт в УПД — штуки → коробки; иначе qty оставляем в шт
 function _impNormalizePackQty(name, qty, unit){
   let q = roundQty(qty), u = _impMapUnit(unit);
   const n = String(name||"").toLowerCase().replace(/ё/g,"е");
-  if(/яйц/.test(n) && /1\s*\/\s*360/.test(n) && (u==="шт" || u==="штук")){
-    if(q >= 360 && Math.abs(q % 360) < 1e-6){
-      q = roundQty(q / 360);
-      u = "кор";
-    }
+  const pack = _impPackSize(n);
+  if(/яйц/.test(n) && pack >= 30 && (u==="шт"||u==="штук") && q >= pack && Math.abs(q % pack) < 1e-6){
+    q = roundQty(q / pack);
+    u = "кор";
   }
   return { qty:q, unit:u };
+}
+// если карточка в других единицах — привести qty к unit карточки по фасовке
+function _impAlignQtyToProduct(product, name, qty, unit){
+  let q = roundQty(qty), u = _impMapUnit(unit);
+  const pu = _impMapUnit(product?.unit);
+  if(!pu || pu===u) return { qty:q, unit:u };
+  const pack = _impPackSize(product?.name) || _impPackSize(name);
+  if(pack > 1){
+    if(pu==="кор" && u==="шт" && q >= pack && Math.abs(q % pack) < 1e-6) return { qty: roundQty(q/pack), unit:"кор" };
+    if(pu==="шт" && u==="кор") return { qty: roundQty(q*pack), unit:"шт" };
+  }
+  return { qty:q, unit:pu };
 }
 // одна строка импорта → поступление (мутирует склад/журнал; saveState — у вызывающего через logOp/saveState)
 function recordReceiptRow(row){
@@ -2494,6 +2510,8 @@ function recordReceiptRow(row){
     state.stock.push(product);
     created = true;
     if(!row.skipPropagate){ try{ propagateName("product", name, product.unit); }catch(e){} }
+  } else {
+    ({ qty, unit } = _impAlignQtyToProduct(product, name, qty, unit));
   }
   // категорию ставим только новой карточке или если у старой пусто/«Прочие»/ошибочные макароны у бульона
   const guessed = guessProductCategory(product.name || name);
@@ -3899,7 +3917,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v195 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v196 · тестовый канал</div>
   `;
 }
 
