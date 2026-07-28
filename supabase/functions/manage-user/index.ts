@@ -501,6 +501,90 @@ Deno.serve(async (req) => {
     return json({ ok: true, tasks_moved: typeof moved === "number" ? moved : 0 });
   }
 
+  // ── владелец: выдать / снять доступ существующего логина на НЕСКОЛЬКО баз сразу ──
+  // (временно на 2–3 отряда и т.п.; обычный create_member — только одна база + новый аккаунт)
+  if (action === "grant_bases") {
+    if (!prof?.is_admin) return json({ error: "Выдачу на несколько баз может сделать только владелец" }, 403);
+    const username = String(p.username || "").trim().toLowerCase();
+    let userId = String(p.user_id || "");
+    const role = String(p.role || "worker");
+    const remove = !!p.remove;
+    const rawIds = Array.isArray(p.base_ids) ? p.base_ids : [];
+    const baseIds = [...new Set(rawIds.map((x: unknown) => String(x || "")).filter(Boolean))];
+    if (!baseIds.length || baseIds.length > 40) return json({ error: "Укажите от 1 до 40 баз" }, 400);
+    for (const id of baseIds) if (!uuid(id)) return json({ error: "Некорректный base_id" }, 400);
+    if (!remove && !BASE_ROLES.has(role)) return json({ error: "Роль должна быть базовой (хозрабочий / повар / механик / нач. участка)" }, 400);
+
+    if (!uuid(userId)) {
+      if (!/^[a-z0-9_]{3,32}$/.test(username)) return json({ error: "Логин: 3-32 символа a-z 0-9 _" }, 400);
+      const { data: pr, error: perr } = await admin.from("profiles").select("id,username,is_admin").eq("username", username).maybeSingle();
+      if (perr) { console.error("grant_bases profiles", perr); return json({ error: "Не удалось найти логин" }, 500); }
+      if (!pr) return json({ error: "Логин не найден — сначала создайте работника в одной из баз" }, 404);
+      if (pr.is_admin) return json({ error: "Нельзя менять доступы владельца" }, 400);
+      userId = pr.id;
+    } else {
+      const { data: pr, error: perr } = await admin.from("profiles").select("id,username,is_admin").eq("id", userId).maybeSingle();
+      if (perr || !pr) return json({ error: "Пользователь не найден" }, 404);
+      if (pr.is_admin) return json({ error: "Нельзя менять доступы владельца" }, 400);
+    }
+
+    const { data: bases, error: berr } = await admin.from("bases").select("id,name").in("id", baseIds);
+    if (berr) { console.error("grant_bases bases", berr); return json({ error: "Не удалось проверить базы" }, 500); }
+    const known = new Set((bases || []).map((b: { id: string }) => b.id));
+    const missing = baseIds.filter((id) => !known.has(id));
+    if (missing.length) return json({ error: "Некоторые базы не найдены" }, 400);
+    const nameOf = Object.fromEntries((bases || []).map((b: { id: string; name: string }) => [b.id, b.name]));
+
+    if (remove) {
+      // не оставляем базу без активного can_manage
+      for (const bid of baseIds) {
+        const { data: cur } = await admin.from("base_members")
+          .select("can_manage,active").eq("base_id", bid).eq("user_id", userId).maybeSingle();
+        if (cur && cur.can_manage && cur.active !== false) {
+          const { count, error: cerr } = await admin.from("base_members")
+            .select("user_id", { count: "exact", head: true })
+            .eq("base_id", bid).eq("can_manage", true).eq("active", true).neq("user_id", userId);
+          if (cerr) { console.error("grant_bases orphan check", cerr); return json({ error: "Не удалось проверить управляющих" }, 500); }
+          if (!count) {
+            return json({ error: `База «${nameOf[bid] || bid}» останется без управляющего — сначала назначьте другого` }, 400);
+          }
+        }
+      }
+      const { error: derr } = await admin.from("base_members").delete().eq("user_id", userId).in("base_id", baseIds);
+      if (derr) { console.error("grant_bases delete", derr); return json({ error: "Не удалось снять доступ" }, 400); }
+      return json({
+        ok: true, removed: true, user_id: userId, username: username || undefined,
+        bases: baseIds.map((id) => ({ id, name: nameOf[id] })),
+      });
+    }
+
+    const flags = baseFlags(role);
+    if (!flags) return json({ error: "Неизвестная роль" }, 400);
+    const added: string[] = [];
+    const updated: string[] = [];
+    for (const bid of baseIds) {
+      const { data: existing } = await admin.from("base_members")
+        .select("base_id").eq("base_id", bid).eq("user_id", userId).maybeSingle();
+      if (existing) {
+        const { error: uerr } = await admin.from("base_members")
+          .update({ role, active: true, ...flags })
+          .eq("base_id", bid).eq("user_id", userId);
+        if (uerr) { console.error("grant_bases update", uerr); return json({ error: `Не удалось обновить «${nameOf[bid]}»` }, 400); }
+        updated.push(bid);
+      } else {
+        const { error: ierr } = await admin.from("base_members")
+          .insert({ base_id: bid, user_id: userId, role, active: true, ...flags });
+        if (ierr) { console.error("grant_bases insert", ierr); return json({ error: `Не удалось добавить в «${nameOf[bid]}»` }, 400); }
+        added.push(bid);
+      }
+    }
+    return json({
+      ok: true, user_id: userId, username: username || undefined, role,
+      added: added.map((id) => ({ id, name: nameOf[id] })),
+      updated: updated.map((id) => ({ id, name: nameOf[id] })),
+    });
+  }
+
   if (action === "broadcast") {
     // системная рассылка всем пользователям — ТОЛЬКО владелец/админ (rank 6)
     if (!prof?.is_admin) {
