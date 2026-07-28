@@ -560,20 +560,24 @@ Deno.serve(async (req) => {
 
     const flags = baseFlags(role);
     if (!flags) return json({ error: "Неизвестная роль" }, 400);
+    // on_shift: true/false явно; undefined → insert active=true, update не трогает active
+    const onShift = (p.on_shift === true || p.on_shift === false) ? !!p.on_shift : null;
     const added: string[] = [];
     const updated: string[] = [];
     for (const bid of baseIds) {
       const { data: existing } = await admin.from("base_members")
         .select("base_id").eq("base_id", bid).eq("user_id", userId).maybeSingle();
       if (existing) {
+        const patch: Record<string, unknown> = { role, ...flags };
+        if (onShift !== null) patch.active = onShift;   // не форсим active=true при простом обновлении роли
         const { error: uerr } = await admin.from("base_members")
-          .update({ role, active: true, ...flags })
+          .update(patch)
           .eq("base_id", bid).eq("user_id", userId);
         if (uerr) { console.error("grant_bases update", uerr); return json({ error: `Не удалось обновить «${nameOf[bid]}»` }, 400); }
         updated.push(bid);
       } else {
         const { error: ierr } = await admin.from("base_members")
-          .insert({ base_id: bid, user_id: userId, role, active: true, ...flags });
+          .insert({ base_id: bid, user_id: userId, role, active: onShift !== false, ...flags });
         if (ierr) { console.error("grant_bases insert", ierr); return json({ error: `Не удалось добавить в «${nameOf[bid]}»` }, 400); }
         added.push(bid);
       }

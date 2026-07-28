@@ -10,6 +10,15 @@
 - [x] `handover_shift`: multi_base на любое членство в других базах
 - [x] Beta legacy quickAdjust: `stockType`
 
+## Закрыто в v200
+
+- [x] Пустая ед. импорта → null/skip (не silent `шт`)
+- [x] `findStockByName` / resolve / relink / orphan ledger — с unit
+- [x] JSON `importData` merge key включает unit
+- [x] `tombJr` не срезает недоставленные надгробия
+- [x] Партийный 3-way конфликт → qty/batches из cloud (не LWW)
+- [x] `grant_bases` параметр `on_shift` (update не форсит active)
+
 ## Закрыто в v199
 
 - [x] Владелец: `grant_bases` / UI «Выдача доступа к базам» (несколько баз одному логину; снятие; orphan-защита)
