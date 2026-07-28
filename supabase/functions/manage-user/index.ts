@@ -483,8 +483,9 @@ Deno.serve(async (req) => {
     if (!uuid(fromId) || !uuid(toId)) return json({ error: "user_id" }, 400);
     if (fromId === toId) return json({ error: "Это один и тот же работник" }, 400);
     // ранговая защита: пересменка деактивирует `from` — нельзя трогать равного/старшего
-    // (иначе site_manager мог бы «пересменкой» снять другого site_manager)
-    if (!prof?.is_admin) {
+    // (иначе site_manager мог бы «пересменкой» снять другого site_manager).
+    // Исключение: from === caller (сам себе «Передать смену») — ранг всегда равен своему.
+    if (!prof?.is_admin && fromId !== callerId) {
       const caps = await callerCaps(admin, callerId);
       const fcaps = await callerCaps(admin, fromId);
       if (fcaps.rank >= caps.rank) return json({ error: "Нельзя снять со смены того, кто равен или выше вас" }, 403);
@@ -566,10 +567,23 @@ Deno.serve(async (req) => {
     const updated: string[] = [];
     for (const bid of baseIds) {
       const { data: existing } = await admin.from("base_members")
-        .select("base_id").eq("base_id", bid).eq("user_id", userId).maybeSingle();
+        .select("base_id,can_manage,active").eq("base_id", bid).eq("user_id", userId).maybeSingle();
       if (existing) {
         const patch: Record<string, unknown> = { role, ...flags };
         if (onShift !== null) patch.active = onShift;   // не форсим active=true при простом обновлении роли
+        // demote / снятие со смены последнего can_manage — как на remove
+        const nextManage = !!flags.can_manage;
+        const nextActive = onShift !== null ? onShift : (existing.active !== false);
+        const wasActiveMgr = !!(existing.can_manage && existing.active !== false);
+        if (wasActiveMgr && !(nextManage && nextActive)) {
+          const { count, error: cerr } = await admin.from("base_members")
+            .select("user_id", { count: "exact", head: true })
+            .eq("base_id", bid).eq("can_manage", true).eq("active", true).neq("user_id", userId);
+          if (cerr) { console.error("grant_bases orphan check", cerr); return json({ error: "Не удалось проверить управляющих" }, 500); }
+          if (!count) {
+            return json({ error: `База «${nameOf[bid] || bid}» останется без управляющего — сначала назначьте другого` }, 400);
+          }
+        }
         const { error: uerr } = await admin.from("base_members")
           .update(patch)
           .eq("base_id", bid).eq("user_id", userId);

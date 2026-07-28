@@ -10,6 +10,21 @@
 - [x] `handover_shift`: multi_base на любое членство в других базах
 - [x] Beta legacy quickAdjust: `stockType`
 
+## Закрыто в v202
+
+- [x] Org-роль без `base_members`: push/activate через `canEditStock()` (не `activeMember()`)
+- [x] Self-handover: rank-check пропускает `from === caller`; SQL self-shift (только `active`) + orphan последнего `can_manage`
+- [x] `grant_bases` UPDATE demote/off-shift — orphan-check как на remove
+- [x] `isRestrictedUser` учитывает org_roles (бухгалтер без задач)
+- [x] post-pull: raw `stockVals` + jr sig до reconcile/relink; `_pullSaving`; relink → dirty
+- [x] settings push ошибка не снимает dirty; local-wins чистит cloud-only через fake sig
+- [x] ledger ignore `[партия удалена]`; unknown unit не → `шт`; pack alt find; UPD empty unit skip
+- [x] Import: size/pack/multipack/% `_impSpecCompatible` симметрично; `stockKeyImport` хранит вес/`1/N`/`N×M`
+- [x] 3-way catch → cloud qty; retry fail → abort push (не LWW)
+- [x] Remove-member / нет доступа: `isOffShift`+`canEditStock` fail-closed (не wipe пустым RLS)
+- [x] Детрин: soft-dup merge 3158→3035 (order-independent core + Назаровский 133+45→178); date-tail strip
+- [x] `stockKeyImport`: sort+dedupe tokens, brand from ТМ/(…), 8,5%→8.5pct; 1/N вне ключа + ambiguous pack guard
+
 ## Закрыто в v201
 
 - [x] Регрессии v200: unknown unit больше не матчит `pool[0]`; пустая ед. карточки ≈ `шт`; `упаковка`≡`уп`
