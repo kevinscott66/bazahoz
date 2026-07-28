@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v196 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v197 · БЕТА</div>
   </div>
 </div>
 
@@ -2164,9 +2164,10 @@ function overCountedVsJournal(){
   }
   return over;
 }
-function runStockJournalReconcile(allowDown){
+function runStockJournalReconcile(allowDown, allowMerge){
   if(!canEditStock()) return { merged:0, relinked:0, created:0, fixed:0, up:[], down:[], skippedBatched:0 };
-  const merged = mergeDuplicateStockByName();
+  // merge дублей — только по явной «Сверке» (allowMerge). Авто/boot не сливает карточки.
+  const merged = allowMerge ? mergeDuplicateStockByName() : 0;
   const relinked = relinkJournalOpsToCanonical();
   const created = ensureProductsFromJournalLedger();
   const { fixed, up, down } = reconcileLegacyQtyFromJournal(!!allowDown);
@@ -2179,13 +2180,12 @@ function runStockJournalReconcile(allowDown){
   return { merged, relinked, created, fixed, up, down, skippedBatched };
 }
 function runAutoStockJournalReconcile(){
-  // v3: ключ поднят после фикса двойного учёта заказов (v2 мог завысить остатки).
-  const key = NS + "vahtahoz_stock_reconcile_v3_" + (profiles.activeId || "default");
+  // v4: без авто-merge дублей (v3 мог склеить разные фасовки/карточки при старте).
+  const key = NS + "vahtahoz_stock_reconcile_v4_" + (profiles.activeId || "default");
   if(localStorage.getItem(key)) return null;
-  const r = runStockJournalReconcile(false);   // авто — только вверх (безопасно)
+  const r = runStockJournalReconcile(false, false);   // авто — только вверх, без merge
   localStorage.setItem(key, "1");
   const parts = [];
-  if(r.merged) parts.push(`дублей: ${r.merged}`);
   if(r.created) parts.push(`новых поз.: ${r.created}`);
   if(r.fixed) parts.push(`остатков исправлено: ${r.fixed}`);
   if(parts.length) setTimeout(()=>toast(`Сверка склада: ${parts.join(", ")}`), 900);
@@ -2198,7 +2198,7 @@ async function openStockReconcileSheet(){
   const jrTruncated = jrLen >= 500 || !!activeCloudId();
   openSheet(`
     <div class="font-bold text-xl mb-2">Сверка склада по журналу</div>
-    <div class="text-sm opacity-70 mb-3">Сравнивает остатки с записями «Поступление», «Выдача» и «Списание». Объединяет дубли по названию и восстанавливает недостающие позиции. Заказы не учитываются (у них есть зеркальное «Поступление»).</div>
+    <div class="text-sm opacity-70 mb-3">Сравнивает остатки с записями «Поступление», «Выдача» и «Списание». По кнопке ниже объединяет дубли по названию и восстанавливает недостающие позиции. Автозапуск при входе дубли не сливает. Заказы не учитываются (у них есть зеркальное «Поступление»).</div>
     <div class="text-xs opacity-60 mb-3">Товары с партиями (срок годности) сверяются вручную — автоматом не трогаем.</div>
     ${jrTruncated
       ? `<div class="text-xs opacity-70 mb-3">⚠ Журнал на телефоне может быть неполным (хранятся последние записи). Понижение остатков по журналу отключено — только повышение недосчитанных и объединение дублей.</div>`
@@ -2209,7 +2209,7 @@ async function openStockReconcileSheet(){
   document.getElementById("reconcileGo").onclick = ()=>{
     const downEl = document.getElementById("reconcileDown");
     const allowDown = !!(downEl && downEl.checked) && !jrTruncated;   // никогда не понижаем по усечённому/облачному журналу
-    const r = runStockJournalReconcile(allowDown);
+    const r = runStockJournalReconcile(allowDown, true);   // ручная сверка — с объединением дублей
     const lines = [];
     if(r.merged) lines.push(`Объединено дублей: ${r.merged}`);
     if(r.relinked) lines.push(`Перепривязано записей журнала: ${r.relinked}`);
@@ -2361,14 +2361,26 @@ function _impExtractDocDate(text){
   return `${y}-${_impPad2(m[2])}-${_impPad2(m[1])}`;
 }
 function _impMapUnit(u){
-  const s = String(u||"").trim().toLowerCase().replace(/\.$/,"");
+  const raw = String(u||"").trim();
+  if(!raw) return "шт";
+  const s = raw.toLowerCase().replace(/\.$/,"");
+  // частые коды ОКЕИ из УПД — не молча в «шт»
+  const okei = { "796":"шт","778":"уп","625":"шт","168":"т","166":"кг","163":"г","112":"л","111":"мл","055":"м2","006":"метр","004":"шт","018":"метр" };
+  if(/^\d{2,4}$/.test(s) && okei[s]) return okei[s];
+  if(/^\d{2,4}$/.test(s)) return null;
   if(UNITS.includes(s)) return s;
-  if(s==="штука"||s==="штук"||s==="шт") return "шт";
-  if(s==="килограмм"||s==="кг") return "кг";
-  if(s==="грамм"||s==="г") return "г";
-  if(s==="литр"||s==="л") return "л";
+  if(s==="штука"||s==="штук"||s==="штуки"||s==="шт"||s==="ед"||s==="единица") return "шт";
+  if(s==="килограмм"||s==="килограмма"||s==="кг") return "кг";
+  if(s==="грамм"||s==="грамма"||s==="гр"||s==="г") return "г";
+  if(s==="литр"||s==="литра"||s==="л") return "л";
   if(s==="миллилитр"||s==="мл") return "мл";
-  return "шт";
+  if(/^короб/.test(s)||s==="кор") return "кор";
+  if(/^упаков/.test(s)||s==="уп") return "уп";
+  if(/^пачк/.test(s)) return "пачка";
+  if(/^рулон/.test(s)) return "рулон";
+  if(/^меш/.test(s)) return "меш";
+  if(/^метр/.test(s)||s==="м") return "метр";
+  return null;   // неизвестная ед. — fail-closed (не подменять на шт)
 }
 // эвристика категории продукта по имени — только из списка категорий базы
 function guessProductCategory(name){
@@ -2448,6 +2460,8 @@ function findStockForImport(name, unit){
   }
   let best=null, bestScore=0;
   for(const s of pool){
+    // fuzzy только при той же единице — иначе «24 кор» приклеится к «шт»
+    if(wantUnit && _impMapUnit(s.unit) !== wantUnit) continue;
     const sk = stockKeyImport(s.name);
     if(sk.length < 8 || key.length < 8) continue;
     let score = _impTokenScore(name, s.name);
@@ -2487,13 +2501,17 @@ function _impNormalizePackQty(name, qty, unit){
 function _impAlignQtyToProduct(product, name, qty, unit){
   let q = roundQty(qty), u = _impMapUnit(unit);
   const pu = _impMapUnit(product?.unit);
-  if(!pu || pu===u) return { qty:q, unit:u };
+  if(u==null || pu==null) return null;
+  if(pu===u) return { qty:q, unit:u };
   const pack = _impPackSize(product?.name) || _impPackSize(name);
   if(pack > 1){
     if(pu==="кор" && u==="шт" && q >= pack && Math.abs(q % pack) < 1e-6) return { qty: roundQty(q/pack), unit:"кор" };
     if(pu==="шт" && u==="кор") return { qty: roundQty(q*pack), unit:"шт" };
+    if(pu==="уп" && u==="шт" && q >= pack && Math.abs(q % pack) < 1e-6) return { qty: roundQty(q/pack), unit:"уп" };
+    if(pu==="шт" && u==="уп") return { qty: roundQty(q*pack), unit:"шт" };
   }
-  return { qty:q, unit:pu };
+  // нельзя молча сменить unit и оставить чужой qty — пропускаем строку
+  return null;
 }
 // одна строка импорта → поступление (мутирует склад/журнал; saveState — у вызывающего через logOp/saveState)
 function recordReceiptRow(row){
@@ -2501,6 +2519,7 @@ function recordReceiptRow(row){
   let qty = roundQty(parseNum(row.qty));
   if(!name || !(qty>0)) return null;
   let unit = _impMapUnit(row.unit);
+  if(unit==null){ console.warn("import skip: неизвестная ед.", row.unit, name); return null; }
   ({ qty, unit } = _impNormalizePackQty(name, qty, unit));
   // только существующие; новое имя — лишь если в каталоге нет похожего
   let product = findStockForImport(name, unit);
@@ -2511,7 +2530,9 @@ function recordReceiptRow(row){
     created = true;
     if(!row.skipPropagate){ try{ propagateName("product", name, product.unit); }catch(e){} }
   } else {
-    ({ qty, unit } = _impAlignQtyToProduct(product, name, qty, unit));
+    const aligned = _impAlignQtyToProduct(product, name, qty, unit);
+    if(!aligned){ console.warn("import skip: ед. не сходятся без фасовки", name, unit, "→", product.unit); return null; }
+    ({ qty, unit } = aligned);
   }
   // категорию ставим только новой карточке или если у старой пусто/«Прочие»/ошибочные макароны у бульона
   const guessed = guessProductCategory(product.name || name);
@@ -2740,7 +2761,7 @@ async function importReceiptsExcel(ev){
     return `• ${m.name}: ${m.n} поз.${tag}`;
   }).join("\n");
   const preview = valid.slice(0,8).map(r=>{
-    const u = _impMapUnit(r.unit);
+    const u = _impMapUnit(r.unit) || (String(r.unit||"").trim() || "?");
     const d = _impParseDate(r.receiptDate);
     return `• ${cleanNameImport(r.name).slice(0,48)} — ${fmtQty(roundQty(parseNum(r.qty)))} ${u}${d?` · ${d.split("-").reverse().join(".")}`:""}`;
   }).join("\n");
@@ -3917,7 +3938,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v196 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v197 · тестовый канал</div>
   `;
 }
 
@@ -6375,9 +6396,15 @@ function saveStockSig(cid, map){ saveSyncSig(cid,"stock",map); saveSyncSig(cid,"
 async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
   try{
     const ids = upsert.map(r=>r.id); if(!ids.length) return;
-    const cloudRows = await cloudRest(`stock_items?select=id,qty,batches&base_id=eq.${encodeURIComponent(cid)}&id=in.(${ids.map(encodeURIComponent).join(",")})`, tok);
-    if(!Array.isArray(cloudRows) || !cloudRows.length) return;
-    const cloudById={}; cloudRows.forEach(cr=>cloudById[cr.id]=cr);
+    // чанкуем id=in.(...) — иначе длинный URL режется прокси/PostgREST
+    const cloudById={};
+    const size=100;
+    for(let i=0;i<ids.length;i+=size){
+      const chunk = ids.slice(i,i+size);
+      const cloudRows = await cloudRest(`stock_items?select=id,qty,batches&base_id=eq.${encodeURIComponent(cid)}&id=in.(${chunk.map(encodeURIComponent).join(",")})`, tok);
+      if(Array.isArray(cloudRows)) cloudRows.forEach(cr=>cloudById[cr.id]=cr);
+    }
+    if(!Object.keys(cloudById).length) return;
     const snap = loadSyncSig(cid,"stockVals");   // {id: qty} на момент последнего синка
     let localChanged=false, conflictBatched=0;
     for(const r of upsert){
@@ -6668,7 +6695,7 @@ async function cloudPullTasks(){
   if(localStorage.getItem(TASKS_DIRTY)){ cloudMaybePushTasks(); return; }   // есть несинхр. правки — не затираем
   try{
     const tok=cloud.session.access_token;
-    const rows=await cloudRest(`tasks?select=*&owner_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:30000});
+    const rows=await cloudRestAll(`tasks?select=*&owner_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:30000});
     if(localStorage.getItem(TASKS_DIRTY)) return;                            // успел отредактировать во время загрузки → не затираем
     // САНИТАЙЗ: id задачи И id пунктов чек-листа — оба идут из облака (jsonb от любого участника)
     // и подставляются в inline-onclick (toggleTaskItem). Без safeId на items[].id — XSS-вектор.
