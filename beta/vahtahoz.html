@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v194 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v195 · БЕТА</div>
   </div>
 </div>
 
@@ -2467,12 +2467,25 @@ function stockNormLoose(s){
 function findStockByNameLoose(name, type){
   return findStockForImport(name, type==="product" ? "шт" : "шт");
 }
+// яйца «1/360шт» в УПД часто приходят штуками — переводим в коробки
+function _impNormalizePackQty(name, qty, unit){
+  let q = roundQty(qty), u = _impMapUnit(unit);
+  const n = String(name||"").toLowerCase().replace(/ё/g,"е");
+  if(/яйц/.test(n) && /1\s*\/\s*360/.test(n) && (u==="шт" || u==="штук")){
+    if(q >= 360 && Math.abs(q % 360) < 1e-6){
+      q = roundQty(q / 360);
+      u = "кор";
+    }
+  }
+  return { qty:q, unit:u };
+}
 // одна строка импорта → поступление (мутирует склад/журнал; saveState — у вызывающего через logOp/saveState)
 function recordReceiptRow(row){
   const name = cleanNameImport(row.name);
-  const qty = roundQty(parseNum(row.qty));
+  let qty = roundQty(parseNum(row.qty));
   if(!name || !(qty>0)) return null;
-  const unit = _impMapUnit(row.unit);
+  let unit = _impMapUnit(row.unit);
+  ({ qty, unit } = _impNormalizePackQty(name, qty, unit));
   // только существующие; новое имя — лишь если в каталоге нет похожего
   let product = findStockForImport(name, unit);
   let created = false;
@@ -3886,7 +3899,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v194 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v195 · тестовый канал</div>
   `;
 }
 
