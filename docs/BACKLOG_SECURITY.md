@@ -10,6 +10,13 @@
 - [x] `handover_shift`: multi_base на любое членство в других базах
 - [x] Beta legacy quickAdjust: `stockType`
 
+## Закрыто в v201
+
+- [x] Регрессии v200: unknown unit больше не матчит `pool[0]`; пустая ед. карточки ≈ `шт`; `упаковка`≡`уп`
+- [x] `ensureProducts` parse ключа через lastIndexOf (имена с `::`)
+- [x] no-snap партийный путь берёт cloud batches+qty
+- [x] `normalizeStockItem` канонизирует unit
+
 ## Закрыто в v200
 
 - [x] Пустая ед. импорта → null/skip (не silent `шт`)
