@@ -10,6 +10,10 @@
 - [x] `handover_shift`: multi_base на любое членство в других базах
 - [x] Beta legacy quickAdjust: `stockType`
 
+## Закрыто в v199
+
+- [x] Владелец: `grant_bases` / UI «Выдача доступа к базам» (несколько баз одному логину; снятие; orphan-защита)
+
 ## Закрыто в v198
 
 - [x] Raise/create по усечённому/облачному локальному журналу отключены (`journalLooksIncomplete`)
