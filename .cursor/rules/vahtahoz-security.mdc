@@ -13,16 +13,18 @@ alwaysApply: true
 
 - Существующие сессии не revoke при reset пароля (пользователь так решил).
 - Beta канал: `beta/vahtahoz.html` + `beta/sw.js`; версия: `сборка vNNN` + `vahtahoz-BETA-vNNN`.
-- Pull склада/журнала — **только через `cloudRestAll`** (PostgREST `max_rows=1000`).
-- На post-pull **не** вызывать `mergeDuplicateStockByName` (только ручная сверка).
+- Pull склада/журнала — **только через `cloudRestAll`** (PostgREST `max_rows=1000`); tasks pull тоже через `cloudRestAll`.
+- На post-pull **и** на auto-reconcile boot **не** вызывать `mergeDuplicateStockByName` (только ручная «Сверка»).
 - `journalEffectSign(order)=0` (заказ не двойнит ledger).
 - Type-restricted push: merge подписей + `stockAllowed`/`jrAllowed`, не replace-only `_at`.
-- Импорт УПД/Excel: `cleanNameImport` срезает «цена за шт»/«только местами»/промо; `findStockForImport` — сначала существующие карточки (exact → stockKey → Jaccard ≥0.72); новое имя только если нет похожего. Категория: бульон→приправы раньше мяса/макарон; бедро→мясо (`куриц(?!н)`).
+- Импорт УПД/Excel: `cleanNameImport` срезает «цена за шт»/«только местами»/промо; `findStockForImport` — exact → stockKey → Jaccard ≥0.72 **только при той же unit**; неизвестная ед. / unit mismatch без фасовки — **skip строки** (не подменять на шт/unit карточки).
+- `mergeStockQtyBeforePush`: чанковать `id=in.(...)` (≤100).
 
 ## Сделано (не повторять как «дыры»)
 
+- v197: auto-reconcile без merge; `_impMapUnit` fail-closed + ОКЕИ/коробка; align qty fail-closed; fuzzy same-unit; 3-way push chunk; tasks `cloudRestAll`; Детрин — reattach 62 orphan journal → живые id.
 - v185–v188: journal RLS, type-restricted merge, пагинация pull, app_private journal_row_type, orphan fail-closed, handover multi_base.
-- v194: мясо/кур — окорочок/грудка в мясо; готовые блюда в заморозку; не путать с кукурузой/курагой.
+- v194–v196: категории мясо/кур/яйца/доширак pack align.
 - v193: категории — без \b/\w для кириллицы; бульон/бедро/лапша; правка «Прочих» в Детрине.
 - v192: cleanNameImport без прайс-мусора.
 - v191: импорт не размножает имена (`findStockForImport`); бульон→приправы, бедро→мясо.
