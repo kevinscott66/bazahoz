@@ -219,7 +219,7 @@
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
-    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v197 · БЕТА</div>
+    <div style="font-size:11px;opacity:.4;margin-top:10px">сборка v198 · БЕТА</div>
   </div>
 </div>
 
@@ -1995,7 +1995,8 @@ function ledgerQtyForProduct(product){
       const matchId = op.productId && op.productId===pid;
       // по имени учитываем ТОЛЬКО записи без productId (иначе движение с чужим/удалённым
       // productId, но совпавшим именем, приписалось бы не той карточке)
-      const matchNameOnly = !op.productId && stockNormName(op.productName)===pname;
+      const matchNameOnly = !op.productId && stockNormName(op.productName)===pname
+        && (!op.unit || !product.unit || (typeof _impMapUnit==="function" ? _impMapUnit(op.unit)===_impMapUnit(product.unit) : String(op.unit).toLowerCase()===String(product.unit).toLowerCase()));
       if(matchId || matchNameOnly)
         sum += sign * Number(op.qty||0);
     }
@@ -2045,7 +2046,9 @@ function relinkJournalOpsToCanonical(){
 function mergeDuplicateStockByName(){
   const groups = new Map();
   for(const s of (state.stock||[])){
-    const key = `${s.type}|${stockNormName(s.name)}`;
+    // unit в ключе: иначе «кг» и «шт» с одним именем схлопывались и суммировали qty
+    const u = (typeof _impMapUnit==="function" ? (_impMapUnit(s.unit)||String(s.unit||"").toLowerCase()) : String(s.unit||"").toLowerCase()) || "шт";
+    const key = `${s.type}|${stockNormName(s.name)}|${u}`;
     if(!groups.has(key)) groups.set(key, []);
     groups.get(key).push(s);
   }
@@ -2136,7 +2139,8 @@ function ensureProductsFromJournalLedger(){
 // Сверка остатка с журналом. allowDown=false (по умолчанию) — только повышаем недосчитанные
 // (безопасно: журнал мог не попасть в остаток). allowDown=true — приводим и завышенные к журналу
 // (только по явному запросу пользователя: журнал не всегда полный, ручное занижение возможно).
-function reconcileLegacyQtyFromJournal(allowDown){
+function reconcileLegacyQtyFromJournal(allowDown, allowUp){
+  if(allowUp==null) allowUp = true;
   const up = [], down = [];
   for(const s of (state.stock||[])){
     if(hasBatches(s)) continue;
@@ -2144,6 +2148,7 @@ function reconcileLegacyQtyFromJournal(allowDown){
     const cur = totalQtyOf(s);
     if(ledger === cur) continue;
     if(ledger > cur){
+      if(!allowUp) continue;   // усечённый/облачный локальный журнал — raise раздувает qty
       s.qty = ledger; s.updatedAt = new Date().toISOString();
       up.push({ name:s.name, was:cur, now:ledger });
     } else if(allowDown && ledger >= 0){
@@ -2152,6 +2157,12 @@ function reconcileLegacyQtyFromJournal(allowDown){
     }
   }
   return { fixed: up.length + down.length, up, down };
+}
+// локальный журнал после cloud pull усечён (≤500/kind) → ledger неполный
+function journalLooksIncomplete(){
+  if(activeCloudId()) return true;
+  const jrLen = JOURNAL_KEYS.reduce((n,k)=> n + ((state.journals[k]||[]).length), 0);
+  return jrLen >= 500;
 }
 // список позиций, где остаток БОЛЬШЕ журнала (кандидаты на завышение, напр. старым багом сверки)
 function overCountedVsJournal(){
@@ -2165,25 +2176,28 @@ function overCountedVsJournal(){
   return over;
 }
 function runStockJournalReconcile(allowDown, allowMerge){
-  if(!canEditStock()) return { merged:0, relinked:0, created:0, fixed:0, up:[], down:[], skippedBatched:0 };
+  if(!canEditStock()) return { merged:0, relinked:0, created:0, fixed:0, up:[], down:[], skippedBatched:0, incomplete:false };
+  const incomplete = journalLooksIncomplete();
   // merge дублей — только по явной «Сверке» (allowMerge). Авто/boot не сливает карточки.
   const merged = allowMerge ? mergeDuplicateStockByName() : 0;
   const relinked = relinkJournalOpsToCanonical();
-  const created = ensureProductsFromJournalLedger();
-  const { fixed, up, down } = reconcileLegacyQtyFromJournal(!!allowDown);
+  // create/raise по усечённому журналу раздувают остатки (нет выдач в хвосте) — только relink+merge
+  const created = incomplete ? 0 : ensureProductsFromJournalLedger();
+  const { fixed, up, down } = reconcileLegacyQtyFromJournal(!!allowDown && !incomplete, !incomplete);
   const skippedBatched = (state.stock||[]).filter(s=>hasBatches(s)).length;
   if(merged || relinked || created || fixed){
     saveState();
     try{ cloudMaybePush(); }catch(_){}
     try{ render(); }catch(_){}
   }
-  return { merged, relinked, created, fixed, up, down, skippedBatched };
+  return { merged, relinked, created, fixed, up, down, skippedBatched, incomplete };
 }
 function runAutoStockJournalReconcile(){
-  // v4: без авто-merge дублей (v3 мог склеить разные фасовки/карточки при старте).
-  const key = NS + "vahtahoz_stock_reconcile_v4_" + (profiles.activeId || "default");
+  // v5: при облаке/усечённом журнале raise отключён (post-pull сверка идёт по полному журналу).
+  const key = NS + "vahtahoz_stock_reconcile_v5_" + (profiles.activeId || "default");
   if(localStorage.getItem(key)) return null;
-  const r = runStockJournalReconcile(false, false);   // авто — только вверх, без merge
+  if(journalLooksIncomplete()){ localStorage.setItem(key, "1"); return null; }
+  const r = runStockJournalReconcile(false, false);   // авто — только вверх, без merge; только полный локальный журнал
   localStorage.setItem(key, "1");
   const parts = [];
   if(r.created) parts.push(`новых поз.: ${r.created}`);
@@ -2193,41 +2207,41 @@ function runAutoStockJournalReconcile(){
 }
 async function openStockReconcileSheet(){
   if(!ensureCanEdit()) return;
-  // локальный журнал усечён (pull держит ≤500, квота — до 500/2000) → «вниз» по нему молча занизит остатки
-  const jrLen = JOURNAL_KEYS.reduce((n,k)=> n + ((state.journals[k]||[]).length), 0);
-  const jrTruncated = jrLen >= 500 || !!activeCloudId();
+  // локальный журнал усечён (pull держит ≤500) → и up, и down по нему опасны
+  const jrTruncated = journalLooksIncomplete();
   openSheet(`
     <div class="font-bold text-xl mb-2">Сверка склада по журналу</div>
-    <div class="text-sm opacity-70 mb-3">Сравнивает остатки с записями «Поступление», «Выдача» и «Списание». По кнопке ниже объединяет дубли по названию и восстанавливает недостающие позиции. Автозапуск при входе дубли не сливает. Заказы не учитываются (у них есть зеркальное «Поступление»).</div>
+    <div class="text-sm opacity-70 mb-3">Сравнивает остатки с записями «Поступление», «Выдача» и «Списание». По кнопке ниже объединяет дубли по названию+единице. Автозапуск при входе дубли не сливает и не поднимает остатки по усечённому журналу. Заказы не учитываются.</div>
     <div class="text-xs opacity-60 mb-3">Товары с партиями (срок годности) сверяются вручную — автоматом не трогаем.</div>
     ${jrTruncated
-      ? `<div class="text-xs opacity-70 mb-3">⚠ Журнал на телефоне может быть неполным (хранятся последние записи). Понижение остатков по журналу отключено — только повышение недосчитанных и объединение дублей.</div>`
+      ? `<div class="text-xs opacity-70 mb-3">⚠ Журнал на телефоне неполный (облако / последние записи). Корректировка остатков по журналу отключена — только объединение дублей (имя+ед.) и перепривязка журнала. Полный подъём остатков делается при загрузке из облака.</div>`
       : `<label class="flex items-center gap-2 text-sm mb-3"><input type="checkbox" id="reconcileDown" /> Приводить и завышенные остатки к журналу (если остаток больше, чем по движениям)</label>`}
     <button class="btn btn-primary w-full" id="reconcileGo">Запустить сверку</button>
     <div id="reconcileOut" class="text-sm mt-3 whitespace-pre-line opacity-80"></div>
   `);
   document.getElementById("reconcileGo").onclick = ()=>{
     const downEl = document.getElementById("reconcileDown");
-    const allowDown = !!(downEl && downEl.checked) && !jrTruncated;   // никогда не понижаем по усечённому/облачному журналу
-    const r = runStockJournalReconcile(allowDown, true);   // ручная сверка — с объединением дублей
+    const allowDown = !!(downEl && downEl.checked) && !jrTruncated;
+    const r = runStockJournalReconcile(allowDown, true);
     const lines = [];
     if(r.merged) lines.push(`Объединено дублей: ${r.merged}`);
     if(r.relinked) lines.push(`Перепривязано записей журнала: ${r.relinked}`);
     if(r.created) lines.push(`Создано позиций на складе: ${r.created}`);
     if(r.fixed) lines.push(`Исправлено остатков: ${r.fixed}`);
+    if(r.incomplete) lines.push("", "⚠ Остатки по журналу не меняли — локальный журнал неполный.");
     const ex = [...(r.up||[]), ...(r.down||[])];
     if(ex.length){
       lines.push("", "Примеры (было → стало):");
       ex.slice(0,12).forEach(x=> lines.push(`• ${x.name}: ${fmtQty(x.was)} → ${fmtQty(x.now)}`));
       if(ex.length>12) lines.push(`… и ещё ${ex.length-12}`);
     }
-    if(!allowDown){
+    if(!allowDown && !jrTruncated){
       const over = overCountedVsJournal();
-      if(over.length) lines.push("", `⚠ Остаток больше локального журнала у ${over.length} поз.${jrTruncated?" — журнал может быть неполным, понижение отключено.":" — включите галочку выше, чтобы привести к журналу."}`);
+      if(over.length) lines.push("", `⚠ Остаток больше локального журнала у ${over.length} поз. — включите галочку выше, чтобы привести к журналу.`);
     }
     if(!lines.length) lines.push("Расхождений не найдено — склад совпадает с журналом.");
     document.getElementById("reconcileOut").textContent = lines.join("\n");
-    toast(r.fixed || r.created || r.merged ? "Сверка выполнена" : "Расхождений нет");
+    toast(r.fixed || r.created || r.merged || r.relinked ? "Сверка выполнена" : (r.incomplete ? "Дубли/перепривязка: без правок остатков" : "Расхождений нет"));
   };
 }
 
@@ -2452,10 +2466,11 @@ function findStockForImport(name, unit){
     const inSt = totalQtyOf(s)>0 ? 1 : 0;
     return sameU*50 + inSt*10 + Math.min(totalQtyOf(s), 99)/100;
   };
-  let hits = pool.filter(s=> stockNormName(s.name)===exact);
+  // exact/key — тоже только та же unit (иначе кг→шт через pack-эвристику)
+  let hits = pool.filter(s=> stockNormName(s.name)===exact && (!wantUnit || _impMapUnit(s.unit)===wantUnit));
   if(hits.length) return hits.slice().sort((a,b)=> rank(b)-rank(a))[0];
   if(key.length >= 8){
-    hits = pool.filter(s=> stockKeyImport(s.name)===key);
+    hits = pool.filter(s=> stockKeyImport(s.name)===key && (!wantUnit || _impMapUnit(s.unit)===wantUnit));
     if(hits.length) return hits.slice().sort((a,b)=> rank(b)-rank(a))[0];
   }
   let best=null, bestScore=0;
@@ -2770,12 +2785,21 @@ async function importReceiptsExcel(ev){
     { yes:"Импортировать", no:"Отмена", title:"Подтверждение импорта" }
   );
   if(!go) return;
-  let ok = 0;
-  for(const r of valid){ try{ if(recordReceiptRow(r)) ok++; }catch(e){ console.warn("recordReceiptRow", e); } }
+  let ok = 0, unitSkip = 0;
+  for(const r of valid){
+    try{
+      const res = recordReceiptRow(r);
+      if(res) ok++;
+      else unitSkip++;   // имя/qty ок, но ед. неизвестна или не сошлась с карточкой
+    }catch(e){ console.warn("recordReceiptRow", e); unitSkip++; }
+  }
   if(Array.isArray(state.journals.receipt) && state.journals.receipt.length>3000) state.journals.receipt = state.journals.receipt.slice(0,3000);
   logOp("IMPORT", `Поступление из Excel: ${ok} поз. (${list.length} файл.)`);
   try{ render(); }catch(_){}
-  toast(`Импортировано: ${ok}${skipped?` · пропущено: ${skipped}`:""}`);
+  const skipParts = [];
+  if(skipped) skipParts.push(`пусто: ${skipped}`);
+  if(unitSkip) skipParts.push(`ед.: ${unitSkip}`);
+  toast(`Импортировано: ${ok}${skipParts.length?` · пропущено ${skipParts.join(", ")}`:""}`);
 }
 
 function orderReceive(opId){
@@ -3938,7 +3962,7 @@ function renderMore(){
       </div>
     </div>
     ${group("О программе", about)}
-    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v197 · тестовый канал</div>
+    <div class="text-center opacity-50 text-xs py-4">ВахтаХоз БЕТА · сборка v198 · тестовый канал</div>
   `;
 }
 
@@ -6409,8 +6433,16 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
     let localChanged=false, conflictBatched=0;
     for(const r of upsert){
       const cr=cloudById[r.id]; if(!cr) continue;                          // в облаке нет — новая позиция
-      const snapQty=Number(snap[r.id]); if(!isFinite(snapQty)) continue;   // нет базы для 3-way
       const cloudQty=Number(cr.qty)||0;
+      const snapQty=Number(snap[r.id]);
+      if(!isFinite(snapQty)){
+        // нет базы 3-way — не LWW-затираем облачный qty (риск воскрешения остатка)
+        if(cloudQty !== (Number(r.qty)||0)){
+          r.qty = cloudQty; curSig[r.id]=_sigOf(r);
+          const it=state.stock.find(s=>s.id===r.id); if(it && Number(it.qty)!==cloudQty){ it.qty=cloudQty; localChanged=true; }
+        }
+        continue;
+      }
       if(cloudQty===snapQty) continue;                                     // облако не менялось с снимка → конфликта нет, local победит
       // НЕ пропускаем «local не менял qty, cloud упал»: иначе правка имени/заметки на офлайн-устройстве
       // заливала бы старый qty поверх чужого списания (воскрешение остатка). 3-way даёт cloud при
@@ -6773,7 +6805,7 @@ function cloudSubscribeTasks(){
 }
 function cloudOnRemote(){
   clearTimeout(cloud.pullTimer);               // всегда гасим прежний отложенный pull, иначе он сработает после dirty и затрёт правки
-  if(cloud.busy || cloud.pushPending) return;  // идёт/ждёт наша выгрузка — pull её не затрёт
+  if(cloud.busy || cloud.pushPending || cloud.applying) return;  // push/pull в полёте — не стартуем второй pull
   // есть несинхронизированные локальные правки → не тянем (затёрли бы своё); сначала выгрузим их
   const cid0 = activeCloudId();
   if(cid0 && localStorage.getItem(cloudDirtyKey(cid0))){ cloudMaybePush(); return; }
