@@ -2,6 +2,16 @@
 
 Живой чеклист. Инварианты — `.cursor/rules/vahtahoz-security.mdc`.
 
+## Закрыто в v203
+
+- [x] **Пресет флагов применялся не ко всем ролям** (`enforce_base_member_write`): `accounting` (rank 1)
+      проходила `trank>=crank` у `site_manager` (crank 2), но пресетом не покрывалась → клиентские
+      `can_manage/can_edit_stock/can_*_tasks` проходили как есть. Воспроизведено на локальном PG16
+      (`has_perm(manage)`=true у постороннего) и закрыто: пресет для ВСЕХ базовых ролей + `accounting`
+      только чтение склада + org-роли в `base_members` отвергаются (`2026-07-30_base_member_preset_all_roles.sql`)
+- [x] Косметика: единый источник версии (`APP_BUILD`) — «О программе» больше не отстаёт (было v168 при v202/v175)
+- [x] Мёртвый код: `stockNormLoose`, `findStockByNameLoose` (обёртки после рефактора импорта v197–v202)
+
 ## Закрыто в v188
 
 - [x] `journal_row_type` → `app_private` (не в PostgREST)
@@ -67,7 +77,10 @@
 - [ ] Per-IP rate-limit на `request_reset`
 - [ ] Revoke сессий после reset — **только по явной просьбе**
 - [ ] Обновить SheetJS
-- [ ] Подтянуть prod `vahtahoz.html` к beta (stockType / пагинация)
+- [ ] **Паритет prod ↔ beta (High, приоритет №1)** — стабильная v175 vs бета v203, ~1.7k строк.
+      На проде нет `cloudRestAll` (pull режется на 1000 строк — «Детрин» 3035 позиций → усечённый склад
+      и дубли в ОБЩЕЙ базе), нет `stockAllowed`/`jrAllowed` (F1: delete у cook/mechanic не уходит в облако),
+      нет `hardCap`-throw (F2). Массового удаления нет: delete считается diff'ом `prevSig`.
 - [ ] Полный journal в localStorage без усечения 500 (сейчас raise — только post-pull по полному)
 - [ ] Исторически завышенные qty vs неполный ledger — не авто-чинить вниз
 - [ ] Cap undelivered journal tombstones / batched 3-way merge

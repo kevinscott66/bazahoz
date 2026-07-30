@@ -24,9 +24,17 @@ alwaysApply: true
 - `cloudOnRemote` не стартует pull при `cloud.applying`.
 - `canEditStock` / `isOffShift`: облачный юзер без членства и без орг-роли на базу — fail-closed (не wipe пустым RLS).
 - Self-shift: нельзя снять последнего `can_manage` со смены (`orphan`).
+- `enforce_base_member_write`: пресет флагов — для **ВСЕХ** ролей, валидных в `base_members`
+  (`worker/cook/mechanic/site_manager/accounting`); `accounting` = только чтение склада, без задач и без `can_manage`.
+  Роли оргструктуры (`party_chief/director/general_director/owner`) в `base_members` **отвергаются** — их место `org_roles`.
+  Добавляешь роль в `role_rank` → обязательно добавь ей ветку пресета, иначе клиентские флаги пройдут как есть.
+- Версия сборки — ОДНА константа `APP_BUILD` (+ `CACHE` в `sw.js`); надписи не хардкодить (иначе разъезжаются).
 
 ## Сделано (не повторять как «дыры»)
 
+- v203: пресет флагов для всех базовых ролей (закрыта эскалация через `role='accounting'` + `can_manage=true`,
+  воспроизведено и проверено на локальном PG16); org-роли в `base_members` отвергаются; единый `APP_BUILD`;
+  удалён мёртвый код `stockNormLoose`/`findStockByNameLoose`. XSS через id проверен — уже закрыт (`safeId` на pull склада/журнала/задач, включая `items[].id`).
 - v202: import size/pack/multipack/%-aware + symmetric spec; align pack mismatch; 3-way catch→cloud; remove-member no wipe; self-shift orphan SQL; Детрин soft-dup (3158→3035, order-independent) + date-tail strip; org push без `activeMember`; self-handover rank exception; grant demote orphan; `isRestrictedUser` по org; raw stockVals/jr sig до reconcile; `_pullSaving`; settings push throw; local-wins cloud ids; ledger skip `[партия удалена]`; pack alt-unit find; UPD empty unit fail-closed; self-shift SQL.
 - v201: `_impUnitKey` (пусто≈шт; unknown fail-closed); `упаковка`→`уп`; findStockByName не fail-open; ensureProducts parse `lastIndexOf`; no-snap партий → cloud batches; normalizeStockItem канон ед.
 - v200: пустая ед. импорта → skip; findStockByName/relink/ledger/ensure/JSON-merge с unit; tombJr без среза недоставленных; партийный конфликт → cloud; grant_bases `on_shift`.
@@ -47,7 +55,10 @@ alwaysApply: true
 3. ~~**`DROP journal_entry_type`**~~ — закрыто v188.
 4. ~~**`handover_shift` multi_base**~~ — закрыто v188 (любое членство).
 5. ~~**legacy quickAdjust stockType**~~ — закрыто v188.
-6. Deferred: per-IP rate-limit `request_reset`; SheetJS; prod HTML parity.
+6. Deferred: per-IP rate-limit `request_reset`; SheetJS.
+7. **Паритет prod↔beta — приоритет №1.** Стабильная v175, бета v203. На проде нет `cloudRestAll`
+   (pull режется на 1000; «Детрин» 3035 позиций → усечённый склад и дубли в общей БД),
+   нет `stockAllowed`/`jrAllowed` (F1), нет `hardCap`-throw (F2). БД у каналов ОДНА.
 
 ## Деплой
 
