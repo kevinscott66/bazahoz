@@ -251,6 +251,22 @@ const NS = (location.pathname.indexOf("/beta/") !== -1) ? "beta_" : "";
 // (merged = local + cloud − снимок, CRDT-счётчик). Только для позиций БЕЗ партий (у партийных qty = сумма партий,
 // слепое слияние сломало бы инвариант). ПОКА только на бете — включить в стабильной после теста на двух устройствах.
 const STOCK_MERGE = (NS === "beta_");
+/* ЯВНЫЕ флаги каналов для путей, которые МАССОВО ПЕРЕПИСЫВАЮТ данные в общей БД.
+   Раньше такие решения были неявными (вычислялись из NS) — и при переносе беты в корень
+   молча меняли поведение: 3-way merge выключался, а авто-сверка, наоборот, впервые включалась
+   на данных, которые с журналом никогда не сверялись.
+
+   AUTO_RECONCILE — авто-сверка склада по журналу (подъём qty к ledger + создание карточек
+   из orphan-записей + relink) на старте и после каждого pull. На стабильной этого кода
+   НИКОГДА не было: накопленное за всю историю расхождение вылилось бы в правку тысяч строк
+   у всех участников без подтверждения. Включать в стабильной ТОЛЬКО после ручного прогона
+   «Сверки» владельцем по каждой базе с разбором «было → стало» и при живом stock_history
+   (иначе откатывать нечем). Ручная «Сверка» из меню работает в обоих каналах — она под явным
+   нажатием и показывает отчёт.
+
+   STOCK_MERGE — 3-way слияние количеств. На стабильной остаётся ВЫКЛЮЧЕННЫМ (как и сейчас):
+   это не регрессия, но и аудит бета-пути на прод не переносится. Включать отдельным релизом. */
+const AUTO_RECONCILE = (NS === "beta_");
 /* ЕДИНЫЙ источник версии сборки. Меняется В ОДНОМ месте (+ CACHE в sw.js).
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
@@ -1081,7 +1097,7 @@ for(const k of JOURNAL_KEYS){
   }
 }
 // Поступление с ручным названием (до v179) попадало только в журнал — полная сверка v2 (дубли + остатки по журналу).
-setTimeout(()=>{ try{ runAutoStockJournalReconcile(); }catch(e){ console.warn("stock reconcile", e); } }, 300);
+if(AUTO_RECONCILE) setTimeout(()=>{ try{ runAutoStockJournalReconcile(); }catch(e){ console.warn("stock reconcile", e); } }, 300);
 
 function toast(msg){
   const t=document.getElementById("toast");
@@ -4588,24 +4604,56 @@ function mergeJournalsForExport(cloudJ){
 /* opts.localOnly — писать файл СРАЗУ, без обращения к облаку. Нужно для аварийного экспорта при
    переполнении памяти: там последняя операция могла не лечь на диск, и откладывать запись файла
    на сетевой запрос (до 120 с) нельзя. */
+/* Сохранение файла ПОСЛЕ сетевого ожидания: transient user activation к этому моменту истекла,
+   поэтому navigator.share даёт NotAllowedError, а фолбэк <a download> в Capacitor-обёртке молча
+   ничего не делает — тост при этом говорил «сохранён». Ломался ровно главный страховочный бэкап.
+   Решение: показываем шит с кнопкой, и сохранение идёт СИНХРОННО из её onclick — жест свежий. */
+let _pendingSave = null;
+function offerFileSave(text, filename, title, note){
+  _pendingSave = { text, filename };
+  openSheet(`
+    <div class="font-bold text-xl mb-2">${esc(title)}</div>
+    <div class="text-sm opacity-80 mb-4" style="line-height:1.5">${esc(note)}</div>
+    <button class="btn btn-primary w-full" onclick="doPendingSave()">Сохранить файл</button>
+    <button class="btn btn-ghost w-full mt-2" onclick="_pendingSave=null;closeSheet()">Отмена</button>`);
+}
+function doPendingSave(){
+  const p = _pendingSave; _pendingSave = null;
+  if(!p) return;
+  closeSheet();
+  triggerDownload(p.text, p.filename);   // синхронно в обработчике клика → share/download работают
+}
+/* opts.localOnly — писать файл СРАЗУ, без обращения к облаку. Нужно для аварийного экспорта при
+   переполнении памяти: там последняя операция могла не лечь на диск, и откладывать запись файла
+   на сетевой запрос (до 120 с) нельзя. */
 async function exportData(opts){
   // экспорт ТОЛЬКО текущей базы (для обычного бэкапа/переноса одной базы)
   // у начальника (нет прав на задачи) «Задачи» не выгружаем
   const localOnly = !!(opts && opts.localOnly);
   const cid = activeCloudId();
-  let full = null;
-  if(cid && !localOnly){
-    toast("Подготовка бэкапа…");
-    full = await fullCloudJournals();                // полная история движений, а не хвост 500
-    // база могла смениться, пока шла загрузка (переключение делает reload, но подстраховываемся)
-    if(activeCloudId() !== cid) full = null;
+  const fname = `vahtahoz-${activeProfileName()}-${todayStr()}.json`;
+  const pack = (journals)=>{
+    const base = journals ? { ...state, journals } : state;
+    const out = isRestrictedUser() ? { ...base, tasks: [] } : base;
+    return JSON.stringify(out,null,2);
+  };
+  // Локальная база или аварийный режим — жест жив, пишем немедленно.
+  if(!cid || localOnly){
+    triggerDownload(pack(null), fname);
+    toast(localOnly && cid
+      ? "Экспортировано БЕЗ облачного архива журнала (аварийный режим) — повторите онлайн для полной истории"
+      : "Экспортировано (текущая база)");
+    return;
   }
-  const base = full ? { ...state, journals: mergeJournalsForExport(full) } : state;
-  const out = isRestrictedUser() ? { ...base, tasks: [] } : base;
-  triggerDownload(JSON.stringify(out,null,2), `vahtahoz-${activeProfileName()}-${todayStr()}.json`);
-  // не молчим, если история в файле неполная: иначе бэкап выглядит полным, а движений в нём нет
-  if(cid && !full && !localOnly) toast("Экспортировано, НО журнал в файле неполный (нет связи с облаком) — повторите онлайн");
-  else toast("Экспортировано (текущая база)");
+  toast("Подготовка бэкапа…");
+  let full = await fullCloudJournals();                // полная история движений, а не хвост 500
+  if(activeCloudId() !== cid) full = null;             // база сменилась за время загрузки
+  const journals = full ? mergeJournalsForExport(full) : null;
+  const cnt = journals ? JOURNAL_KEYS.reduce((n,k)=>n+(journals[k]||[]).length,0) : 0;
+  offerFileSave(pack(journals), fname,
+    full ? "Бэкап готов" : "Бэкап готов (журнал неполный)",
+    full ? `База «${activeProfileName()}», записей журнала: ${cnt}. Нажмите «Сохранить файл».`
+         : "Не удалось получить архив журнала из облака — в файле только последние записи. Для полной истории повторите при связи.");
 }
 function exportAllProfiles(){
   // полная резервная копия ВСЕХ баз в одном файле — главный страховочный бэкап
@@ -5137,6 +5185,7 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   openProfilesSheet,switchProfile,addProfile,renameProfile,deleteProfile,exportAllProfiles,mergeCatalogs,
   toggleCheck,addCheck,resetChecklist,removeCheck,
   exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,exportJournalsMonth,clearLog,wipeAll,toggleTheme,setTheme,
+  doPendingSave,   // вызывается из onclick шита сохранения — обязателен в window
   openCloudSheet,openExportSheet,openBackupSheet,openJournalSheet,openStockReconcileSheet,openGrantBasesSheet,doGrantBases,openBroadcastSheet,sendBroadcast,
   openAboutSheet,openFaqSheet,openPrivacySheet,openTermsSheet,openRecoveryEmailSheet,
   openMove,doMove,
@@ -6504,7 +6553,11 @@ function purgeCloudProfiles(alsoCopies){
     // роли — это ПОЛНЫЙ склад и журнал базы, лежащий в обычном слоте. Раньше они не имели cloudId,
     // попадали в `locals` и оставались на устройстве: следующий вошедший видел их в списке баз,
     // открывал и правил чужой склад, а «Экспорт всех баз» выгружал его в файл.
-    const isCopy = p => !p.cloudId && !!p.fromCloudId;
+    // LEGACY: копии, созданные ПРЕЖНИМИ сборками, метки fromCloudId не имеют — опознаём по имени
+    // (именно так они и создавались). Иначе у давнего прод-пользователя чужой склад остался бы
+    // на устройстве при передаче телефона, хотя новые копии уже чистятся.
+    const LEGACY_COPY_RE = /\((локальная копия|копия до смены роли)\)\s*$/;
+    const isCopy = p => !p.cloudId && (!!p.fromCloudId || LEGACY_COPY_RE.test(String(p.name||"")));
     const doomed = p => !!p.cloudId || (alsoCopies && isCopy(p));
     const cloudProfs = profiles.list.filter(doomed);
     if(!cloudProfs.length) return;
@@ -6788,7 +6841,7 @@ async function cloudPull(cid){
     // НЕ вызываем mergeDuplicateStockByName здесь: слияние дублей + dirty→push удаляло «лишние»
     // id из облака и резко роняло счётчик «в наличии» (дубли с qty схлопывались).
     let _reconChanged = false;
-    if(canEditStock()){
+    if(AUTO_RECONCILE && canEditStock()){
       try{
         const relinked = relinkJournalOpsToCanonical();
         const created = ensureProductsFromJournalLedger();
