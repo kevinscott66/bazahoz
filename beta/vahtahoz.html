@@ -220,7 +220,7 @@
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
     <!-- текст подставляется из APP_BUILD_LABEL при старте (единый источник версии) -->
-    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v206 · БЕТА</div>
+    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v207 · БЕТА</div>
   </div>
 </div>
 
@@ -252,7 +252,7 @@ const STOCK_MERGE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v206";
+const APP_BUILD = "v207";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -2056,11 +2056,15 @@ function ledgerQtyForProduct(product){
       // productId, но совпавшим именем, приписалось бы не той карточке)
       const ou = _impUnitKey(op.unit), pu = _impUnitKey(product.unit);
       const matchNameOnly = !op.productId && stockNormName(op.productName)===pname && !!ou && !!pu && ou===pu;
-      // Единица обязательна и для совпадения по productId (раньше проверялась ТОЛЬКО по имени).
-      // Иначе: карточку перевели из «шт» в «кор» (saveStock не меняет записи журнала) → ledger
-      // складывал 720 шт как 720 кор, и post-pull raise ставил qty=720 кор вместо 2 (×360).
-      // Несходящаяся/неизвестная единица → запись не учитываем (fail-closed, как в v200).
-      const matchById = matchId && !!ou && !!pu && ou===pu;
+      // Единица учитывается и для совпадения по productId (раньше проверялась ТОЛЬКО по имени):
+      // карточку перевели из «шт» в «кор» (saveStock не меняет записи журнала) → ledger складывал
+      // 720 шт как 720 кор, и post-pull raise ставил qty=720 кор вместо 2 (×360).
+      // НО: если у записи единицы НЕТ вовсе (legacy-журнал до появления unit), совпадение по
+      // productId авторитетно. Иначе _impUnitKey("")="шт" исключал такие записи у карточки в кг/кор,
+      // ledger обнулялся, и сверка «вниз» по галочке занижала остаток до нуля.
+      // Требуем совпадения только когда единица задана у ОБОИХ (как в _impSpecCompatible).
+      const _opUnitRaw = String(op.unit||"").trim();
+      const matchById = matchId && (!_opUnitRaw || (!!ou && !!pu && ou===pu));
       if(matchById || matchNameOnly)
         sum += sign * Number(op.qty||0);
     }
@@ -6284,7 +6288,11 @@ async function cloudLogin(email, password){
   try{
     const prevOwner = localStorage.getItem(NS+"vahtahoz_cloud_owner");
     localStorage.setItem(NS+"vahtahoz_cloud_owner", d.user.id);
-    if(prevOwner && prevOwner !== d.user.id && profiles.list.some(p=>p.cloudId)){ purgeCloudProfiles(); location.reload(); return; }
+    // ВАЖНО: учитываем и КОПИИ облачной базы (fromCloudId). Если облачных профилей на устройстве
+    // уже нет, а копии остались (профиль удалили из списка / базы не загрузились), прежнее условие
+    // не срабатывало и чужой склад доставался следующему вошедшему — ровно та дыра, ради которой
+    // копии и помечаются.
+    if(prevOwner && prevOwner !== d.user.id && profiles.list.some(p=>p.cloudId || p.fromCloudId)){ purgeCloudProfiles(); location.reload(); return; }
   }catch(_){}
   // setSession (для прав и realtime) — в фоне, не держим кнопку (промис нигде не ждём)
   Promise.race([
@@ -6886,7 +6894,12 @@ let _dirtyGen = 0;
 function markDirty(cid){
   if(!cid) return;
   try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){}
-  _dirtyGen++;
+  // Поколение считаем ТОЛЬКО для правок пользователя. Внутри самой выгрузки push оборачивает свои
+  // saveState() (мердж настроек, 3-way) в cloud.applying=true, а saveState зовёт cloudMaybePush →
+  // markDirty. Учитывать это как «данные изменились» означало бы никогда не снимать dirty и гонять
+  // полный push каждые 600 мс — при двух активных устройствах это самоподдерживающийся цикл.
+  // Условие узкое (_pushing И applying), поэтому обычная правка во время push всё равно учитывается.
+  if(!(cloud._pushing && cloud.applying)) _dirtyGen++;
 }
 async function cloudPushNow(){
   const cid = activeCloudId();
@@ -6898,8 +6911,20 @@ async function cloudPushNow(){
   if(cloud._pushing){ cloud.pushPending = true; return; }   // dirty жив, добьём следующим проходом
   cloud._pushing = true;
   const _genAtStart = _dirtyGen;   // поколение правок на момент снимка (см. markDirty)
+  // ensureSB() бросает штатно («Библиотека облака не загрузилась»: первый запуск без сети,
+  // промах SW-кэша). Он ДО try, поэтому его исключение оставляло cloud._pushing навсегда true —
+  // и все последующие выгрузки выходили на guard-е, статус вечно «Сохранение в облако…».
+  // Свой try/catch: флаг снимаем, dirty durable — следующая попытка выгрузит.
+  let _outerBusy = cloud.busy;
+  try{ await ensureSB(); }
+  catch(e){
+    cloud._pushing=false; cloud.pushPending=false;
+    console.warn("cloudPushNow ensureSB", e);
+    setSyncStatus(cloudOnline() ? "error" : "offline", cloudOnline() ? "Библиотека облака не загрузилась — обновите страницу" : undefined);
+    return;
+  }
   // org-роль без base_members: activeMember()=null, но canEditStock()=true — пушим
-  await ensureSB(); const _outerBusy=cloud.busy; cloud.busy=true;   // re-entrant: если нас вызвал cloudActivate (уже busy), НЕ сбрасываем общий busy в своём finally
+  _outerBusy=cloud.busy; cloud.busy=true;   // re-entrant: если нас вызвал cloudActivate (уже busy), НЕ сбрасываем общий busy в своём finally
   try{
     const tok = cloud.session && cloud.session.access_token;
     let _suspectWipe=false;   // склад подозрительно усох → не снимаем dirty, не рапортуем «synced» (см. ниже)
@@ -7132,10 +7157,17 @@ async function cloudPushTasksNow(){
     // а TASKS_DIRTY блокировал ЛЮБОЙ pull → устройство навсегда показывало переданные задачи
     // и не могло получить актуальный список. Теперь при отказе прав (или после 5 неудач подряд)
     // отдаём приоритет облаку: снимаем dirty, сбрасываем подпись и подтягиваем актуальное.
-    const permErr = !!(e && (e.status===401 || e.status===403));
-    cloud.tasksRetryN = (cloud.tasksRetryN||0) + 1;
+    // ТОЛЬКО 403. 401 — это штатное истечение access-токена (~1 ч): cloudRest сам пробует refresh,
+    // но на слабой сети refresh падает и 401 всплывает наружу. Считать это «задачи больше не наши»
+    // означало бы выбрасывать офлайн-правки при каждом обрыве связи.
+    const permErr = !!(e && e.status===403);
+    // сетевые сбои (нет .status: таймаут/abort/обрыв) в счётчик НЕ идут — на вахте это норма,
+    // иначе 5 обрывов за смену стирали бы несинхронизированные задачи.
+    if(e && typeof e.status === "number") cloud.tasksRetryN = (cloud.tasksRetryN||0) + 1;
     if(permErr || cloud.tasksRetryN >= 5){
-      try{ localStorage.removeItem(TASKS_DIRTY); saveSyncSig(uid,"tasks",{}); }catch(_){}
+      // sig НЕ обнуляем: пусть его перезапишет успешный pull. Иначе при неудачном pull остаёмся
+      // без dirty и с пустой подписью → следующий синк мог ПЕРЕ-выгрузить локальные задачи в облако.
+      try{ localStorage.removeItem(TASKS_DIRTY); }catch(_){}
       cloud.tasksRetryN = 0;
       toast(permErr ? "Задачи закреплены за другим работником — список обновлён из облака"
                     : "Не удалось выгрузить задачи — список обновлён из облака");
