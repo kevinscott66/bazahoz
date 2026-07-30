@@ -1,13 +1,16 @@
 /* ВахтаХоз service worker — network-first для оболочки + offline fallback.
    network-first важен: после деплоя фикса пользователь получает свежий vahtahoz.html
    сразу при наличии сети, а кэш используется только как офлайн-резерв. */
-const CACHE = "vahtahoz-BETA-v203";
+const CACHE = "vahtahoz-BETA-v204";
 const PRECACHE = [
   "./vahtahoz.html",
   "./manifest.webmanifest",
   "./supabase.js",
   "./xlsx.js",        // прекэшируем сразу — чтобы Excel-экспорт работал ПОЛНОСТЬЮ оффлайн (раньше нужна была сеть в первый раз)
 ];
+
+// Оболочка КРИТИЧНА: без неё офлайн невозможен вообще. Остальное (xlsx/manifest) — терпимо.
+const SHELL = "./vahtahoz.html";
 
 self.addEventListener("install", e => {
   e.waitUntil((async () => {
@@ -16,14 +19,25 @@ self.addEventListener("install", e => {
     await Promise.allSettled(PRECACHE.map(u => c.add(u).catch(err => {
       console.warn("precache failed:", u, err); throw err;
     })));
+    // Promise.allSettled ГАСИТ отказы, поэтому проверяем оболочку явно. Иначе на мигающей сети
+    // install завершался «успешно» без vahtahoz.html, skipWaiting отдавал управление новому SW,
+    // а activate удалял прежний кэш → приложение не открывалось офлайн ВООБЩЕ (данные в
+    // localStorage целы, но до них не добраться). Бросаем → SW не встаёт, старый продолжает работать.
+    if (!(await c.match(SHELL))) throw new Error("precache: нет оболочки " + SHELL);
     self.skipWaiting();
   })());
 });
 
 self.addEventListener("activate", e => {
   e.waitUntil((async () => {
-    const keys = await caches.keys();
-    await Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)));
+    const c = await caches.open(CACHE);
+    // второй рубеж: старый кэш удаляем ТОЛЬКО когда новый действительно содержит оболочку
+    if (await c.match(SHELL)) {
+      const keys = await caches.keys();
+      await Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)));
+    } else {
+      console.warn("activate: оболочки нет в", CACHE, "— прежний кэш оставлен как офлайн-резерв");
+    }
     await self.clients.claim();
   })());
 });

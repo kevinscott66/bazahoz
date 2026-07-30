@@ -8,9 +8,18 @@ native/android/
 native/ios/
 native-desktop/src-tauri/target/
 
-# личные данные: экспорты/бэкапы склада не коммитим в публичный репозиторий
+# личные данные: экспорты/бэкапы склада не коммитим в публичный репозиторий.
+# Инцидент уже был: vahtahoz-feb2026.json и vahtahoz-spisok.json ~3 месяца лежали в корне
+# (= корень GitHub Pages) и отдавались по https://vahta.razvedchick.ru/<имя>.json.
+# Приложение генерирует ещё и xlsx/csv — их шаблоны тоже закрываем, а не только .json.
 vahtahoz-*.json
+vahtahoz-*.xlsx
+vahtahoz-*.csv
+vahtahoz-*.xls
 *.backup.json
+# любой файл выгрузки, случайно оставленный в корне
+sklad-*.xlsx
+sklad-*.csv
 
 # --- Секреты инфраструктуры: НИКОГДА не коммитить реальные токены/ключи ---
 # Реальный Cloudflare API-токен живёт только локально (шаблон — cf-token.env.example)

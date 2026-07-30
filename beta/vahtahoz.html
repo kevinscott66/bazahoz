@@ -220,7 +220,7 @@
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
     <!-- текст подставляется из APP_BUILD_LABEL при старте (единый источник версии) -->
-    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v203 · БЕТА</div>
+    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v204 · БЕТА</div>
   </div>
 </div>
 
@@ -252,7 +252,7 @@ const STOCK_MERGE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v203";
+const APP_BUILD = "v204";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -587,7 +587,17 @@ const todayStr = () => {
   const d = new Date();
   return new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10);
 };
-const fmtDate = (s) => { if(!s) return "—"; const [y,m,d]=s.split("-"); return `${d}.${m}.${y}`; };
+/* СТРОГО валидируем формат: результат подставляется в innerHTML в 20+ местах, а на вход
+   приходят и облачные строки от других участников (journal_entries.data.batchExpiry, tasks.data.due —
+   на pull санитайзятся только id). Прежняя версия на строке без «-» возвращала её ЦЕЛИКОМ
+   ("undefined.undefined.<img onerror=...>") → stored-XSS у любого, кто открыл журнал/задачи.
+   Мусор больше не попадает в разметку — показываем «—». */
+const fmtDate = (s) => {
+  if(!s) return "—";
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s));
+  if(!m) return "—";
+  return `${m[3]}.${m[2]}.${m[1]}`;
+};
 const daysLeft = (s) => { if(!s) return null; const a=new Date(s+"T00:00:00"); const b=new Date(todayStr()+"T00:00:00"); if(isNaN(a)||isNaN(b)) return null; return Math.round((a-b)/86400000); };
 // сортировка партий «по ближайшему сроку»: пустой срок уходит в конец
 const byExpiry = (a,b)=>(a.expiry||"9999").localeCompare(b.expiry||"9999");
@@ -784,6 +794,22 @@ function normalizeImportIds(obj){
 // - type идёт в inline-onclick без esc() → только известные ключи (иначе XSS из облака/импорта);
 // - qty/партии гасим от float-эпсилонов и мусора; невалидный srок карточки сбрасываем (иначе ломает fmtDate/daysLeft);
 // - после чистки партий пересчитываем qty/срок карточки из партий (иначе остаток и сумма партий расходятся).
+/* Санитайз массива партий, пришедшего ИЗ ОБЛАКА (jsonb пишет любой участник с edit_stock).
+   Обязателен ВЕЗДЕ, где облачные партии попадают в state.stock: b.id подставляется в
+   inline-onclick (deleteBatch/openMove/openBatchEdit), поэтому без safeId это XSS;
+   плюс фильтр qty>0 (иначе фантомные место/срок при нулевом остатке) и валидация срока.
+   Раньше блок жил только внутри normalizeStockItem, а 3-way merge писал cr.batches сырыми. */
+function sanitizeBatches(arr){
+  if(!Array.isArray(arr)) return [];
+  return arr.filter(b => b && typeof b==="object").map(b => ({
+    id: safeId(b.id),
+    qty: roundQty(b.qty||0),
+    expiry: (typeof b.expiry==="string" && /^\d{4}-\d{2}-\d{2}$/.test(b.expiry)) ? b.expiry : "",
+    location: typeof b.location==="string" ? cleanName40(b.location) : "",   // defense-in-depth поверх esc на рендере
+    note: typeof b.note==="string" ? b.note.slice(0,200) : "",
+    createdAt: typeof b.createdAt==="string" ? b.createdAt : new Date().toISOString(),
+  })).filter(b => b.qty>0);
+}
 function normalizeStockItem(s){
   if(!s || typeof s!=="object") return s;
   if(!STOCK_TYPE_KEYS.includes(s.type)) s.type = "product";
@@ -796,14 +822,7 @@ function normalizeStockItem(s){
   } else if(!String(s.unit||"").trim()) s.unit = "шт";
   if(typeof s.expiry==="string" && s.expiry && !/^\d{4}-\d{2}-\d{2}$/.test(s.expiry)) s.expiry = "";   // невалидную дату карточки не держим
   if(Array.isArray(s.batches)){
-    s.batches = s.batches.filter(b => b && typeof b==="object").map(b => ({
-      id: safeId(b.id),
-      qty: roundQty(b.qty||0),
-      expiry: (typeof b.expiry==="string" && /^\d{4}-\d{2}-\d{2}$/.test(b.expiry)) ? b.expiry : "",
-      location: typeof b.location==="string" ? cleanName40(b.location) : "",   // чистим имя места (defense-in-depth поверх esc на рендере)
-      note: typeof b.note==="string" ? b.note.slice(0,200) : "",
-      createdAt: typeof b.createdAt==="string" ? b.createdAt : new Date().toISOString(),
-    })).filter(b => b.qty>0); // партии с нулём/мусором не держим — иначе фантомные место/срок при totalQty=0
+    s.batches = sanitizeBatches(s.batches);
     if(s.batches.length===0) delete s.batches;
     else syncItemFromBatches(s);   // остаток/срок карточки = из партий
   }
@@ -1774,8 +1793,16 @@ function renderStockList(){
 /* ---------- Journals (операции) + помесячный архив ---------- */
 let journalMonth = null;   // выбранный месяц архива (YYYY-MM); null → последний (текущий)
 const RU_MONTHS3=["янв","фев","мар","апр","май","июн","июл","авг","сен","окт","ноя","дек"];
-const monthKeyOf = (ts)=> (ts||"").slice(0,7);   // ISO → YYYY-MM
-function monthLabel(ym){ if(!ym) return ""; const p=ym.split("-"); return `${RU_MONTHS3[(+p[1])-1]||p[1]} ${p[0]}`; }
+/* ISO → YYYY-MM, СТРОГО. Ключ месяца подставляется в data-атрибут чипа и внутрь
+   onclick="exportJournalsMonth('...')", а op.ts приходит из облака (journal_entries.data.ts)
+   и на pull не валидируется. Сырой slice(0,7) пускал туда произвольную строку → инъекция.
+   Невалидное → "" (journalMonths такие отбрасывает, чип не создаётся). */
+const monthKeyOf = (ts)=> /^\d{4}-\d{2}/.test(String(ts||"")) ? String(ts).slice(0,7) : "";
+function monthLabel(ym){
+  if(!/^\d{4}-\d{2}$/.test(String(ym||""))) return "";
+  const p=String(ym).split("-");
+  return `${RU_MONTHS3[(+p[1])-1]||p[1]} ${p[0]}`;
+}
 function journalMonths(){   // все месяцы с записями по всем 4 журналам, свежие сверху
   const set=new Set();
   for(const k of JOURNAL_KEYS) for(const op of (state.journals[k]||[])){ const mk=monthKeyOf(op.ts); if(mk) set.add(mk); }
@@ -1872,7 +1899,7 @@ function renderJournal(kind){
       ${months.map(ym=>`<button class="chip ${ym===selMonth?'active':''}" data-jrmonth="${ym}">${monthLabel(ym)}</button>`).join("")}
     </div>
     <button class="btn btn-ghost w-full mt-2" onclick="exportJournalsMonth('${selMonth}')">📊 Экспорт всех журналов за ${monthLabel(selMonth)}</button>` : ""}
-    <div class="text-xs opacity-70 mt-2">${selMonth?`Месяц ${monthLabel(selMonth)} · `:""}записей: ${list.length}${sumStr?`  ·  сумма по ед.: ${sumStr}`:""}</div>
+    <div class="text-xs opacity-70 mt-2">${selMonth?`Месяц ${monthLabel(selMonth)} · `:""}записей: ${list.length}${sumStr?` · сумма по ед.: ${sumStr}`:""}</div>
     <div class="space-y-2 mt-2">${rows}</div>`;
 }
 
@@ -2029,7 +2056,12 @@ function ledgerQtyForProduct(product){
       // productId, но совпавшим именем, приписалось бы не той карточке)
       const ou = _impUnitKey(op.unit), pu = _impUnitKey(product.unit);
       const matchNameOnly = !op.productId && stockNormName(op.productName)===pname && !!ou && !!pu && ou===pu;
-      if(matchId || matchNameOnly)
+      // Единица обязательна и для совпадения по productId (раньше проверялась ТОЛЬКО по имени).
+      // Иначе: карточку перевели из «шт» в «кор» (saveStock не меняет записи журнала) → ledger
+      // складывал 720 шт как 720 кор, и post-pull raise ставил qty=720 кор вместо 2 (×360).
+      // Несходящаяся/неизвестная единица → запись не учитываем (fail-closed, как в v200).
+      const matchById = matchId && !!ou && !!pu && ou===pu;
+      if(matchById || matchNameOnly)
         sum += sign * Number(op.qty||0);
     }
   }
@@ -2095,6 +2127,14 @@ function mergeDuplicateStockByName(){
     const primary = items[0];
     for(const dup of items.slice(1)){
       if(hasBatches(dup)){
+        // primary БЕЗ партий, но с остатком → сначала превращаем его qty в первую партию.
+        // Иначе syncItemFromBatches ниже посчитает qty ТОЛЬКО по партиям дубля, и legacy-остаток
+        // primary молча исчезнет (ветка else была недостижима: после push partий дубля
+        // primary.batches всегда непуст). Приём тот же, что в зеркальной ветке ниже.
+        if(!hasBatches(primary) && roundQty(primary.qty||0) > 0){
+          primary.batches = [{ id:uid(), qty:roundQty(primary.qty||0), expiry:primary.expiry||"",
+            location:primary.location||"", note:"Слияние дубля", createdAt:new Date().toISOString() }];
+        }
         primary.batches = primary.batches || [];
         const usedIds = new Set(primary.batches.map(b=>b.id));
         for(const b of batchesOf(dup)){
@@ -2109,8 +2149,7 @@ function mergeDuplicateStockByName(){
           usedIds.add(bid);
           primary.batches.push({ ...b, id: bid });
         }
-        if(hasBatches(primary)) syncItemFromBatches(primary);
-        else primary.qty = roundQty(Number(primary.qty||0) + totalQtyOf(dup));
+        syncItemFromBatches(primary);   // qty = сумма ВСЕХ партий (включая перенесённый legacy-остаток)
       } else if(hasBatches(primary)){
         if(roundQty(dup.qty||0) > 0){
           primary.batches.push({ id:uid(), qty:roundQty(dup.qty||0), expiry:dup.expiry||"", location:dup.location||"", note:"Слияние дубля", createdAt:new Date().toISOString() });
@@ -3737,13 +3776,20 @@ function locationUsageCount(type, name){
   }
   return n;
 }
-async function addLocation(type){
-  if(!ensureCanEdit()) return;
+/* Спросить и проверить имя нового места хранения. Возвращает готовое имя или null (отказ/невалидно).
+   Пролог был продублирован дословно в addLocation и addLocChip. */
+async function askNewLocationName(type){
+  if(!ensureCanEdit()) return null;
   const val = await promptSheet(`Новое место хранения (${typeMeta(type).label})`, "", {title:"Добавить место"});
-  if(val===null) return;
+  if(val===null) return null;
   const name = String(val).trim();
-  if(!name){ toast("Пустое название"); return; }
-  if(!validShortName(name)) return;
+  if(!name){ toast("Пустое название"); return null; }
+  if(!validShortName(name)) return null;
+  return name;
+}
+async function addLocation(type){
+  const name = await askNewLocationName(type);
+  if(name===null) return;
   const list = state.locations[type] || [];
   if(list.includes(name)){ toast("Уже есть"); return; }
   state.locations[type] = [...list, name];
@@ -3755,12 +3801,8 @@ async function addLocation(type){
 // «＋ Место» прямо в форме позиции: добавляет место под ТЕКУЩУЮ базу и выбирает его, НЕ пересобирая форму
 // (иначе терялся бы уже введённый текст). Пустой список — норма: места у каждой базы свои, добавляются здесь.
 async function addLocChip(btn, type){
-  if(!ensureCanEdit()) return;
-  const val = await promptSheet(`Новое место хранения (${typeMeta(type).label})`, "", {title:"Добавить место"});
-  if(val===null) return;
-  const name = String(val).trim();
-  if(!name){ toast("Пустое название"); return; }
-  if(!validShortName(name)) return;
+  const name = await askNewLocationName(type);
+  if(name===null) return;
   const list = state.locations[type] || [];
   if(!list.includes(name)){ state.locations[type] = [...list, name]; tombRevive(state.delLoc, type, name); logOp("LOC_ADD", `${type}: «${name}»`); saveState(); }
   const row = btn.parentNode; if(!row) return;
@@ -5758,7 +5800,7 @@ function _rowExpiry(r){
 }
 function _acctRow(r){ return {
   "Наименование": r.name, "Категория": r.category||"", "Количество": _rowQty(r),
-  "Ед. изм.": r.unit||"", "Мин. остаток": (r.min_stock==null?"":Number(r.min_stock)), "Срок годности": _rowExpiry(r) }; }
+  "Ед. изм.": r.unit||"", "Мин. запас": (r.min_stock==null?"":Number(r.min_stock)), "Срок годности": _rowExpiry(r) }; }
 function _sheetName(name, used){
   let s = String(name||"База").replace(/[\[\]\*\?\/\\:]/g,"").trim().slice(0,28) || "База";
   let bs=s, i=2; while(used.has(s.toLowerCase())){ s=bs.slice(0,25)+" "+i; i++; } used.add(s.toLowerCase()); return s;
@@ -6419,11 +6461,11 @@ async function cloudActivate(cid, attempt){
         // снимок = id из облака → push удалит cloud-only; иначе пустой prevSig не чистит сирот
         try{
           const tok = cloud.session && cloud.session.access_token;
-          const cSt = await cloudRestAll(`stock_items?select=id&base_id=eq.${encodeURIComponent(cid)}`, tok, {timeout:120000});
+          const cSt = await cloudRestAll(`stock_items?select=id&base_id=eq.${encodeURIComponent(cid)}&order=id`, tok, {timeout:120000});
           const fakeSt={}; (cSt||[]).forEach(r=>{ if(r&&r.id) fakeSt[r.id]="0"; });
           saveStockSig(cid, fakeSt);
           saveSyncSig(cid,"stockAllowed", fakeSt);
-          const cJr = await cloudRestAll(`journal_entries?select=id,kind&base_id=eq.${encodeURIComponent(cid)}`, tok, {timeout:90000});
+          const cJr = await cloudRestAll(`journal_entries?select=id,kind&base_id=eq.${encodeURIComponent(cid)}&order=id`, tok, {timeout:90000});
           const fakeJ={}; (cJr||[]).forEach(r=>{ if(r&&r.id) fakeJ[r.id]="0"; });
           saveSyncSig(cid,"jr",fakeJ); saveSyncSig(cid,"jrAllowed",fakeJ);
         }catch(_){ saveStockSig(cid,{}); saveSyncSig(cid,"jr",{}); }
@@ -6659,10 +6701,10 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
         if(batched){
           conflictBatched++;
           r.qty = cloudQty;
-          if(Array.isArray(cr.batches)) r.batches = cr.batches;
+          if(Array.isArray(cr.batches)) r.batches = sanitizeBatches(cr.batches);
           curSig[r.id]=_sigOf(r);
           const it=state.stock.find(s=>s.id===r.id);
-          if(it){ it.qty=cloudQty; if(Array.isArray(cr.batches)) it.batches=cr.batches; localChanged=true; }
+          if(it){ it.qty=cloudQty; if(Array.isArray(cr.batches)) it.batches=sanitizeBatches(cr.batches); localChanged=true; }
         } else if(cloudQty !== (Number(r.qty)||0)){
           r.qty = cloudQty; curSig[r.id]=_sigOf(r);
           const it=state.stock.find(s=>s.id===r.id); if(it && Number(it.qty)!==cloudQty){ it.qty=cloudQty; localChanged=true; }
@@ -6678,12 +6720,12 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
         // не LWW: при расхождении партий берём облако (иначе локальный upsert воскресит старые партии)
         conflictBatched++;
         r.qty = cloudQty;
-        if(Array.isArray(cr.batches)) r.batches = cr.batches;
+        if(Array.isArray(cr.batches)) r.batches = sanitizeBatches(cr.batches);
         curSig[r.id]=_sigOf(r);
         const it=state.stock.find(s=>s.id===r.id);
         if(it){
           if(Number(it.qty)!==cloudQty){ it.qty=cloudQty; localChanged=true; }
-          if(Array.isArray(cr.batches)){ it.batches = cr.batches; localChanged=true; }
+          if(Array.isArray(cr.batches)){ it.batches = sanitizeBatches(cr.batches); localChanged=true; }
         }
         continue;
       }
@@ -6709,12 +6751,12 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
         const cr=cloudById[r.id]; if(!cr) continue;
         const cloudQty=Number(cr.qty)||0;
         r.qty = cloudQty;
-        if(Array.isArray(cr.batches) && ((Array.isArray(r.batches)&&r.batches.length) || cr.batches.length)) r.batches = cr.batches;
+        if(Array.isArray(cr.batches) && ((Array.isArray(r.batches)&&r.batches.length) || cr.batches.length)) r.batches = sanitizeBatches(cr.batches);
         curSig[r.id]=_sigOf(r);
         const it=state.stock.find(s=>s.id===r.id);
         if(it){
           if(Number(it.qty)!==cloudQty){ it.qty=cloudQty; localChanged=true; }
-          if(Array.isArray(cr.batches) && ((Array.isArray(it.batches)&&it.batches.length) || cr.batches.length)){ it.batches=cr.batches; localChanged=true; }
+          if(Array.isArray(cr.batches) && ((Array.isArray(it.batches)&&it.batches.length) || cr.batches.length)){ it.batches=sanitizeBatches(cr.batches); localChanged=true; }
         }
       }
       if(localChanged){ const _w=cloud.applying; cloud.applying=true; try{ saveState(); }finally{ cloud.applying=_w; } }
@@ -6995,7 +7037,7 @@ async function cloudPullTasks(){
   if(localStorage.getItem(TASKS_DIRTY)){ cloudMaybePushTasks(); return; }   // есть несинхр. правки — не затираем
   try{
     const tok=cloud.session.access_token;
-    const rows=await cloudRestAll(`tasks?select=*&owner_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:30000});
+    const rows=await cloudRestAll(`tasks?select=*&owner_id=eq.${encodeURIComponent(uid)}&order=id`, tok, {timeout:30000});
     if(localStorage.getItem(TASKS_DIRTY)) return;                            // успел отредактировать во время загрузки → не затираем
     // САНИТАЙЗ: id задачи И id пунктов чек-листа — оба идут из облака (jsonb от любого участника)
     // и подставляются в inline-onclick (toggleTaskItem). Без safeId на items[].id — XSS-вектор.
