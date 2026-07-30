@@ -223,7 +223,7 @@
       <a role="button" tabindex="0" onclick="openTermsSheet()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTermsSheet()}" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a role="button" tabindex="0" onclick="openPrivacySheet()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openPrivacySheet()}" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
     <!-- текст подставляется из APP_BUILD_LABEL при старте (единый источник версии) -->
-    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v210 · БЕТА</div>
+    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v211 · БЕТА</div>
   </div>
 </div>
 
@@ -255,13 +255,22 @@ const STOCK_MERGE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v210";
+const APP_BUILD = "v211";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
 try{ const _bl=document.getElementById("buildLabel"); if(_bl) _bl.textContent = "сборка " + APP_BUILD_LABEL; }catch(_){}
 const STORE_KEY = NS+"vahtahoz:v1";
-const JOURNAL_KEYS = ["receipt","issue","writeoff","order"];  // виды журналов движений
+const JOURNAL_KEYS = ["receipt","issue","writeoff","order"];
+/* ОБЪЯВЛЕНИЕ ПОДНЯТО СЮДА (было ниже, рядом с формой позиции). Причина — реальный краш:
+   boot-цикл нормализации склада на верхнем уровне вызывает normalizeStockItem → _impUnitKey →
+   _impMapUnit, а тот на единице вне ранних правил доходит до UNITS.includes(). При объявлении ниже
+   это TDZ: «ReferenceError: Cannot access 'UNITS' before initialization», исполнение верхнего уровня
+   обрывается, экран остаётся пустой оболочкой без данных.
+   unit в БД — свободный текст (rowToStock: r.unit||"шт"), поэтому достаточно ОДНОЙ нестандартной
+   единицы («ящик», «банка», «компл», «паллета») в общей базе, чтобы приложение легло у всех,
+   кто эту базу открыл. Воспроизведено в браузере. */
+const UNITS = ["шт","кг","г","л","мл","уп","пачка","рулон","метр","кор","меш"];   // «упаковка» → «уп» через _impMapUnit  // виды журналов движений
 // onclick выбора чипа: снять active со всех соседних чипов и подсветить нажатый (был продублирован 7×)
 const CHIP_PICK = "this.parentNode.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));this.classList.add('active');";
 const CHIP_TOGGLE = "this.classList.toggle('active');";   // множественный выбор (фильтр по нескольким категориям)
@@ -3487,7 +3496,6 @@ async function quickAdjust(id, sign){
   saveState(); render();
 }
 
-const UNITS = ["шт","кг","г","л","мл","уп","пачка","рулон","метр","кор","меш"];   // «упаковка» → «уп» через _impMapUnit
 
 function openStockEdit(id, typeDefault){
   if(!id && typeDefault && !allowedTypeKeys().includes(typeDefault)) typeDefault = allowedTypeKeys()[0] || "product";   // роль не может создавать недоступный тип
@@ -3582,33 +3590,23 @@ function saveStock(id, type){
       Object.assign(it,{name,unit,minStock,category,note,updatedAt:new Date().toISOString()});
       syncItemFromBatches(it);
     } else {
-      const wasQty = roundQty(it.qty||0);
       Object.assign(it,{name,qty:roundQty(qty),unit,minStock,expiry,location,category,note,updatedAt:new Date().toISOString()});
-      /* Ручное ЗАНИЖЕНИЕ остатка (инвентаризация) обязано попасть в ЖУРНАЛ, иначе post-pull
-         reconcileLegacyQtyFromJournal(false) поднимет qty назад по ledger и разошлёт старое значение
-         всем телефонам — корректировка отменялась молча, на каждом pull. state.log в ledger не участвует.
-         Пометить карточку «правил руками» нельзя: stockToRow не отправляет updatedAt, rowToStock
-         перезаписывает его серверным, а триггер touch_updated_at бампит при любом UPDATE — то есть
-         это «время касания сервером», а не время правки человеком. Отдельный kind («correction»)
-         тоже нельзя: schema.sql ограничивает kind списком receipt/issue/writeoff/order.
-         ledger считаем ПОСЛЕ Object.assign: если сменили единицу, старые записи выпадают из ledger
-         (fail-closed по unit) и дельту надо считать к НОВОМУ состоянию. */
-      if(roundQty(qty)!==wasQty){
-        const ledger = ledgerQtyForProduct(it);
-        const delta  = roundQty(ledger - roundQty(qty));
-        if(delta > 0){   // журнал выше нового остатка — ровно тот случай, который raise и ломает
-          state.journals.writeoff = state.journals.writeoff || [];
-          state.journals.writeoff.unshift({
-            id: uid(), ts: new Date().toISOString(),
-            productId: it.id, productName: it.name,
-            qty: delta, unit: it.unit||"",
-            stockType: journalStockType(it),
-            note: `Корректировка остатка (инвентаризация): ${fmtQty(wasQty)} → ${fmtQty(roundQty(qty))}`
-          });
-          logOp("STOCK_FIX", `${it.name} -${fmtQty(delta)} ${it.unit||""} (корректировка)`);
-          toast(`Недостача ${fmtQty(delta)} ${it.unit||""} списана по корректировке`);
-        }
-      }
+      /* ОТКАЧЕНО (было в v206): запись корректирующего списания в журнал при занижении остатка.
+         Идея была закрыть «post-pull raise молча возвращает старый остаток», но реализация
+         небезопасна принципиально, и адверсарная проверка это показала:
+         1) Дельта считалась по ledgerQtyForProduct на ЛОКАЛЬНОМ журнале, а он после cloud pull —
+            хвост ≤500 записей НА ВИД. journalLooksIncomplete() возвращает true для ЛЮБОЙ облачной
+            базы, то есть проверять было нечего: на «Детрине» (issue>500) старые выдачи срезаны,
+            ledger завышен, и правка 80→50 писала в ОБЩИЙ журнал фантомное списание на сотни единиц.
+            Это ровно нарушение инварианта «при journalLooksIncomplete не верить ledger».
+         2) Вместе с 3-way merge давало ДВОЙНОЕ списание: если второй телефон уже провёл выдачу,
+            merged = local + cloud − snap и так занижает qty, а прежний raise это лечил; корректировка
+            подгоняла ledger под занижение и лечение отключалось навсегда.
+         3) После v207 (единица не обязательна для legacy-записей без unit) смена ед. вместе с qty
+            писала фиктивную корректировку в новых единицах (718 «кор» вместо 718 шт).
+         Условие корректности — ПОЛНЫЙ журнал локально (пункт Deferred «journal без усечения 500»).
+         До этого проблема остаётся открытой в бэклоге: raise по-прежнему может вернуть остаток,
+         но это предсказуемо и не портит общий журнал фантомными проводками. */
     }
     logOp("STOCK_EDIT", name);
     if(oldName && oldName!==name) propOld = oldName;   // переименование — распространим
