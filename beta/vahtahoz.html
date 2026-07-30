@@ -220,7 +220,7 @@
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
     <!-- текст подставляется из APP_BUILD_LABEL при старте (единый источник версии) -->
-    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v204 · БЕТА</div>
+    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v205 · БЕТА</div>
   </div>
 </div>
 
@@ -252,7 +252,7 @@ const STOCK_MERGE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v204";
+const APP_BUILD = "v205";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -4468,12 +4468,34 @@ function saveXlsx(wb, filename){
     saveBlob(new Blob([buf], { type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), filename);
   }catch(e){ console.warn("saveXlsx", e); toast("Не удалось сформировать Excel"); }
 }
-function exportData(){
+/* ПОЛНЫЕ журналы базы из облака для бэкапа. Локальный state.journals после pull урезан до 500
+   записей на вид (см. slice(0,500)), поэтому JSON-бэкап содержал лишь хвост истории движений —
+   при этом «Все базы» подписан как «главный страховочный бэкап». Возвращает null, если облачного
+   архива взять негде (локальная база / офлайн / сбой) — тогда зовущий предупреждает пользователя. */
+async function fullCloudJournals(){
+  const cid = activeCloudId();
+  if(!(cid && cloud.ready && cloudOnline() && cloud.session && cloud.session.access_token)) return null;
+  try{
+    const rows = await cloudRestAll(`journal_entries?select=kind,data&base_id=eq.${encodeURIComponent(cid)}&order=id`, cloud.session.access_token, {timeout:120000});
+    if(!Array.isArray(rows)) return null;
+    const out = emptyJournals();
+    rows.forEach(r=>{ if(r && r.data && out[r.kind]) out[r.kind].push(r.data); });
+    for(const k in out) out[k].sort((a,b)=>(b.ts||"").localeCompare(a.ts||""));
+    return out;
+  }catch(e){ console.warn("fullCloudJournals → фолбэк на локальное", e); return null; }
+}
+async function exportData(){
   // экспорт ТОЛЬКО текущей базы (для обычного бэкапа/переноса одной базы)
   // у начальника (нет прав на задачи) «Задачи» не выгружаем
-  const out = isRestrictedUser() ? { ...state, tasks: [] } : state;
+  const cid = activeCloudId();
+  if(cid) toast("Подготовка бэкапа…");
+  const full = await fullCloudJournals();            // полная история движений, а не хвост 500
+  const base = full ? { ...state, journals: full } : state;
+  const out = isRestrictedUser() ? { ...base, tasks: [] } : base;
   triggerDownload(JSON.stringify(out,null,2), `vahtahoz-${activeProfileName()}-${todayStr()}.json`);
-  toast("Экспортировано (текущая база)");
+  // не молчим, если история в файле неполная: иначе бэкап выглядит полным, а движений в нём нет
+  if(cid && !full) toast("Экспортировано, НО журнал в файле неполный (нет связи с облаком) — повторите онлайн");
+  else toast("Экспортировано (текущая база)");
 }
 function exportAllProfiles(){
   // полная резервная копия ВСЕХ баз в одном файле — главный страховочный бэкап
@@ -4489,8 +4511,14 @@ function exportAllProfiles(){
     if(st===null && p.id!==profiles.activeId) damaged.push(p.name);
     return { id:p.id, name:p.name, state: st };
   });
-  const payload = { __vahtahozProfiles:1, version:1, exportedAt:new Date().toISOString(), activeId: profiles.activeId, profiles:list };
+  // Журналы в слотах облачных баз урезаны до 500 записей на вид (pull), а файл называется
+  // «главный страховочный бэкап» — поэтому НЕ молчим о неполной истории движений.
+  // Полный архив по одной базе даёт «Экспорт текущей базы (JSON)» онлайн.
+  const truncated = list.some(x => x.state && x.state.journals &&
+    JOURNAL_KEYS.some(k => Array.isArray(x.state.journals[k]) && x.state.journals[k].length >= 500));
+  const payload = { __vahtahozProfiles:1, version:1, exportedAt:new Date().toISOString(), activeId: profiles.activeId, profiles:list, journalsMayBeTruncated: truncated };
   triggerDownload(JSON.stringify(payload,null,2), `vahtahoz-ВСЕ-БАЗЫ-${todayStr()}.json`);
+  if(truncated) toast("Сохранено. Внимание: история движений в файле неполная — для полного журнала сделайте «Экспорт текущей базы» онлайн");
   if(damaged.length){
     console.warn("Повреждённые/пустые базы:", damaged);
     toast(`Сохранено ${list.length}, но без данных: ${damaged.join(", ")}`);
@@ -4529,7 +4557,7 @@ async function mergeCatalogs(){
     }
     if(b.active) saveState();
     else { try{ localStorage.setItem(slotKey(b.p.id), JSON.stringify(b.st)); }catch(_){} }
-    if(b.p.cloudId){ try{ localStorage.setItem(cloudDirtyKey(b.p.cloudId),"1"); }catch(_){} }   // к выгрузке в облако
+    if(b.p.cloudId){ markDirty(b.p.cloudId); }   // к выгрузке в облако
   }
   render();
   const cid = activeCloudId();
@@ -4560,7 +4588,7 @@ function propagateName(type, name, unit, oldName){
     }
     if(changed){
       try{ localStorage.setItem(slotKey(p.id), JSON.stringify(st)); }catch(_){}
-      if(p.cloudId) try{ localStorage.setItem(cloudDirtyKey(p.cloudId),"1"); }catch(_){}
+      if(p.cloudId) markDirty(p.cloudId);
     }
   }
 }
@@ -5110,7 +5138,18 @@ function clearCloudSess(){ try{ localStorage.removeItem(NS+"vahtahoz_sess"); }ca
    чтобы не держать протухший refresh-токен и не слать его (иначе reuse → «вход устарел»). Логаут НЕ распространяем. */
 try{ window.addEventListener("storage", (e)=>{
   if(e.key===NS+"vahtahoz_sess" && e.newValue && cloud.session){
-    try{ const s=JSON.parse(e.newValue); if(s && s.access_token && s.refresh_token) cloud.session=s; }catch(_){}
+    try{
+      const s=JSON.parse(e.newValue);
+      if(!(s && s.access_token && s.refresh_token)) return;
+      // ТОЛЬКО ротация токена ТОГО ЖЕ пользователя. Раньше проверки не было, и если на общем
+      // устройстве в другой вкладке входил ДРУГОЙ человек, эта вкладка забирала его токен, продолжая
+      // держать в памяти данные и задачи первого → выгрузка шла в чужой аккаунт (owner_id нового
+      // пользователя), а склад писался его токеном. Не совпал пользователь — не подхватываем.
+      const mine = cloud.session.user && cloud.session.user.id;
+      const theirs = s.user && s.user.id;
+      if(!mine || !theirs || mine !== theirs) return;
+      cloud.session = s;
+    }catch(_){}
   }
 }); }catch(_){}
 /* продление по refresh-токену ПРЯМЫМ fetch — не зависит от supabase-клиента (в iOS standalone мог висеть) */
@@ -6317,11 +6356,16 @@ async function cloudOnLogin(session, attempt){
 // из STORE_KEY/слотов ДО RLS → новый увидел бы чужой склад. Тот же uid НЕ трогаем (не теряем офлайн-правки).
 function purgeCloudProfiles(){
   try{
-    const cloudProfs = profiles.list.filter(p=>p.cloudId);
+    // ВАЖНО: чистим не только профили с cloudId, но и КОПИИ облачной базы (fromCloudId).
+    // Копии создаются при конфликте «телефон vs общая база», при view-only бэкапе и перед сменой
+    // роли — это ПОЛНЫЙ склад и журнал базы, лежащий в обычном слоте. Раньше они не имели cloudId,
+    // попадали в `locals` и оставались на устройстве: следующий вошедший видел их в списке баз,
+    // открывал и правил чужой склад, а «Экспорт всех баз» выгружал его в файл.
+    const cloudProfs = profiles.list.filter(p=>p.cloudId || p.fromCloudId);
     if(!cloudProfs.length) return;
     const activeWasCloud = cloudProfs.some(p=>p.id===profiles.activeId);
-    cloudProfs.forEach(p=>{ try{ localStorage.removeItem(slotKey(p.id)); clearBaseSyncKeys(p.cloudId); }catch(_){} });
-    let locals = profiles.list.filter(p=>!p.cloudId);
+    cloudProfs.forEach(p=>{ try{ localStorage.removeItem(slotKey(p.id)); clearBaseSyncKeys(p.cloudId || p.fromCloudId); }catch(_){} });
+    let locals = profiles.list.filter(p=>!p.cloudId && !p.fromCloudId);
     if(!locals.length){ locals = [{ id: uid(), name: "База 1" }]; }
     const newActive = activeWasCloud ? locals[0].id : profiles.activeId;
     if(activeWasCloud){ const raw = localStorage.getItem(slotKey(newActive)); localStorage.setItem(STORE_KEY, raw || JSON.stringify(freshProfileState())); }
@@ -6447,7 +6491,7 @@ async function cloudActivate(cid, attempt){
       cloud._conflictAsked[cid] = true;
       try{
         const raw = localStorage.getItem(STORE_KEY);
-        if(raw){ const bkId=uid(); localStorage.setItem(slotKey(bkId), raw); profiles.list.push({ id:bkId, name: cleanName40((cloud.bases[cid]||"База")+" (локальная копия)") }); saveProfiles(profiles); toast("Данные с телефона сохранены копией"); }
+        if(raw){ const bkId=uid(); localStorage.setItem(slotKey(bkId), raw); profiles.list.push({ id:bkId, fromCloudId: cid, name: cleanName40((cloud.bases[cid]||"База")+" (локальная копия)") }); saveProfiles(profiles); toast("Данные с телефона сохранены копией"); }
       }catch(_){}
       // дальше — обычный pull ниже (для view-only облако источник истины)
     }
@@ -6469,7 +6513,7 @@ async function cloudActivate(cid, attempt){
           const fakeJ={}; (cJr||[]).forEach(r=>{ if(r&&r.id) fakeJ[r.id]="0"; });
           saveSyncSig(cid,"jr",fakeJ); saveSyncSig(cid,"jrAllowed",fakeJ);
         }catch(_){ saveStockSig(cid,{}); saveSyncSig(cid,"jr",{}); }
-        try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){}
+        markDirty(cid);
         await cloudPushNow();
         return;
       }
@@ -6479,7 +6523,7 @@ async function cloudActivate(cid, attempt){
         if(raw){
           const bkId = uid();
           localStorage.setItem(slotKey(bkId), raw);
-          profiles.list.push({ id:bkId, name: cleanName40((cloud.bases[cid]||"База")+" (локальная копия)") });
+          profiles.list.push({ id:bkId, fromCloudId: cid, name: cleanName40((cloud.bases[cid]||"База")+" (локальная копия)") });
           saveProfiles(profiles);
           toast("Данные с телефона сохранены копией");
         }
@@ -6491,7 +6535,7 @@ async function cloudActivate(cid, attempt){
       // локальное — источник (первый раз или были оффлайн-правки).
       // dirty снимает САМ cloudPushNow и ТОЛЬКО при успехе — здесь снимать нельзя,
       // иначе при сбое выгрузки маркер «не синхронизировано» потеряется и pull затрёт правки.
-      if(cloudEmpty){ saveStockSig(cid,{}); saveSyncSig(cid,"jr",{}); try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){} }   // облако пусто → ПОЛНАЯ выгрузка; dirty ДО push: при сбое сети маркер «не синхронизировано» не потеряется (push повторится)
+      if(cloudEmpty){ saveStockSig(cid,{}); saveSyncSig(cid,"jr",{}); markDirty(cid); }   // облако пусто → ПОЛНАЯ выгрузка; dirty ДО push: при сбое сети маркер «не синхронизировано» не потеряется (push повторится)
       await cloudPushNow();
     } else {
       await cloudPull(cid);
@@ -6520,7 +6564,7 @@ async function cloudPull(cid){
         try{ bkId = localStorage.getItem(bkTag); }catch(_){}
         if(!bkId || !profiles.list.some(p=>p.id===bkId)){
           bkId = uid();
-          profiles.list.push({ id:bkId, name: cleanName40((cloud.bases[cid]||"База")+" (локальная копия)") });
+          profiles.list.push({ id:bkId, fromCloudId: cid, name: cleanName40((cloud.bases[cid]||"База")+" (локальная копия)") });
           try{ localStorage.setItem(bkTag, bkId); }catch(_){}
         } else {
           const p = profiles.list.find(x=>x.id===bkId);
@@ -6622,7 +6666,7 @@ async function cloudPull(cid){
       saveSyncSig(cid,"jrAllowed",pulledJSig);
     }catch(_){}
     // исправления сверки (только у редакторов) — помечаем к выгрузке, чтобы облако тоже обновилось
-    if(_reconChanged){ try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){} }
+    if(_reconChanged){ markDirty(cid); }
     setSyncStatus("synced","Загружено из облака");
   }catch(e){
     console.warn("cloudPull", e);
@@ -6650,7 +6694,7 @@ function cloudMaybePush(){
   // cloudActivate увидит dirty и выгрузит локальное, а не затрёт его pull-ом.
   // ВАЖНО: dirty ставим ДО проверки cloud.applying — если прямо сейчас идёт cloudPull,
   // правка пользователя в это окно иначе осталась бы непомеченной и была бы затёрта.
-  try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(e){}
+  markDirty(cid);
   if(cloud.applying) return;   // идёт pull — он сам увидит dirty, НЕ затрёт правку и до-выгрузит её
   if(!cloudOnline()){ setSyncStatus("offline"); return; }   // ждём сеть — уйдёт по событию "online"
   cloud.pushPending = true;                  // есть ожидающая выгрузка — realtime-pull её не затрёт
@@ -6805,10 +6849,29 @@ async function cloudRestDelete(table, ids, tok){
     await cloudRest(`${table}?id=in.(${inList})`, tok, { method:"DELETE", returnResponse:true, timeout:45000, headers:{ "Prefer":"return=minimal" } });
   }
 }
+/* Пометка «не синхронизировано» + СЧЁТЧИК ПОКОЛЕНИЯ правок.
+   Поколение нужно push-у: он делает снимок rows в начале, а дальше десятки await
+   (delete/merge/upsert чанками — на 3000 позиций это десятки секунд). Правка, сделанная
+   пользователем в это окно, в снимок не попадает, но раньше push всё равно БЕЗУСЛОВНО снимал
+   dirty в конце → если следующий push падал по сети, retry не запускался (он смотрит на dirty),
+   а очередной pull затирал правку облачными данными. Молча, без сообщения.
+   Теперь dirty снимается только если поколение не изменилось. */
+let _dirtyGen = 0;
+function markDirty(cid){
+  if(!cid) return;
+  try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){}
+  _dirtyGen++;
+}
 async function cloudPushNow(){
   const cid = activeCloudId();
   // на раннем выходе снимаем pushPending (dirty остаётся durable-маркером несинхронизации)
   if(!cid || !cloud.ready || cloud.applying || !cloudOnline() || isOffShift(cid) || !canEditStock()){ cloud.pushPending=false; return; }   // off-shift/только-просмотр: нет доступа по RLS, dirty храним (не сбрасываем молча) до прав/возврата на смену
+  // Две выгрузки НЕ должны идти одновременно: их снимки rows/curSig разъезжаются, а сохранение
+  // и восстановление cloud.busy (_outerBusy) при наложении оставляло busy=true навсегда —
+  // после этого realtime-pull и активация базы мертвы до перезапуска приложения.
+  if(cloud._pushing){ cloud.pushPending = true; return; }   // dirty жив, добьём следующим проходом
+  cloud._pushing = true;
+  const _genAtStart = _dirtyGen;   // поколение правок на момент снимка (см. markDirty)
   // org-роль без base_members: activeMember()=null, но canEditStock()=true — пушим
   await ensureSB(); const _outerBusy=cloud.busy; cloud.busy=true;   // re-entrant: если нас вызвал cloudActivate (уже busy), НЕ сбрасываем общий busy в своём finally
   try{
@@ -6868,7 +6931,7 @@ async function cloudPushNow(){
                 let bkId = null; try{ bkId = localStorage.getItem(bkTag); }catch(_){}
                 if(!bkId || !profiles.list.some(p=>p.id===bkId)){
                   bkId = uid();
-                  profiles.list.push({ id:bkId, name: cleanName40((cloud.bases[cid]||"База")+" (копия до смены роли)") });
+                  profiles.list.push({ id:bkId, fromCloudId: cid, name: cleanName40((cloud.bases[cid]||"База")+" (копия до смены роли)") });
                   try{ localStorage.setItem(bkTag, bkId); }catch(_){}
                   saveProfiles(profiles);
                   toast("Правки по скрытым типам сохранены копией");
@@ -6968,6 +7031,14 @@ async function cloudPushNow(){
     if(_suspectWipe){
       // склад выглядит повреждённым: НЕ снимаем dirty (чтобы при восстановлении не потерять маркер) и зовём обновить из облака
       setSyncStatus("error","Склад выглядит повреждённым — нажмите ↻ (обновить) вверху, чтобы восстановить из облака");
+    } else if(_dirtyGen !== _genAtStart){
+      // пока шла выгрузка, пользователь успел что-то изменить — эта правка НЕ в нашем снимке.
+      // dirty НЕ снимаем (иначе при сбое следующей выгрузки retry не запустится, а pull затрёт
+      // правку) и сразу планируем добивочный проход. pushPending тут не ставим: его всё равно
+      // снимет finally, а от затирания на этот промежуток защищает именно живой dirty.
+      setSyncStatus("syncing","Отправка изменений в облако…");
+      clearTimeout(cloud.pushTimer);
+      cloud.pushTimer = setTimeout(()=>{ cloud.pushPending=false; cloudPushNow(); }, 600);
     } else {
       try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(e){}
       setSyncStatus("synced");
@@ -6982,7 +7053,7 @@ async function cloudPushNow(){
       cloud.retryTimer = setTimeout(()=>{ if(localStorage.getItem(cloudDirtyKey(activeCloudId()))) cloudPushNow(); }, 6000);
     }
   }
-  finally{ cloud.busy=_outerBusy; cloud.pushPending=false; }   // восстанавливаем прежнее: вложенный вызов оставит busy=true до finally самого cloudActivate
+  finally{ cloud.busy=_outerBusy; cloud.pushPending=false; cloud._pushing=false; }   // восстанавливаем прежнее: вложенный вызов оставит busy=true до finally самого cloudActivate
 }
 // ===================== ЗАДАЧИ В ОБЛАКЕ (scope по владельцу, не по базе) =====================
 // Задачи — ОБЩИЕ для всех баз устройства (одно расписание у хоза). В облаке хранятся
@@ -7025,9 +7096,26 @@ async function cloudPushTasksNow(){
     if(del.length && rows.length>0) await cloudRestDelete("tasks", del, tok);
     if(upsert.length) await cloudRestUpsert("tasks", upsert, tok);
     saveSyncSig(uid,"tasks",curSig);
+    cloud.tasksRetryN = 0;
     try{ localStorage.removeItem(TASKS_DIRTY); localStorage.setItem(TASKS_OWNER, uid); }catch(e){}
   }catch(e){
     console.warn("cloudPushTasks", e);
+    // ВЫХОД ИЗ ТУПИКА. Пересменка (handover_shift) переписывает owner_id всех наших задач на
+    // заступающего. Наш upsert по тем же id попадает в строки, которые RLS (owner_id = auth.uid())
+    // нам больше не отдаёт → 403 при каждой попытке. Раньше это был бесконечный ретрай раз в 6 с,
+    // а TASKS_DIRTY блокировал ЛЮБОЙ pull → устройство навсегда показывало переданные задачи
+    // и не могло получить актуальный список. Теперь при отказе прав (или после 5 неудач подряд)
+    // отдаём приоритет облаку: снимаем dirty, сбрасываем подпись и подтягиваем актуальное.
+    const permErr = !!(e && (e.status===401 || e.status===403));
+    cloud.tasksRetryN = (cloud.tasksRetryN||0) + 1;
+    if(permErr || cloud.tasksRetryN >= 5){
+      try{ localStorage.removeItem(TASKS_DIRTY); saveSyncSig(uid,"tasks",{}); }catch(_){}
+      cloud.tasksRetryN = 0;
+      toast(permErr ? "Задачи закреплены за другим работником — список обновлён из облака"
+                    : "Не удалось выгрузить задачи — список обновлён из облака");
+      cloudPullTasks();
+      return;
+    }
     if(cloudOnline()){ clearTimeout(cloud.tasksRetry); cloud.tasksRetry=setTimeout(()=>{ if(localStorage.getItem(TASKS_DIRTY)) cloudPushTasksNow(); }, 6000); }
   }
   finally{ cloud.tasksBusy=false; }
