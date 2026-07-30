@@ -42,7 +42,8 @@
   .light .btn-ghost{ background:#f3f4f6; }
   .light .input{ background:#fff; border-color:#d1d5db; color:#111827; }
   .light .input::placeholder{ color:#6b7280; opacity:1; }   /* дефолтный плейсхолдер ~3.5:1 на белом — поднимаем до AA */
-  .chip{ padding:8px 14px; border-radius:999px; font-size:14px; font-weight:600; background:rgba(255,255,255,.06); white-space:nowrap; transition:transform .06s ease, background .15s; }
+  /* min-height 44px: чипы — основные тап-цели (фильтры, категория, место), на объекте нажимают в перчатках */
+  .chip{ padding:8px 14px; min-height:44px; display:inline-flex; align-items:center; border-radius:999px; font-size:14px; font-weight:600; background:rgba(255,255,255,.06); white-space:nowrap; transition:transform .06s ease, background .15s; }
   .chip:active{ transform:scale(.96); }
   .chip.active{ background:var(--accent); color:var(--on-accent); }
   .light .chip{ background:#f3f4f6; color:#111827; }
@@ -73,6 +74,8 @@
   .set-row .sr-sub{ font-size:12px; font-weight:400; color:#8a8a82; margin-top:2px; white-space:normal; }
   .set-row .sr-v{ color:#8a8a82; font-size:14px; white-space:nowrap; }
   .set-row .sr-ch{ color:#8a8a82; opacity:.5; font-size:20px; line-height:1; flex:none; }
+  /* на белом фоне .set-list #8a8a82 даёт ~3.5:1 — ниже AA для мелкого текста. Поднимаем до #57534e (~7:1) */
+  .light .set-head, .light .set-row .sr-sub, .light .set-row .sr-v{ color:#57534e; }
   .set-row.danger{ color:#f87171; }
   .light .set-row.danger{ color:#c0362c; }
   .set-dot{ width:9px; height:9px; border-radius:50%; flex:none; }
@@ -199,11 +202,11 @@
 <!-- Sheet (универсальное модальное окно) -->
 <div id="sheet" class="sheet">
   <div class="sheet-bg" data-close></div>
-  <div class="sheet-body pop" id="sheetBody"></div>
+  <div class="sheet-body pop" id="sheetBody" role="dialog" aria-modal="true"></div>
 </div>
 
 <!-- Toast -->
-<div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[80] hidden px-4 py-3 rounded-xl bg-gray-800 text-white text-sm shadow-xl" style="max-width:90vw;text-align:center;overflow-wrap:break-word;word-break:break-word"></div>
+<div id="toast" role="status" aria-live="polite" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[80] hidden px-4 py-3 rounded-xl bg-gray-800 text-white text-sm shadow-xl" style="max-width:90vw;text-align:center;overflow-wrap:break-word;word-break:break-word"></div>
 
 <!-- Полноэкранный вход (показывается при первом заходе без сессии; интерфейс скрыт) -->
 <div id="loginGate" class="hidden" style="position:fixed;inset:0;z-index:90;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:28px;background:radial-gradient(120% 90% at 50% 0%, #1e293b 0%, #0b1220 60%);">
@@ -211,16 +214,16 @@
     <div style="font-size:56px;line-height:1;margin-bottom:8px">📦</div>
     <div style="font-size:26px;font-weight:800;letter-spacing:.3px">ВахтаХоз</div>
     <div style="font-size:13px;opacity:.65;margin:6px 0 22px">Войдите, чтобы синхронизировать склад</div>
-    <input id="lgEmail" class="input" type="text" inputmode="email" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username" placeholder="Логин (например: ivanov)" style="margin-bottom:10px;text-align:center" />
-    <input id="lgPwd" class="input" type="password" autocomplete="current-password" placeholder="Пароль" style="margin-bottom:14px;text-align:center" />
+    <input id="lgEmail" class="input" type="text" inputmode="email" enterkeyhint="next" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username" placeholder="Логин (например: ivanov)" style="margin-bottom:10px;text-align:center" />
+    <input id="lgPwd" class="input" type="password" enterkeyhint="go" autocomplete="current-password" placeholder="Пароль" style="margin-bottom:14px;text-align:center" />
     <button id="lgGo" class="btn btn-primary" style="width:100%;font-size:16px">Войти</button>
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
     <div style="font-size:11px;opacity:.55;margin-top:14px;line-height:1.5">Входя, вы принимаете
-      <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
-      <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
+      <a role="button" tabindex="0" onclick="openTermsSheet()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTermsSheet()}" style="color:#8fe3ea;cursor:pointer">Условия</a> и
+      <a role="button" tabindex="0" onclick="openPrivacySheet()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openPrivacySheet()}" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
     <!-- текст подставляется из APP_BUILD_LABEL при старте (единый источник версии) -->
-    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v208 · БЕТА</div>
+    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v209 · БЕТА</div>
   </div>
 </div>
 
@@ -252,7 +255,7 @@ const STOCK_MERGE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v208";
+const APP_BUILD = "v209";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -555,7 +558,7 @@ function openProfilesSheet(){
   const rows = visibleProfiles().slice().sort(sortBases).map(p=>{
     const isActive = p.id===profiles.activeId;
     return `<div class="flex items-center gap-2 text-sm py-2 border-b border-gray-800" data-profid="${esc(p.id)}">
-      <span class="flex-1 truncate ${isActive?"font-bold":""}">${isActive?"✅ ":""}${esc(p.name)}</span>
+      <span class="flex-1 min-w-0 truncate ${isActive?"font-bold":""}">${isActive?"✅ ":""}${esc(p.name)}</span>
       ${isActive
         ? `<span class="badge badge-green">текущая</span>`
         : `<button class="btn btn-primary text-xs" data-profact="switch">Открыть</button>`}
@@ -1129,9 +1132,23 @@ function openSheet(html){
   oldBody.replaceWith(freshBody);
   freshBody.innerHTML = html;
   s.classList.add("open");
+  // Клавиатура телефона перекрывает нижние поля листа (100vh не уменьшается на iOS) — подтягиваем
+  // активный инпут к центру. Задержка: анимация появления клавиатуры.
+  freshBody.addEventListener("focusin", (e)=>{
+    if(e.target && e.target.matches && e.target.matches("input,select,textarea")){
+      setTimeout(()=>{ try{ e.target.scrollIntoView({block:"center"}); }catch(_){} }, 250);
+    }
+  });
+  _sheetOpener = (document.activeElement && document.activeElement !== document.body) ? document.activeElement : null;
+  document.addEventListener("keydown", _sheetEsc);
 }
+let _sheetOpener = null;
+function _sheetEsc(e){ if(e.key==="Escape") closeSheet(); }   // лист закрывался только тапом по фону
 function closeSheet(){
   document.getElementById("sheet").classList.remove("open");
+  document.removeEventListener("keydown", _sheetEsc);
+  // возвращаем фокус тому, кто открыл лист (иначе после закрытия фокус улетает в начало документа)
+  if(_sheetOpener){ const el=_sheetOpener; _sheetOpener=null; try{ el.focus({preventScroll:true}); }catch(_){} }
   if(_sheetOnClose){ const cb=_sheetOnClose; _sheetOnClose=null; try{ cb(); }catch(e){} }
 }
 
@@ -1415,7 +1432,7 @@ function taskRow(t, opts){
   const listBlock = items.length ? `
     <div class="mt-2 pl-10 space-y-1">
       ${items.map(i=>`
-        <div class="flex items-center gap-2 text-sm" onclick="event.stopPropagation();toggleTaskItem('${t.id}','${i.id}')">
+        <div class="flex items-center gap-2 text-sm py-2" role="checkbox" aria-checked="${i.done?"true":"false"}" tabindex="0" onclick="event.stopPropagation();toggleTaskItem('${t.id}','${i.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();toggleTaskItem('${t.id}','${i.id}')}">
           <span class="inline-block w-5 h-5 shrink-0 rounded border-2 ${i.done?"bg-green-600 border-green-600":"border-gray-500"} text-white text-center text-xs leading-4">${i.done?"✓":""}</span>
           <span class="${i.done?"line-through opacity-60":""}">${esc(i.text)}</span>
         </div>`).join("")}
@@ -1423,7 +1440,7 @@ function taskRow(t, opts){
   return `
     <div class="card ${t.done?"opacity-60":""}">
       <div class="flex items-start gap-2">
-        <button class="mt-1" onclick="toggleTask('${t.id}')" aria-label="Отметить выполненной">
+        <button class="mt-1" style="min-width:44px;min-height:44px;display:flex;align-items:center;justify-content:center" onclick="toggleTask('${t.id}')" aria-label="Отметить выполненной">
           <span class="inline-block w-8 h-8 rounded-full border-2 ${t.done?"bg-green-600 border-green-600":"border-gray-500"}">
             ${t.done?'<span class="block text-white text-center leading-7">✓</span>':""}
           </span>
@@ -3453,7 +3470,7 @@ function openStockEdit(id, typeDefault){
       <div class="text-sm opacity-70 mb-2">Партии (${bList.length}) — qty/срок/место карточки считаются автоматически</div>
       <div class="space-y-1">
         ${bList.slice().sort(byExpiry).map(b=>`
-          <div class="flex items-center gap-2 text-xs">
+          <div class="flex flex-wrap items-center gap-2 text-xs">
             ${batchQtyBadge(b, it)}
             ${b.location?`<span class="badge badge-gray">📍 ${esc(b.location)}</span>`:`<span class="badge badge-gray opacity-50">без места</span>`}
             ${b.expiry?`<span class="badge badge-gray">⏰ ${fmtDate(b.expiry)}</span>`:`<span class="badge badge-gray opacity-50">без срока</span>`}
@@ -3912,7 +3929,7 @@ function openLocationsEdit(){
         : list.map(name=>{
           const used = locationUsageCount(type, name);
           return `<div class="flex items-center gap-2 text-sm py-1 border-b border-gray-800" data-locname="${esc(name)}">
-            <span class="flex-1 truncate">${esc(name)}</span>
+            <span class="flex-1 min-w-0 truncate">${esc(name)}</span>
             ${used?`<span class="badge badge-gray">${used}</span>`:`<span class="opacity-40 text-xs">не используется</span>`}
             <button class="btn btn-ghost text-xs" data-locact="rename" aria-label="Переименовать место хранения" title="Переименовать">✏️</button>
             <button class="btn btn-ghost text-xs" data-locact="delete" aria-label="Удалить место хранения" title="Удалить">🗑</button>
