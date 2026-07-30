@@ -223,7 +223,7 @@
       <a role="button" tabindex="0" onclick="openTermsSheet()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTermsSheet()}" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a role="button" tabindex="0" onclick="openPrivacySheet()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openPrivacySheet()}" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
     <!-- текст подставляется из APP_BUILD_LABEL при старте (единый источник версии) -->
-    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v211 · БЕТА</div>
+    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v213 · БЕТА</div>
   </div>
 </div>
 
@@ -271,7 +271,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v211";
+const APP_BUILD = "v213";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -349,48 +349,97 @@ function loadState(){
     return merged;
   }catch(e){ return structuredClone(defaultState); }
 }
+/* Переполнение хранилища у браузеров названо по-разному: WebKit/Blink бросают
+   QuotaExceededError (code 22), Firefox — NS_ERROR_DOM_QUOTA_REACHED (code 1014).
+   Проверка только по WebKit-именам уводила Firefox в ветку «прочая ошибка»:
+   ни усечения, ни тоста, ни модала — полностью молчаливая потеря записи. */
+function isQuotaErr(e){
+  if(!e) return false;
+  return e.name==="QuotaExceededError" || e.name==="NS_ERROR_DOM_QUOTA_REACHED"
+      || e.code===22 || e.code===1014;
+}
 let _quotaBlocked=false;   // показали ли блокирующее предупреждение о переполнении памяти (чтобы не спамить каждым saveState)
-function _quotaBlock(){
+function _quotaBlock(msg){
   if(_quotaBlocked) return; _quotaBlocked=true;
-  try{ toast("⛔ Память телефона переполнена — последние записи НЕ сохранены!"); }catch(_){}
+  const short = msg || "⛔ Память телефона переполнена — последние записи НЕ сохранены!";
+  const long  = msg
+    ? (msg + "\n\nСделайте резервную копию (экспорт), пока данные ещё в памяти приложения.")
+    : "Память телефона переполнена — последние операции могут НЕ сохраниться при перезагрузке.\n\nСделайте резервную копию (экспорт), затем удалите ненужные базы или очистите старые журналы.";
+  try{ toast(short); }catch(_){}
   // блокирующий модал с предложением экспорта — через setTimeout, чтобы не мешать текущему кадру render/сохранения
   setTimeout(async()=>{
     try{
-      const go = await confirmSheet("Память телефона переполнена — последние операции могут НЕ сохраниться при перезагрузке.\n\nСделайте резервную копию (экспорт), затем удалите ненужные базы или очистите старые журналы.", { yes:"Экспорт данных", no:"Позже", title:"⛔ Память переполнена" });
+      const go = await confirmSheet(long, { yes:"Экспорт данных", no:"Позже", title:"⛔ Данные не сохранены" });
       // localOnly: память переполнена, последняя операция могла не сохраниться — файл пишем СРАЗУ,
       // не откладывая на загрузку облачного журнала (до 120 с)
       if(go && typeof exportData==="function") exportData({localOnly:true});
     }catch(_){}
   }, 50);
 }
+/* Уже выгруженные в облако id журнала: их усечение безвозвратной потерей не является
+   (архив лежит в облаке). Всё остальное — единственная копия. Обёрнуто целиком:
+   на раннем старте `profiles` может быть ещё в TDZ, а saveState вызываться уже может. */
+function _uploadedJrIds(){
+  try{
+    const cid = (typeof activeCloudId==="function") ? activeCloudId() : null;
+    if(!cid) return null;
+    const sig = loadSyncSig(cid, "jr");
+    return (sig && Object.keys(sig).length) ? sig : null;
+  }catch(_){ return null; }
+}
+/* Усечение журнала до `limit`, но НЕ за счёт невыгруженных записей.
+   Порядок в журнале — новые в начале (unshift), поэтому «свежие» = меньшие индексы.
+   Если одних невыгруженных больше лимита — возвращаем их все: пусть запись упадёт
+   и пользователь получит честный отказ с предложением экспорта, а не тихую потерю
+   движений склада, которых нет больше нигде (остатки уже подняты applyStockDelta,
+   а journalLooksIncomplete() навсегда запретит сверку вниз для облачной базы). */
+function _trimJournalKeepPending(arr, limit, uploaded){
+  if(!Array.isArray(arr) || arr.length<=limit) return arr;
+  if(!uploaded) return arr.slice(0, limit);
+  const keep = new Set();
+  for(let i=0;i<arr.length;i++){ const r=arr[i]; if(!r) continue; if(!r.id || !(r.id in uploaded)) keep.add(i); }
+  for(let i=0;i<arr.length && keep.size<limit;i++){ if(arr[i]) keep.add(i); }
+  return arr.filter((_,i)=>keep.has(i));
+}
+/* Аварийное сохранение при переполнении. КЛЮЧЕВОЕ: `state` не мутируется до успешной
+   записи. Иначе при провале всех уровней на диске оставался ПОЛНЫЙ журнал (от прошлого
+   успешного сохранения), а в памяти — усечённый, и аварийный экспорт, который тут же
+   предлагает _quotaBlock(), отдавал бы неполный файл. */
+function _saveStateTrimmed(){
+  const uploaded = _uploadedJrIds();
+  const cut = (logLimit, jrLimit) => {
+    const j = { ...(state.journals || {}) };
+    for(const k of JOURNAL_KEYS) j[k] = _trimJournalKeepPending(state.journals?.[k], jrLimit, uploaded);
+    const lg = (Array.isArray(state.log) && state.log.length>logLimit) ? state.log.slice(0,logLimit) : state.log;
+    return { ...state, log: lg, journals: j };
+  };
+  const commit = (snap) => { state.log = snap.log; state.journals = snap.journals; _quotaBlocked=false; };
+  // Уровень 1: лог до 200, журналы до 2000 (архив есть в облаке при синке; новые — в начале)
+  const lvl1 = cut(200, 2000);
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify(lvl1)); commit(lvl1);
+       try{ toast("Память телефона заполнена — старые записи журнала удалены"); }catch(_){}
+       return; }catch(_){}
+  // Уровень 2: журналы ЖЁСТКО до 500, лог почти полностью — только бы сохранить текущие остатки
+  const lvl2 = cut(50, 500);
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify(lvl2)); commit(lvl2);
+       try{ toast("Память почти заполнена — часть старых записей удалена. Сделайте экспорт"); }catch(_){}
+       return; }catch(e3){
+    // Последняя операция НЕ легла на диск → потеряется при перезагрузке. НЕ молчим —
+    // блокирующее предупреждение + экспорт. state остался ПОЛНЫМ: экспорт отдаст всё.
+    console.error("saveState escalated failure:", e3);
+    _quotaBlock();
+  }
+}
 function saveState(){
   try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); _quotaBlocked=false; }   // успех — снимаем флаг переполнения (память освободилась)
   catch(e){
-    if(e && (e.name==="QuotaExceededError" || e.code===22)){
-      // Уровень 1: режем лог и журналы до 2000 (архив есть в облаке при синке; новые — в начале)
-      if(Array.isArray(state.log) && state.log.length>200) state.log = state.log.slice(0,200);
-      if(state.journals){
-        for(const k of JOURNAL_KEYS){
-          if(Array.isArray(state.journals[k]) && state.journals[k].length>2000) state.journals[k] = state.journals[k].slice(0,2000);
-        }
-      }
-      try {
-        localStorage.setItem(STORE_KEY, JSON.stringify(state)); _quotaBlocked=false;
-        try{ toast("Память телефона заполнена — старые записи журнала удалены"); }catch(_){}
-      } catch(e2){
-        // Уровень 2: режем журналы ЖЁСТКО (до 500) и лог почти полностью — только бы сохранить текущие остатки
-        if(state.journals){ for(const k of JOURNAL_KEYS){ if(Array.isArray(state.journals[k]) && state.journals[k].length>500) state.journals[k]=state.journals[k].slice(0,500); } }
-        if(Array.isArray(state.log) && state.log.length>50) state.log=state.log.slice(0,50);
-        try {
-          localStorage.setItem(STORE_KEY, JSON.stringify(state)); _quotaBlocked=false;
-          try{ toast("Память почти заполнена — часть старых записей удалена. Сделайте экспорт"); }catch(_){}
-        } catch(e3){
-          // Последняя операция НЕ легла на диск → потеряется при перезагрузке. НЕ молчим — блокирующее предупреждение + экспорт.
-          console.error("saveState escalated failure:", e3);
-          _quotaBlock();
-        }
-      }
-    } else { console.error("saveState error:", e); }
+    if(isQuotaErr(e)) _saveStateTrimmed();
+    else {
+      // Любой сбой setItem означает, что данных на диске нет (приватный режим, отключённое
+      // хранилище, SecurityError). Молчать здесь нельзя — потеря так же реальна, как при квоте.
+      console.error("saveState error:", e);
+      _quotaBlock("⛔ Не удалось сохранить данные на устройстве — последние записи НЕ сохранены!");
+    }
   }
   // задачи — общие для всех баз: дублируем в отдельный ключ
   try{ if(typeof saveGlobalTasks==="function") saveGlobalTasks(); }catch(_){}
@@ -449,9 +498,16 @@ function loadProfiles(){
   }catch(e){ console.warn("loadProfiles", e); }
   return null;
 }
+/* Возвращает УСПЕХ записи. Раньше сбой глотался, а вызывающие продолжали работу:
+   переключение баз перезагружало страницу с activeId от одной базы и данными другой,
+   а полное восстановление удаляло старые слоты, не зафиксировав новый список. */
 function saveProfiles(p){
-  try{ localStorage.setItem(PROFILES_KEY, JSON.stringify(p)); }
-  catch(e){ if(e && (e.name==="QuotaExceededError" || e.code===22)) _quotaBlock(); else console.error("saveProfiles", e); }
+  try{ localStorage.setItem(PROFILES_KEY, JSON.stringify(p)); return true; }
+  catch(e){
+    if(isQuotaErr(e)) _quotaBlock();
+    else { console.error("saveProfiles", e); _quotaBlock("⛔ Не удалось сохранить список баз на устройстве"); }
+    return false;
+  }
 }
 function ensureProfiles(){
   let p = loadProfiles();
@@ -486,6 +542,8 @@ function switchProfile(toId, fromAutoLink){
   // Пользовательское переключение — под гардом (явно, без завязки на тайминг activeCloudId).
   if(!fromAutoLink && roleBaseLocked()){ toast("Переключение баз недоступно для вашей роли"); return; }
   try{
+    const prevActive = profiles.activeId;
+    const prevLive = localStorage.getItem(STORE_KEY);   // «живые» байты ДО подмены — для отката
     // 1) снимок активной базы (самые свежие данные — из памяти) в её слот
     localStorage.setItem(slotKey(profiles.activeId), JSON.stringify(state));
     // 2) целевую базу делаем «живой» (STORE_KEY)
@@ -493,7 +551,15 @@ function switchProfile(toId, fromAutoLink){
     localStorage.setItem(STORE_KEY, raw || JSON.stringify(freshProfileState()));
     // 3) фиксируем активную и перезагружаемся — нормализация прогонится на новых данных
     profiles.activeId = toId;
-    saveProfiles(profiles);
+    if(!saveProfiles(profiles)){
+      // PROFILES_KEY не записан: activeId остался СТАРЫМ, а STORE_KEY уже содержит данные
+      // ЦЕЛЕВОЙ базы. Без отката после reload старая база показывала бы чужие данные, а если
+      // она облачная — отправила бы их в push под своим cloudId. Возвращаем как было.
+      profiles.activeId = prevActive;
+      if(prevLive != null){ try{ localStorage.setItem(STORE_KEY, prevLive); }catch(_){} }
+      try{ toast("Не удалось переключить базу — данные не тронуты"); }catch(_){}
+      return;
+    }
     location.reload();
   }catch(e){
     console.error("switchProfile", e);
@@ -1147,7 +1213,21 @@ function nav(view){
 
 /* ---------- Sheet ---------- */
 let _sheetOnClose = null;
+/* Видим ли экран входа. Разметка гейта несёт инлайновый display:flex И класс hidden,
+   поэтому судим по классу — он единственный признак, верный во всех трёх состояниях. */
+function gateOpen(){ const g=document.getElementById("loginGate"); return !!g && !g.classList.contains("hidden"); }
+let _overGateOnce = false;    // разовое разрешение открыть лист поверх гейта (юр-страницы, смена пароля)
+let _sheetRefused = false;    // последний openSheet отказал — промис-обёртки должны разрешиться сразу
+function openSheetOverGate(html){ _overGateOnce = true; openSheet(html); }
 function openSheet(html){
+  /* Лист лежит ВЫШЕ гейта (z-index 100 против 90 — намеренно, ради юр-страниц до входа).
+     showLoginGate закрывает уже открытый лист, но не мог помешать листу, который открывается
+     ПОЗЖЕ: openMembersSheet и подобные делают openSheet("Загрузка…") → await → openSheet(данные).
+     Если во время await сессия отвергнута, завершившийся await показывал логины, роли и «на смене»
+     поверх экрана входа. Пускаем поверх гейта только то, что открыто с самого гейта. */
+  const over = _overGateOnce; _overGateOnce = false;
+  if(gateOpen() && !over){ _sheetRefused = true; return; }
+  _sheetRefused = false;
   // предыдущий sheet принудительно закрываем с резолвом null, чтобы await не висел
   if(_sheetOnClose){ try{ _sheetOnClose(); }catch(e){} _sheetOnClose = null; }
   const s=document.getElementById("sheet");
@@ -1172,8 +1252,9 @@ function _sheetEsc(e){ if(e.key==="Escape") closeSheet(); }   // лист зак
 function closeSheet(){
   document.getElementById("sheet").classList.remove("open");
   document.removeEventListener("keydown", _sheetEsc);
-  // возвращаем фокус тому, кто открыл лист (иначе после закрытия фокус улетает в начало документа)
-  if(_sheetOpener){ const el=_sheetOpener; _sheetOpener=null; try{ el.focus({preventScroll:true}); }catch(_){} }
+  // возвращаем фокус тому, кто открыл лист (иначе после закрытия фокус улетает в начало документа).
+  // НО не под гейт: при принудительном разлогине фокус уезжал на кнопку склада за экраном входа.
+  if(_sheetOpener){ const el=_sheetOpener; _sheetOpener=null; if(!gateOpen()){ try{ el.focus({preventScroll:true}); }catch(_){} } }
   if(_sheetOnClose){ const cb=_sheetOnClose; _sheetOnClose=null; try{ cb(); }catch(e){} }
 }
 
@@ -1188,6 +1269,9 @@ function confirmSheet(msg, opts={}){
         <button class="btn ${opts.danger?"btn-danger":"btn-primary"} flex-1" id="_confYes">${esc(opts.yes||"Ок")}</button>
       </div>
     `);
+    // openSheet мог отказать (виден экран входа): элементов в DOM нет, обращение к ним бросило бы
+    // TypeError внутрь промиса. Разрешаем тем же исходом, что и закрытие без выбора.
+    if(_sheetRefused){ resolve(false); return; }
     _sheetOnClose = ()=>resolve(false);
     document.getElementById("_confNo").onclick = ()=>{ closeSheet(); };
     document.getElementById("_confYes").onclick = ()=>{ _sheetOnClose=null; closeSheet(); resolve(true); };
@@ -1204,6 +1288,7 @@ function promptSheet(msg, def="", opts={}){
         <button class="btn btn-primary flex-1" id="_pYes">Ок</button>
       </div>
     `);
+    if(_sheetRefused){ resolve(null); return; }   // отказ openSheet (виден гейт) — как отмена
     const inp = document.getElementById("_promptInp");
     setTimeout(()=>{ inp.focus(); inp.select?.(); },50);
     _sheetOnClose = ()=>resolve(null);
@@ -1223,6 +1308,7 @@ function chooseSheet(msg, options){
         <button class="btn btn-ghost w-full" data-choice="-1">Отмена</button>
       </div>
     `);
+    if(_sheetRefused){ resolve(null); return; }   // отказ openSheet (виден гейт) — как отмена
     _sheetOnClose = ()=>resolve(null);
     document.getElementById("sheetBody").addEventListener("click", e=>{
       const t = e.target.closest("[data-choice]"); if(!t) return;
@@ -2906,8 +2992,27 @@ function _impParseTemplateAoa(aoa){
   return { rows, format:"template" };
 }
 
-function _impParseWorkbook(XLSX, data, fileHint){
-  const wb = XLSX.read(data, { type:"array" });
+/* CSV разбирается ОТДЕЛЬНО от xlsx: парсер CSV в xlsx.js трактует запятую как разделитель
+   тысяч ДО того, как значение дойдёт до parseNum, и русская накладная тихо множит количество:
+   проверено на нашей же сборке xlsx.js — «0,5» → 5, «1,25» → 125, «12,5» → 125, «10,00» → 1000.
+   Повар при этом видел в диалоге подтверждения уже искажённое число, то есть сверить было нечем.
+   `raw:true` на ЧТЕНИИ оставляет ячейки строками («0,5» так и остаётся «0,5»), а дальше их
+   разбирает parseNum, который русскую запятую понимает правильно. Числа и даты от этого не
+   страдают: и УПД-, и шаблонный разбор гоняют значения через parseNum/String. */
+function _impParseWorkbook(XLSX, data, fileHint, fileName){
+  // именно fileName, а не fileHint: _impFileHint срезает расширение (и часто оставляет только цифры)
+  const isCsv = /\.(csv|tsv|txt)$/i.test(String(fileName||""));
+  let wb;
+  if(isCsv){
+    let text = "";
+    try{ text = new TextDecoder("utf-8").decode(data instanceof Uint8Array ? data : new Uint8Array(data)); }
+    catch(_){ text = ""; }
+    if(text.charCodeAt(0)===0xFEFF) text = text.slice(1);            // BOM из Excel
+    if(!text) return { rows:[], error:"Не удалось прочитать CSV" };
+    wb = XLSX.read(text, { type:"string", raw:true });
+  } else {
+    wb = XLSX.read(data, { type:"array" });
+  }
   const wsName = wb.SheetNames[0];
   if(!wsName) return { rows:[], error:"Файл пуст" };
   const ws = wb.Sheets[wsName];
@@ -2982,7 +3087,7 @@ async function importReceiptsExcel(ev){
       const buf = await readOne(f);
       const hint = _impFileHint(f.name);
       let parsed;
-      try{ parsed = _impParseWorkbook(XLSX, buf, hint); }
+      try{ parsed = _impParseWorkbook(XLSX, buf, hint, f.name); }
       catch(e){ console.warn("import parse", f.name, e); if(out()) out().textContent=`Не удалось прочитать «${f.name}».`; inputEl.value=""; return; }
       if(parsed.error){ if(out()) out().textContent = `${f.name}: ${parsed.error}`; inputEl.value=""; return; }
       const rows = parsed.rows||[];
@@ -4276,7 +4381,7 @@ function openFaqSheet(){ const q=(t,a)=>`<details class="border-b border-white/5
   ${q("Почему меня не видно в другой базе?","Доступ к базам выдаёт начальник участка или партии. Каждый видит только свои базы.")}
   ${q("Забыл пароль","Заранее привяжите личную почту: «Ещё → Резервная почта». Тогда на экране входа «Забыли пароль?» → введёте логин → код придёт на эту почту → введёте код и новый пароль. Без привязанной почты сброс делает начальник.")}
   </div>`); }
-function openPrivacySheet(){ openSheet(`<div class="font-bold text-xl mb-3">Политика конфиденциальности</div>
+function openPrivacySheet(){ openSheetOverGate(`<div class="font-bold text-xl mb-3">Политика конфиденциальности</div>
   <div class="text-sm space-y-2" style="line-height:1.6;max-height:70vh;overflow-y:auto">
    <p>Оператор персональных данных — ООО «Разведчик» (далее «Оператор»).</p>
    <p><b>Какие данные обрабатываются.</b> Логин, роль, принадлежность к базе и вводимые данные складского учёта (наименования, количества, места, сроки, журналы). Пароль хранится в виде необратимого хэша.</p>
@@ -4286,7 +4391,7 @@ function openPrivacySheet(){ openSheet(`<div class="font-bold text-xl mb-3">По
    <p><b>Ваши права.</b> Запрос, исправление и удаление данных — через начальника участка или Оператора.</p>
    <p class="opacity-60">Редакция от июля 2026 г.</p>
   </div>`); }
-function openTermsSheet(){ openSheet(`<div class="font-bold text-xl mb-3">Условия использования</div>
+function openTermsSheet(){ openSheetOverGate(`<div class="font-bold text-xl mb-3">Условия использования</div>
   <div class="text-sm space-y-2" style="line-height:1.6;max-height:70vh;overflow-y:auto">
    <p>Приложение «ВахтаХоз» предоставляется ООО «Разведчик» для служебного учёта на вахтовых объектах.</p>
    <p>Доступ выдаётся уполномоченным лицом. Учётные данные личные; передача их третьим лицам запрещена.</p>
@@ -4312,6 +4417,22 @@ function ensureXlsx(){
 // защита от инъекции формул в Excel: строковая ячейка, начинающаяся с = + - @ (tab/CR), исполнилась бы
 // как формула при открытии файла (тот же риск, что в CSV). Числа хранятся типом "n" — их не трогаем.
 // Данные могли прийти из общей облачной базы от другого участника → экранируем перед отдачей файла.
+/* Число для ячейки xlsx или пустая строка. Number(undefined) и Number("нет") дают NaN,
+   а json_to_sheet кладёт его как {t:"n"} — в sheet1.xml пишется NaN, что не является
+   валидным xsd:double: Excel предлагает «восстановить файл», при обратном чтении «NAN».
+   Ловилось на позиции без minStock (старый JSON-бэкап или ручная правка файла —
+   validateImport это поле не создаёт). В runFilteredXlsx и _acctRow проверка уже была. */
+function _xlNum(v){
+  if(v===""||v==null) return "";
+  let n = Number(v);
+  // legacy-значение вроде "2,5" (ручная правка/старый бэкап): Number даёт NaN, но данные ронять
+  // незачем — parseNum понимает и русскую запятую, и пробелы-разделители тысяч.
+  // Только для ЧИСЛОВЫХ по виду строк: parseNum на мусоре («нет») возвращает 0, а ноль в колонке
+  // «Мин. запас» читается как заданный минимум — это хуже пустой ячейки.
+  if(!Number.isFinite(n) && typeof v==="string" && /^\s*-?[\d\s ]+[.,]?\d*\s*$/.test(v)
+     && typeof parseNum==="function") n = parseNum(v);
+  return Number.isFinite(n) ? n : "";
+}
 function xlsxGuard(ws){
   for(const addr in ws){
     if(addr[0]==="!") continue;
@@ -4334,7 +4455,7 @@ async function exportXlsx(){
     "Наименование": s.name,
     "Количество": roundQty(s.qty||0),
     "Ед. изм.": s.unit||"",
-    "Мин. запас": s.minStock===""?"":Number(s.minStock),
+    "Мин. запас": _xlNum(s.minStock),   // NaN в числовой ячейке = «файл повреждён» в Excel
     "Срок годности": s.expiry||"",
     "Место": locationsOf(s).join("; "),
     "Примечание": s.note||"",
@@ -4398,7 +4519,7 @@ async function exportXlsx(){
       "Повтор": t.repeat||"Нет",
       "Срок": t.due||"",
       "Время": t.time||"",
-      "Порядок": (t.order==null)?"":Number(t.order),
+      "Порядок": _xlNum(t.order),
       "Готово": t.done?"✓":"",
     }));
     const tsh = xlsxGuard(XLSX.utils.json_to_sheet(taskRows.length?taskRows:[{"Задача":"","Категория":"","Приоритет":"","Повтор":"","Срок":"","Время":"","Порядок":"","Готово":""}]));
@@ -4412,10 +4533,15 @@ async function exportXlsx(){
 function exportCsv(){
   const header = ["Тип","Категория","Наименование","Количество","Ед. изм.","Мин. запас","Срок годности","Место","Примечание"];
   const rows = [header];
+  /* Десятичный разделитель — ЗАПЯТАЯ: файл открывают в русском Excel, где точка означает дату,
+     и «1.5» превращалось в 01.05 (или в текст) — сумма по столбцу «Количество» не считалась.
+     Разделитель полей у нас «;», поэтому запятая внутри числа ничего не ломает, а исключение
+     анти-инъекции ниже уже допускает и точку, и запятую. XLSX этой проблемы не имеет. */
+  const dec = (v) => String(v??"").replace(".", ",");
   sortedStock(state.stock).forEach(s=>rows.push([
     typeMeta(s.type).addLabel,
-    s.category||"", s.name, fmtQty(s.qty), s.unit||"",
-    s.minStock??"", s.expiry||"", locationsOf(s).join("; "), s.note||""
+    s.category||"", s.name, dec(fmtQty(totalQtyOf(s))), s.unit||"",
+    dec(s.minStock??""), s.expiry||"", locationsOf(s).join("; "), s.note||""
   ]));
   const csv = "\uFEFF" + rows.map(r=>r.map(v=>{
     let str = String(v??"");
@@ -4510,7 +4636,7 @@ async function runFilteredXlsx(){
       "Наименование": s.name,
       "Количество": totalQtyOf(s),
       "Ед. изм.": s.unit||"",
-      "Мин. запас": (s.minStock===""||s.minStock==null)?"":Number(s.minStock),
+      "Мин. запас": _xlNum(s.minStock),
       "Срок годности": nearestExpiryOf(s)||"",
       "Состояние": st==="expired"?"просрочено":(st==="soon"?"скоро (≤14 дн)":""),
       "Место": locationsOf(s).join("; "),
@@ -4801,22 +4927,49 @@ async function importAllProfiles(payload){
     // все новые слоты на месте — теперь безопасно удалить старые и переключить активную
     const oldProfs = profiles.list.slice();   // старые базы (с cloudId) — для чистки осиротевших sync-маркеров
     const oldIds = oldProfs.map(p=>p.id);
-    try{ localStorage.setItem(STORE_KEY, localStorage.getItem(slotKey(activeId))); }catch(e){ console.error(e); }
-    saveProfiles({ activeId, list: newList });
+    // ПОРЯДОК ВАЖЕН: сначала перевести «живой» STORE_KEY и список баз, убедиться, что ОБЕ записи
+    // прошли, и только потом удалять старые слоты. Раньше сбой записи STORE_KEY лишь печатался в
+    // консоль: PROFILES_KEY указывал на восстановленную базу, а STORE_KEY содержал данные СТАРОЙ
+    // активной — пользователь видел старую базу под новым именем, восстановленный слот сиротел,
+    // а для облачной базы этот чужой state уходил в push под её cloudId (suspectWipe ловит только
+    // усыхание >90%, при сопоставимом числе позиций молчит).
+    const prevLive = (()=>{ try{ return localStorage.getItem(STORE_KEY); }catch(_){ return null; } })();
+    let live = false, listed = false;
+    try{
+      const raw = localStorage.getItem(slotKey(activeId));
+      if(raw != null){ localStorage.setItem(STORE_KEY, raw); live = true; }
+    }catch(e){ console.error("restore: STORE_KEY", e); }
+    if(live) listed = saveProfiles({ activeId, list: newList });
+    if(!live || !listed){
+      for(const k of writtenKeys){ try{ localStorage.removeItem(k); }catch(_){} }   // откат новых слотов
+      if(prevLive != null){ try{ localStorage.setItem(STORE_KEY, prevLive); }catch(_){} }
+      saveProfiles(profiles);                                                        // profiles ещё хранит СТАРЫЙ список
+      toast("Не хватило места — восстановление отменено, старые базы целы");
+      return;
+    }
     for(const id of oldIds){ if(id!==activeId){ try{ localStorage.removeItem(slotKey(id)); }catch(_){} } }
     for(const op of oldProfs){ if(op.cloudId) clearBaseSyncKeys(op.cloudId); }   // dirty + снимки подписей старых баз не нужны
     toast("Восстановлено. Перезагрузка…");
     setTimeout(()=>location.reload(), 600);
   } else {
+    // Профиль попадает в список ТОЛЬКО после успешной записи слота. Раньше он добавлялся
+    // безусловно, а сбой записи лишь печатался в консоль: тост рапортовал «Добавлено баз: N»,
+    // а при переключении switchProfile видел отсутствующий слот и подставлял freshProfileState —
+    // пустая база без предупреждения, к тому моменту файл бэкапа мог быть уже удалён.
+    const failed = []; let added = 0;
     for(const p of norm){
       let nm = p.name, n = 2;
       while(profiles.list.some(x=>x.name.toLowerCase()===nm.toLowerCase())){ nm = `${p.name} (${n++})`; }
       const id = uid();
-      profiles.list.push({ id, name: nm });
-      try{ localStorage.setItem(slotKey(id), JSON.stringify(p.state)); }catch(e){ console.error(e); }
+      try{
+        localStorage.setItem(slotKey(id), JSON.stringify(p.state));
+        profiles.list.push({ id, name: nm });
+        added++;
+      }catch(e){ console.error("import: слот базы не записан", e); failed.push(p.name); }
     }
     saveProfiles(profiles);
-    toast(`Добавлено баз: ${norm.length}`);
+    if(failed.length) toast(`Добавлено баз: ${added}. НЕ хватило места: ${failed.join(", ")}`);
+    else toast(`Добавлено баз: ${added}`);
     render(); openProfilesSheet();
   }
 }
@@ -5442,6 +5595,14 @@ function isOffShift(cid){
    копятся под dirty и уедут сами, когда членство загрузится. */
 function membershipUnknown(){ return !!cloud.ready && !cloud.membersLoaded; }
 function canEditStock(){
+  /* Принудительный разлогин (истёк refresh-токен, отозван, сменили пароль): cloudSessionExpired
+     обнуляет session/profile/members и ready, но cloudId активной базы остаётся. Дальше все ветви
+     ниже промахивались (`cloud.ready` уже false), и функция доходила до финального `return true` —
+     облачная база становилась редактируемой с экрана входа. Правки при этом даже не помечались
+     dirty (cloudMaybePush выходит при !cloud.ready) и молча гибли при следующем pull.
+     Проверяем и память, и хранилище: при офлайн-старте сессия лежит только в localStorage,
+     и запрещать работу в этом (главном рабочем) сценарии нельзя. */
+  if(activeCloudId() && !cloud.session && !loadCloudSess()) return false;
   const m=activeMember();
   if(m) return !!m.can_edit_stock && m.active!==false;
   if(cloud.profile && cloud.profile.is_admin) return true;   // владелец
@@ -6015,7 +6176,7 @@ function _rowExpiry(r){
 }
 function _acctRow(r){ return {
   "Наименование": r.name, "Категория": r.category||"", "Количество": _rowQty(r),
-  "Ед. изм.": r.unit||"", "Мин. запас": (r.min_stock==null?"":Number(r.min_stock)), "Срок годности": _rowExpiry(r) }; }
+  "Ед. изм.": r.unit||"", "Мин. запас": _xlNum(r.min_stock), "Срок годности": _rowExpiry(r) }; }
 function _sheetName(name, used){
   let s = String(name||"База").replace(/[\[\]\*\?\/\\:]/g,"").trim().slice(0,28) || "База";
   let bs=s, i=2; while(used.has(s.toLowerCase())){ s=bs.slice(0,25)+" "+i; i++; } used.add(s.toLowerCase()); return s;
@@ -6229,7 +6390,9 @@ function cloudApplyRecoveryProfile(src){
 // Восстановление пароля по КОДУ на привязанную резервную почту (замена старой ссылке @razvedchick.ru)
 async function requestPasswordReset(){
   const pre=(document.getElementById("lgEmail")?.value||"").trim();
-  openSheet(`
+  // Оба шита сброса пароля открываются С ГЕЙТА (второй — уже после сетевого await), поэтому
+  // им нужно явное разрешение: обычный openSheet при видимом гейте отказывает.
+  openSheetOverGate(`
     <div class="font-bold text-xl mb-1">Забыли пароль?</div>
     <div class="text-sm opacity-70 mb-3">Введите логин — код для сброса придёт на привязанную резервную почту.</div>
     <input class="input mb-2" id="rcLogin" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Логин (например: ivanov)" value="${esc(pre)}" />
@@ -6244,7 +6407,7 @@ async function requestPasswordReset(){
     try{ await cloudCallFnPublic("request_reset",{username}); }
     catch(e){ b.disabled=false; b.textContent="Отправить код"; err().textContent="Не удалось отправить. Проверьте интернет"; return; }
     // шаг 2: код + новый пароль
-    openSheet(`
+    openSheetOverGate(`
       <div class="font-bold text-xl mb-1">Новый пароль</div>
       <div class="text-sm opacity-70 mb-3">Если у логина есть привязанная почта — код отправлен. Введите его и новый пароль.</div>
       <input class="input mb-2" id="rcCode" inputmode="numeric" maxlength="6" placeholder="Код из письма (6 цифр)" />
@@ -6367,6 +6530,11 @@ function showLoginGate(){
   // он видел чужие данные вместо чистого входа.
   try{ closeSheet(); }catch(_){}
   g.classList.remove("hidden"); g.style.display="flex";  // инлайн display перебивает .hidden — синхронизируем явно
+  /* Гейт только НАКРЫВАЛ интерфейс: содержимое #app оставалось в DOM, в порядке табуляции и
+     доступно скринридеру, а гейт стоит ПОСЛЕДНИМ элементом документа — Tab с поля пароля уходил
+     на кнопки склада. Телефон передают следующей смене, и с экрана входа читались наименования,
+     остатки и места прошлой смены. inert убирает поддерево из фокуса, кликов и а11y-дерева. */
+  _gateInert(true);
   const go = document.getElementById("lgGo"),
         em = document.getElementById("lgEmail"), pw = document.getElementById("lgPwd"),
         err = document.getElementById("lgErr");
@@ -6387,8 +6555,18 @@ function showLoginGate(){
   pw.onkeydown = ev=>{ if(ev.key==="Enter") doLogin(); };
   try{ em.focus(); }catch(_){}
 }
+/* inert поддерживают все целевые движки (Safari 15.5+, Chrome 102+); в старых свойство просто
+   игнорируется, поэтому дублируем aria-hidden для скринридеров. */
+function _gateInert(on){
+  for(const id of ["app","navbar"]){
+    const el = document.getElementById(id); if(!el) continue;
+    try{ el.inert = !!on; }catch(_){}
+    if(on) el.setAttribute("aria-hidden","true"); else el.removeAttribute("aria-hidden");
+  }
+}
 function hideLoginGate(){
   const g = document.getElementById("loginGate"); if(g){ g.classList.add("hidden"); g.style.display="none"; }  // .hidden не перебьёт инлайн display — гасим явно
+  _gateInert(false);
 }
 async function cloudLogin(email, password){
   const sb = await ensureSB();
@@ -6697,10 +6875,13 @@ async function cloudActivate(cid, attempt){
     // диалог ему не показываем (правки всё равно не выгружаются), но НЕ теряем данные молча — сохраняем копией перед pull.
     if(!dirty && !cloudEmpty && localHasData && neverSynced && !canEditStock() && !cloud._conflictAsked[cid]){
       cloud._conflictAsked[cid] = true;
-      try{
-        const raw = localStorage.getItem(STORE_KEY);
-        if(raw){ const bkId=uid(); localStorage.setItem(slotKey(bkId), raw); profiles.list.push({ id:bkId, fromCloudId: cid, name: cleanName40((cloud.bases[cid]||"База")+" (локальная копия)") }); saveProfiles(profiles); toast("Данные с телефона сохранены копией"); }
-      }catch(_){}
+      // Копия ОБЯЗАТЕЛЬНА: сразу за этим блоком идёт pull, который перезапишет локальные данные.
+      // Раньше сбой записи глотался `catch(_){}` и офлайн-работа исчезала молча.
+      if(!_backupLocalBeforePull(cid)){
+        cloud._conflictAsked[cid] = false;   // дать повторную попытку, когда место освободится
+        setSyncStatus("error","Не удалось сохранить копию данных телефона — облако не загружаем");
+        return;
+      }
       // дальше — обычный pull ниже (для view-only облако источник истины)
     }
     if(!dirty && !cloudEmpty && localHasData && neverSynced && canEditStock() && !cloud._conflictAsked[cid]){
@@ -6725,17 +6906,14 @@ async function cloudActivate(cid, attempt){
         await cloudPushNow();
         return;
       }
-      // "Облачные" ИЛИ отмена → НЕ теряем локальное: сохраняем его отдельной локальной базой, затем тянем облако
-      try{
-        const raw = localStorage.getItem(STORE_KEY);
-        if(raw){
-          const bkId = uid();
-          localStorage.setItem(slotKey(bkId), raw);
-          profiles.list.push({ id:bkId, fromCloudId: cid, name: cleanName40((cloud.bases[cid]||"База")+" (локальная копия)") });
-          saveProfiles(profiles);
-          toast("Данные с телефона сохранены копией");
-        }
-      }catch(_){}
+      // "Облачные" ИЛИ отмена → НЕ теряем локальное: сохраняем его отдельной локальной базой, затем тянем облако.
+      // Диалог выше прямо обещает «данные с телефона сохраним копией» — если копия не легла,
+      // pull делать нельзя, иначе обещание нарушено молча.
+      if(!_backupLocalBeforePull(cid)){
+        cloud._conflictAsked[cid] = false;
+        setSyncStatus("error","Не удалось сохранить копию данных телефона — облако не загружаем");
+        return;
+      }
       await cloudPull(cid);
       return;
     }
@@ -6754,6 +6932,26 @@ async function cloudActivate(cid, attempt){
     if(cloudOnline() && attempt < 6) setTimeout(()=>{ cloudActivate(cid, attempt+1).catch(()=>{}); }, Math.min(3000+attempt*2000, 15000));
   }
   finally{ cloud.busy=false; cloudSubscribe(cid); }
+}
+/* Копия локальных данных отдельной локальной базой ПЕРЕД pull-ом, который их перезапишет.
+   Возвращает УСПЕХ. Вызывающий обязан отказаться от pull при false — иначе офлайн-работа
+   исчезает молча, хотя приложение обещало «данные с телефона сохраним копией».
+   При частичном сбое (слот записан, список баз нет) слот удаляется — не оставляем мусор. */
+function _backupLocalBeforePull(cid){
+  let raw = null;
+  try{ raw = localStorage.getItem(STORE_KEY); }catch(_){ return false; }
+  if(!raw) return true;                     // нечего сохранять
+  const bkId = uid();
+  try{ localStorage.setItem(slotKey(bkId), raw); }
+  catch(e){ console.warn("backup before pull: слот", e); return false; }
+  profiles.list.push({ id:bkId, fromCloudId: cid, name: cleanName40((cloud.bases[cid]||"База")+" (локальная копия)") });
+  if(!saveProfiles(profiles)){
+    profiles.list = profiles.list.filter(x=>x.id!==bkId);
+    try{ localStorage.removeItem(slotKey(bkId)); }catch(_){}
+    return false;
+  }
+  try{ toast("Данные с телефона сохранены копией"); }catch(_){}
+  return true;
 }
 async function cloudPull(cid){
   if(!cid || !cloudOnline()) return;
@@ -7098,7 +7296,14 @@ async function cloudRestDelete(table, ids, tok){
 let _dirtyGen = 0;
 function markDirty(cid){
   if(!cid) return;
-  try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }catch(_){}
+  try{ localStorage.setItem(cloudDirtyKey(cid),"1"); }
+  catch(e){
+    // Маркер несинхронизации не менее важен, чем сами данные: без него после перезагрузки
+    // cloudActivate уйдёт в cloudPull и затрёт правки облачными молча. В пределах сессии
+    // спасает pushPending (его снимает finally самого push — залипнуть не может).
+    try{ cloud.pushPending = true; }catch(_){}
+    _quotaBlock();
+  }
   // Поколение считаем ТОЛЬКО для правок пользователя. Внутри самой выгрузки push оборачивает свои
   // saveState() (мердж настроек, 3-way) в cloud.applying=true, а saveState зовёт cloudMaybePush →
   // markDirty. Учитывать это как «данные изменились» означало бы никогда не снимать dirty и гонять
