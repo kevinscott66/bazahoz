@@ -73,6 +73,8 @@ alwaysApply: true
 
 ## Деплой
 
-- SQL: Management API `database/query` с PAT из `~/Desktop/vahtahoz-supabase-keys.txt` (крупные миграции — чанками; целиком бывает 502).
+- SQL: Management API `database/query` с PAT (крупные миграции — чанками; целиком бывает 502).
+  Ключи — локально, вне репозитория: шаблон `infra/supabase/keys.env.example` → копия `keys.env` (в `.gitignore`).
+  Точное расположение файла с ключами здесь НЕ указываем: репозиторий публичный, а это готовая наводка.
 - EF: `manage-user`; клиент — push в GitHub Pages.
 - После journal-миграций: SELECT журнала жив; `public.journal_row_type` отсутствует.
