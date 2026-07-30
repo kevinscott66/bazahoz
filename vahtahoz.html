@@ -219,7 +219,7 @@
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
     <!-- текст подставляется из APP_BUILD_LABEL при старте (единый источник версии) -->
-    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v175</div>
+    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v176</div>
   </div>
 </div>
 
@@ -251,7 +251,7 @@ const STOCK_MERGE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v175 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (канал вычисляется из NS). */
-const APP_BUILD = "v175";
+const APP_BUILD = "v176";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -1755,7 +1755,7 @@ async function exportJournalsMonth(ym){
   let byKind = null; const cid = activeCloudId();
   if(cid && cloud.ready && cloudOnline() && cloud.session && cloud.session.access_token){
     try{
-      const rows = await cloudRest(`journal_entries?select=kind,data&base_id=eq.${encodeURIComponent(cid)}&data->>ts=like.${encodeURIComponent(ym)}*`, cloud.session.access_token);
+      const rows = await cloudRestAll(`journal_entries?select=kind,data&base_id=eq.${encodeURIComponent(cid)}&data->>ts=like.${encodeURIComponent(ym)}*&order=id`, cloud.session.access_token, {timeout:90000});
       if(Array.isArray(rows)){
         byKind={}; for(const k of JOURNAL_KEYS) byKind[k]=[];
         rows.forEach(r=>{ if(r && r.data && byKind[r.kind]) byKind[r.kind].push(r.data); });
@@ -4042,6 +4042,34 @@ async function cloudRest(path, token, opts, _retried){
     return txt ? JSON.parse(txt) : null;
   } finally { clearTimeout(t); }
 }
+// PostgREST по умолчанию отдаёт ≤1000 строк. Без пагинации pull склада (~3k) был неполным →
+// в UI «прыгало» число в наличии, а push мог удалить «пропавшие» id из облака.
+async function cloudRestAll(path, token, opts){
+  opts = opts || {};
+  const page = Math.min(Math.max(Number(opts.pageSize)||1000, 100), 1000);
+  const hardCap = Number(opts.hardCap)||50000;
+  const all = [];
+  let from = 0;
+  for(;;){
+    const headers = Object.assign({}, opts.headers||{}, {
+      Range: `${from}-${from+page-1}`,
+      Prefer: "count=exact",
+    });
+    const r = await cloudRest(path, token, Object.assign({}, opts, { headers, returnResponse:true }));
+    const txt = await r.text();
+    const chunk = txt ? JSON.parse(txt) : [];
+    if(!Array.isArray(chunk)) return chunk;   // неожиданный формат — как есть
+    all.push(...chunk);
+    if(chunk.length < page) break;
+    from += page;
+    if(from >= hardCap){
+      const e = new Error("Слишком много данных для загрузки — обратитесь к администратору");
+      e.code = "hardCap"; e.hardCap = hardCap; e.path = path;
+      throw e;
+    }
+  }
+  return all;
+}
 /* Своё хранилище сессии (синхронное) — переживает reload от cloudAutoLink, в отличие от
    фонового setSession в supabase-клиенте. Восстановление при запуске идёт отсюда, прямым fetch. */
 function saveCloudSess(d){
@@ -4621,7 +4649,8 @@ async function loadAllBasesStock(){
   const ids=Object.keys(cloud.bases||{});
   if(!ids.length) return [];
   let rows;
-  try{ rows=await cloudRest(`stock_items?select=base_id,name,category,qty,unit,min_stock,expiry,location,type,note,batches&base_id=in.(${ids.map(encodeURIComponent).join(",")})`, tok, {timeout:90000}); }
+  // пагинация: по нескольким базам суммарно легко >1000 строк → без неё сводка/экспорт были неполными
+  try{ rows=await cloudRestAll(`stock_items?select=base_id,name,category,qty,unit,min_stock,expiry,location,type,note,batches&base_id=in.(${ids.map(encodeURIComponent).join(",")})&order=id`, tok, {timeout:180000, hardCap:100000}); }
   catch(e){ return ids.map(id=>({ id, name:cloud.bases[id], rows:null })); }   // общий сбой → все базы помечаем «не загружено»
   const byBase={}; (Array.isArray(rows)?rows:[]).forEach(r=>{ (byBase[r.base_id]=byBase[r.base_id]||[]).push(r); });
   return ids.map(id=>({ id, name:cloud.bases[id], rows: byBase[id]||[] }));
@@ -5259,8 +5288,10 @@ async function cloudPull(cid){
     // который в iOS standalone-PWA мог ВИСНУТЬ без таймаута («Загрузка из облака» навсегда).
     // cloudRest кидает исключение при ошибке/таймауте → попадём в catch и НЕ затрём локальное пустым.
     const tok = cloud.session && cloud.session.access_token;
-    const items = await cloudRest(`stock_items?select=*&base_id=eq.${encodeURIComponent(cid)}`, tok, {timeout:90000});  // тяжёлый — большой запас под слабую сеть/полевые условия
-    const jr    = await cloudRest(`journal_entries?select=*&base_id=eq.${encodeURIComponent(cid)}`, tok, {timeout:60000});
+    // пагинация обязательна: иначе PostgREST обрезает на 1000 и локальный склад «прыгает».
+    // order=id — детерминированный порядок страниц (без него Range может пропустить/удвоить строки)
+    const items = await cloudRestAll(`stock_items?select=*&base_id=eq.${encodeURIComponent(cid)}&order=id`, tok, {timeout:120000});
+    const jr    = await cloudRestAll(`journal_entries?select=*&base_id=eq.${encodeURIComponent(cid)}&order=id`, tok, {timeout:90000});
     const baseArr = await cloudRest(`bases?select=settings&id=eq.${encodeURIComponent(cid)}`, tok);
     const base = Array.isArray(baseArr) ? baseArr[0] : null;
     // ЗАЩИТА ОТ ГОНКИ: пока шла загрузка (долгие await выше), пользователь мог
@@ -5587,7 +5618,7 @@ async function cloudPullTasks(){
   if(localStorage.getItem(TASKS_DIRTY)){ cloudMaybePushTasks(); return; }   // есть несинхр. правки — не затираем
   try{
     const tok=cloud.session.access_token;
-    const rows=await cloudRest(`tasks?select=*&owner_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:30000});
+    const rows=await cloudRestAll(`tasks?select=*&owner_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:30000});
     if(localStorage.getItem(TASKS_DIRTY)) return;                            // успел отредактировать во время загрузки → не затираем
     // САНИТАЙЗ: id задачи И id пунктов чек-листа — оба идут из облака (jsonb от любого участника)
     // и подставляются в inline-onclick (toggleTaskItem). Без safeId на items[].id — XSS-вектор.
