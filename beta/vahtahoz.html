@@ -220,7 +220,7 @@
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
     <!-- текст подставляется из APP_BUILD_LABEL при старте (единый источник версии) -->
-    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v207 · БЕТА</div>
+    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v208 · БЕТА</div>
   </div>
 </div>
 
@@ -252,7 +252,7 @@ const STOCK_MERGE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v207";
+const APP_BUILD = "v208";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -329,7 +329,9 @@ function _quotaBlock(){
   setTimeout(async()=>{
     try{
       const go = await confirmSheet("Память телефона переполнена — последние операции могут НЕ сохраниться при перезагрузке.\n\nСделайте резервную копию (экспорт), затем удалите ненужные базы или очистите старые журналы.", { yes:"Экспорт данных", no:"Позже", title:"⛔ Память переполнена" });
-      if(go && typeof exportData==="function") exportData();
+      // localOnly: память переполнена, последняя операция могла не сохраниться — файл пишем СРАЗУ,
+      // не откладывая на загрузку облачного журнала (до 120 с)
+      if(go && typeof exportData==="function") exportData({localOnly:true});
     }catch(_){}
   }, 50);
 }
@@ -4514,17 +4516,45 @@ async function fullCloudJournals(){
     return out;
   }catch(e){ console.warn("fullCloudJournals → фолбэк на локальное", e); return null; }
 }
-async function exportData(){
+/* Объединение журналов для бэкапа: локальные записи + облачный архив.
+   ЗАМЕЩАТЬ облачным нельзя: если устройство неделю работало офлайн (или push упирался в 403),
+   несинхронизированные движения в облаке отсутствуют — бэкап терял бы их ровно тогда, когда он нужнее
+   всего. Приоритет у локальной версии записи (она может быть свежее), удалённые локально
+   (state.delJr) не воскрешаем. */
+function mergeJournalsForExport(cloudJ){
+  const del = new Set(Array.isArray(state.delJr) ? state.delJr : []);
+  const out = emptyJournals();
+  for(const k of JOURNAL_KEYS){
+    const seen = new Set();
+    for(const op of (state.journals[k]||[])){ if(op){ if(op.id) seen.add(op.id); out[k].push(op); } }
+    for(const op of (cloudJ[k]||[])){
+      if(!op || !op.id || seen.has(op.id) || del.has(op.id)) continue;
+      out[k].push(op);
+    }
+    out[k].sort((a,b)=>(b.ts||"").localeCompare(a.ts||""));
+  }
+  return out;
+}
+/* opts.localOnly — писать файл СРАЗУ, без обращения к облаку. Нужно для аварийного экспорта при
+   переполнении памяти: там последняя операция могла не лечь на диск, и откладывать запись файла
+   на сетевой запрос (до 120 с) нельзя. */
+async function exportData(opts){
   // экспорт ТОЛЬКО текущей базы (для обычного бэкапа/переноса одной базы)
   // у начальника (нет прав на задачи) «Задачи» не выгружаем
+  const localOnly = !!(opts && opts.localOnly);
   const cid = activeCloudId();
-  if(cid) toast("Подготовка бэкапа…");
-  const full = await fullCloudJournals();            // полная история движений, а не хвост 500
-  const base = full ? { ...state, journals: full } : state;
+  let full = null;
+  if(cid && !localOnly){
+    toast("Подготовка бэкапа…");
+    full = await fullCloudJournals();                // полная история движений, а не хвост 500
+    // база могла смениться, пока шла загрузка (переключение делает reload, но подстраховываемся)
+    if(activeCloudId() !== cid) full = null;
+  }
+  const base = full ? { ...state, journals: mergeJournalsForExport(full) } : state;
   const out = isRestrictedUser() ? { ...base, tasks: [] } : base;
   triggerDownload(JSON.stringify(out,null,2), `vahtahoz-${activeProfileName()}-${todayStr()}.json`);
   // не молчим, если история в файле неполная: иначе бэкап выглядит полным, а движений в нём нет
-  if(cid && !full) toast("Экспортировано, НО журнал в файле неполный (нет связи с облаком) — повторите онлайн");
+  if(cid && !full && !localOnly) toast("Экспортировано, НО журнал в файле неполный (нет связи с облаком) — повторите онлайн");
   else toast("Экспортировано (текущая база)");
 }
 function exportAllProfiles(){
@@ -4544,7 +4574,11 @@ function exportAllProfiles(){
   // Журналы в слотах облачных баз урезаны до 500 записей на вид (pull), а файл называется
   // «главный страховочный бэкап» — поэтому НЕ молчим о неполной истории движений.
   // Полный архив по одной базе даёт «Экспорт текущей базы (JSON)» онлайн.
-  const truncated = list.some(x => x.state && x.state.journals &&
+  // ТОЛЬКО облачные базы: локальный журнал режется на 2000 (квота), а не на 500, поэтому локальная
+  // база с 700 записями — это полный журнал, и помечать такой бэкап неполным было ложной тревогой
+  // (а ложная тревога на главном страховочном бэкапе обесценивает предупреждение).
+  const cloudIds = new Set(profiles.list.filter(p=>p.cloudId).map(p=>p.id));
+  const truncated = list.some(x => cloudIds.has(x.id) && x.state && x.state.journals &&
     JOURNAL_KEYS.some(k => Array.isArray(x.state.journals[k]) && x.state.journals[k].length >= 500));
   const payload = { __vahtahozProfiles:1, version:1, exportedAt:new Date().toISOString(), activeId: profiles.activeId, profiles:list, journalsMayBeTruncated: truncated };
   triggerDownload(JSON.stringify(payload,null,2), `vahtahoz-ВСЕ-БАЗЫ-${todayStr()}.json`);
@@ -6292,7 +6326,7 @@ async function cloudLogin(email, password){
     // уже нет, а копии остались (профиль удалили из списка / базы не загрузились), прежнее условие
     // не срабатывало и чужой склад доставался следующему вошедшему — ровно та дыра, ради которой
     // копии и помечаются.
-    if(prevOwner && prevOwner !== d.user.id && profiles.list.some(p=>p.cloudId || p.fromCloudId)){ purgeCloudProfiles(); location.reload(); return; }
+    if(prevOwner && prevOwner !== d.user.id && profiles.list.some(p=>p.cloudId || p.fromCloudId)){ purgeCloudProfiles(true); location.reload(); return; }
   }catch(_){}
   // setSession (для прав и realtime) — в фоне, не держим кнопку (промис нигде не ждём)
   Promise.race([
@@ -6388,18 +6422,28 @@ async function cloudOnLogin(session, attempt){
 // Удаляет с устройства ЛОКАЛЬНЫЕ профили/слоты/подписи ОБЛАЧНЫХ баз (их данные привязаны к аккаунту).
 // Нужна и при выходе, и при входе ДРУГИМ человеком на общем вахтовом телефоне: иначе рендер/экспорт идёт
 // из STORE_KEY/слотов ДО RLS → новый увидел бы чужой склад. Тот же uid НЕ трогаем (не теряем офлайн-правки).
-function purgeCloudProfiles(){
+/* alsoCopies=true — сносим и КОПИИ облачной базы. Так чистим только при входе ДРУГОГО аккаунта.
+   При обычном выходе своего же пользователя копии ОСТАЮТСЯ: они создаются ровно тогда, когда данные
+   НЕ попали в облако (конфликт «телефон vs общая база», view-only бэкап, копия до смены роли), то есть
+   это единственный носитель непрошедших правок — стирать его без предупреждения нельзя.
+   Утечка при этом закрыта: метка vahtahoz_cloud_owner не сбрасывается при выходе, поэтому вход
+   другого uid всё равно попадёт на гард выше и вызовет purgeCloudProfiles(true). */
+function purgeCloudProfiles(alsoCopies){
   try{
     // ВАЖНО: чистим не только профили с cloudId, но и КОПИИ облачной базы (fromCloudId).
     // Копии создаются при конфликте «телефон vs общая база», при view-only бэкапе и перед сменой
     // роли — это ПОЛНЫЙ склад и журнал базы, лежащий в обычном слоте. Раньше они не имели cloudId,
     // попадали в `locals` и оставались на устройстве: следующий вошедший видел их в списке баз,
     // открывал и правил чужой склад, а «Экспорт всех баз» выгружал его в файл.
-    const cloudProfs = profiles.list.filter(p=>p.cloudId || p.fromCloudId);
+    const isCopy = p => !p.cloudId && !!p.fromCloudId;
+    const doomed = p => !!p.cloudId || (alsoCopies && isCopy(p));
+    const cloudProfs = profiles.list.filter(doomed);
     if(!cloudProfs.length) return;
     const activeWasCloud = cloudProfs.some(p=>p.id===profiles.activeId);
-    cloudProfs.forEach(p=>{ try{ localStorage.removeItem(slotKey(p.id)); clearBaseSyncKeys(p.cloudId || p.fromCloudId); }catch(_){} });
-    let locals = profiles.list.filter(p=>!p.cloudId && !p.fromCloudId);
+    // clearBaseSyncKeys ТОЛЬКО по своему cloudId: для копии её fromCloudId — это id ЖИВОЙ облачной
+    // базы, и чистка снесла бы dirty/подписи реального профиля (маркер «не синхронизировано»).
+    cloudProfs.forEach(p=>{ try{ localStorage.removeItem(slotKey(p.id)); if(p.cloudId) clearBaseSyncKeys(p.cloudId); }catch(_){} });
+    let locals = profiles.list.filter(p=>!doomed(p));
     if(!locals.length){ locals = [{ id: uid(), name: "База 1" }]; }
     const newActive = activeWasCloud ? locals[0].id : profiles.activeId;
     if(activeWasCloud){ const raw = localStorage.getItem(slotKey(newActive)); localStorage.setItem(STORE_KEY, raw || JSON.stringify(freshProfileState())); }
@@ -6646,7 +6690,16 @@ async function cloudPull(cid){
     });
     const J=emptyJournals();
     const _delJrSet = new Set(Array.isArray(state.delJr)?state.delJr:[]);   // не воскрешаем явно удалённые (если облачное удаление ещё не доехало / чужой re-push)
-    (jr||[]).forEach(r=>{ const rid=safeId(r.id); if(_delJrSet.has(rid)) return; if(J[r.kind]) J[r.kind].push({ ...(r.data||{}), id:rid }); });
+    /* ts тоже санитайзим: data пишет любой участник с edit_stock, и после ужесточения monthKeyOf
+       запись с мусорным ts не попадала НИ в один месяц — её нельзя было ни увидеть, ни удалить из UI,
+       но она продолжала влиять на ledger, сумму по единицам и post-pull raise. Невалидный ts сводим
+       к эпохе: движение станет видно под чипом «янв 1970», и его можно будет удалить. */
+    const _fixTs = (v)=>{
+      const s = String(v||"");
+      if(/^\d{4}-\d{2}-\d{2}(T.*)?$/.test(s) && !isNaN(new Date(s))) return s;
+      return new Date(0).toISOString();
+    };
+    (jr||[]).forEach(r=>{ const rid=safeId(r.id); if(_delJrSet.has(rid)) return; if(J[r.kind]) J[r.kind].push({ ...(r.data||{}), id:rid, ts:_fixTs((r.data||{}).ts) }); });
     for(const k in J) J[k] = J[k].sort((a,b)=>(b.ts||"").localeCompare(a.ts||""));
     state.journals = J;
     // снимок подписей/qty/jr — ПО СЫРЫМ облачным данным (ДО сверки/relink).
@@ -6755,6 +6808,23 @@ function saveStockSig(cid, map, vals){ saveSyncSig(cid,"stock",map); saveSyncSig
 // 3-стороннее слияние количества ПЕРЕД выгрузкой изменённых позиций: правит upsert-строки, curSig и локальный
 // state.stock так, чтобы конкурентные списания с двух устройств складывались (merged = local + cloud − снимок).
 // Только позиции БЕЗ партий; партийные при расхождении не трогаем (qty=Σпартий) — предупреждаем о ручной сверке.
+/* Санитайз облачных партий РОВНО ОДИН раз на строку и одно значение в оба назначения.
+   safeId()/createdAt при мусорных данных генерируют НОВОЕ на каждый вызов, поэтому два отдельных
+   вызова давали РАЗНЫЕ id партий в выгружаемой строке (r) и в state.stock (it): подпись curSig
+   не совпадала с тем, что построит следующий push (лишний цикл выгрузки), а op.batchId в журнале
+   ссылался на исчезнувший id. Кэшируем результат по объекту облачной строки. */
+const _cloudBatchesCache = new WeakMap();
+function cloudBatchesOnce(cr){
+  if(!cr || !Array.isArray(cr.batches)) return null;
+  if(!_cloudBatchesCache.has(cr)) _cloudBatchesCache.set(cr, sanitizeBatches(cr.batches));
+  return _cloudBatchesCache.get(cr);
+}
+/* Держим инвариант «qty = сумма партий»: если санитайз что-то отбросил (нечисловой/нулевой qty,
+   не-объект), то cloudQty перестаёт равняться сумме, и в облако уехала бы самопротиворечивая строка. */
+function qtyFromCloudBatches(cleaned, cloudQty){
+  if(!cleaned || !cleaned.length) return cloudQty;
+  return roundQty(cleaned.reduce((a,b)=>a+roundQty(b.qty||0), 0));
+}
 async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
   try{
     const ids = upsert.map(r=>r.id); if(!ids.length) return;
@@ -6778,11 +6848,12 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
         const batched = (Array.isArray(r.batches)&&r.batches.length) || (Array.isArray(cr.batches)&&cr.batches.length);
         if(batched){
           conflictBatched++;
-          r.qty = cloudQty;
-          if(Array.isArray(cr.batches)) r.batches = sanitizeBatches(cr.batches);
+          const _cb=cloudBatchesOnce(cr); const _cq=qtyFromCloudBatches(_cb, cloudQty);
+          r.qty = _cq;
+          if(_cb) r.batches = _cb;
           curSig[r.id]=_sigOf(r);
           const it=state.stock.find(s=>s.id===r.id);
-          if(it){ it.qty=cloudQty; if(Array.isArray(cr.batches)) it.batches=sanitizeBatches(cr.batches); localChanged=true; }
+          if(it){ it.qty=_cq; if(_cb) it.batches=_cb.map(b=>({...b})); localChanged=true; }
         } else if(cloudQty !== (Number(r.qty)||0)){
           r.qty = cloudQty; curSig[r.id]=_sigOf(r);
           const it=state.stock.find(s=>s.id===r.id); if(it && Number(it.qty)!==cloudQty){ it.qty=cloudQty; localChanged=true; }
@@ -6797,13 +6868,14 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
       if(batched){
         // не LWW: при расхождении партий берём облако (иначе локальный upsert воскресит старые партии)
         conflictBatched++;
-        r.qty = cloudQty;
-        if(Array.isArray(cr.batches)) r.batches = sanitizeBatches(cr.batches);
+        const _cb=cloudBatchesOnce(cr); const _cq=qtyFromCloudBatches(_cb, cloudQty);
+        r.qty = _cq;
+        if(_cb) r.batches = _cb;
         curSig[r.id]=_sigOf(r);
         const it=state.stock.find(s=>s.id===r.id);
         if(it){
-          if(Number(it.qty)!==cloudQty){ it.qty=cloudQty; localChanged=true; }
-          if(Array.isArray(cr.batches)){ it.batches = sanitizeBatches(cr.batches); localChanged=true; }
+          if(Number(it.qty)!==_cq){ it.qty=_cq; localChanged=true; }
+          if(_cb){ it.batches = _cb.map(b=>({...b})); localChanged=true; }
         }
         continue;
       }
@@ -6828,13 +6900,16 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
       for(const r of upsert){
         const cr=cloudById[r.id]; if(!cr) continue;
         const cloudQty=Number(cr.qty)||0;
-        r.qty = cloudQty;
-        if(Array.isArray(cr.batches) && ((Array.isArray(r.batches)&&r.batches.length) || cr.batches.length)) r.batches = sanitizeBatches(cr.batches);
+        const _cb=cloudBatchesOnce(cr);
+        const _useCb = !!_cb && (((Array.isArray(r.batches)&&r.batches.length) || _cb.length) > 0);
+        const _cq = qtyFromCloudBatches(_useCb ? _cb : null, cloudQty);
+        r.qty = _cq;
+        if(_useCb) r.batches = _cb;
         curSig[r.id]=_sigOf(r);
         const it=state.stock.find(s=>s.id===r.id);
         if(it){
-          if(Number(it.qty)!==cloudQty){ it.qty=cloudQty; localChanged=true; }
-          if(Array.isArray(cr.batches) && ((Array.isArray(it.batches)&&it.batches.length) || cr.batches.length)){ it.batches=sanitizeBatches(cr.batches); localChanged=true; }
+          if(Number(it.qty)!==_cq){ it.qty=_cq; localChanged=true; }
+          if(_cb && (((Array.isArray(it.batches)&&it.batches.length) || _cb.length) > 0)){ it.batches=_cb.map(b=>({...b})); localChanged=true; }
         }
       }
       if(localChanged){ const _w=cloud.applying; cloud.applying=true; try{ saveState(); }finally{ cloud.applying=_w; } }
