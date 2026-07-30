@@ -43,6 +43,40 @@ const hashEq = (a: string, b: string) => {
   return d === 0;
 };
 const EMAIL_RE = /^[a-z0-9_.+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
+
+// ── per-IP троттлинг публичного восстановления пароля ───────────────────────────
+// Клиент может САМ прислать x-forwarded-for — прокси лишь ДОПИСЫВАЕТ к цепочке справа.
+// Поэтому берём ПОСЛЕДНИЙ элемент (его добавил ближайший доверенный прокси), а не первый:
+// иначе лимит обходится одной строкой заголовка. cf-connecting-ip ставит только сам Cloudflare.
+function clientIp(req: Request): string {
+  const cf = (req.headers.get("cf-connecting-ip") || "").trim();
+  if (cf) return cf;
+  const xff = req.headers.get("x-forwarded-for") || "";
+  const parts = xff.split(",").map((s) => s.trim()).filter(Boolean);
+  if (parts.length) return parts[parts.length - 1];
+  return (req.headers.get("x-real-ip") || "").trim();
+}
+// ключ счётчика = хеш(соль + IP): сырые адреса не храним (персональные данные).
+// Соль — из окружения; без неё хеш всё равно считаем (соль лишь мешает восстановить IP по радуге).
+async function rateKey(req: Request): Promise<string> {
+  const ip = clientIp(req);
+  if (!ip) return "";
+  const salt = Deno.env.get("RATE_SALT") || SERVICE.slice(0, 16);
+  return await sha256(salt + "|" + ip);
+}
+// true = можно продолжать. Сбой БД → true (fail-OPEN): недоступность счётчика не должна
+// превращаться в отказ восстановления пароля. Ниже остаются per-user 60с, attempts≤5, TTL 15 мин.
+async function rateOk(admin: any, req: Request, purpose: string, windowSecs: number, limit: number): Promise<boolean> {
+  try {
+    const key = await rateKey(req);
+    if (!key) return true;
+    const { data, error } = await admin.rpc("auth_rate_hit", {
+      p_key: key, p_purpose: purpose, p_window: windowSecs, p_limit: limit,
+    });
+    if (error) { console.warn("auth_rate_hit", error.message); return true; }
+    return data !== false;
+  } catch (e) { console.warn("rateOk", e); return true; }
+}
 // отправка кода письмом через наш почтовый сервер (/sendcode на VPS, секрет = MAIL_BROADCAST_SECRET)
 async function sendCode(to: string, code: string, purpose: "bind" | "reset"): Promise<boolean> {
   const url = Deno.env.get("MAIL_SENDCODE_URL"); const secret = Deno.env.get("MAIL_BROADCAST_SECRET");
@@ -179,7 +213,11 @@ Deno.serve(async (req) => {
   if (action === "request_reset") {
     const t0 = Date.now();
     const username = String(p.username || "").trim().toLowerCase().replace(/@.*$/, "");
-    if (/^[a-z0-9_]{3,32}$/.test(username)) {
+    // per-IP: 12 запросов / 15 мин. Щедро для смены за общим NAT, но перебор логинов
+    // больше не рассылает письма пачками. При упоре — НИЧЕГО не делаем, а ответ и задержка
+    // остаются те же (иначе «лимит» выдал бы существование логина).
+    const ipOk = await rateOk(admin, req, "request_reset", 900, 12);
+    if (ipOk && /^[a-z0-9_]{3,32}$/.test(username)) {
       const { data: u } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
       const { data: rec2 } = u ? await admin.from("user_recovery").select("recovery_email,recovery_email_verified").eq("user_id", u.id).maybeSingle() : { data: null };
       if (u && rec2 && rec2.recovery_email && rec2.recovery_email_verified) {
@@ -206,6 +244,9 @@ Deno.serve(async (req) => {
     if (!/^[a-z0-9_]{3,32}$/.test(username) || !/^\d{6}$/.test(code) || newPassword.length < 8) return json({ error: "bad input" }, 400);
     // ЕДИНЫЙ ответ "invalid" + задержка; проверка кода — атомарная RPC (FOR UPDATE), без гонки attempts
     const fail = async () => { await new Promise((r) => setTimeout(r, 250 + Math.floor(Math.random() * 150))); return json({ error: "invalid" }, 400); };
+    // per-IP: 30 попыток / 15 мин. attempts≤5 капает ОДИН код; без общего тормоза перебор
+    // размазывался по многим логинам. Ответ — тот же «invalid», нового оракула не добавляем.
+    if (!(await rateOk(admin, req, "confirm_reset", 900, 30))) return await fail();
     const { data: u } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
     if (!u) return await fail();
     // Сначала меняем пароль — если упадёт, код ещё жив. Атомарная verify+used — только после успеха.
@@ -510,8 +551,9 @@ Deno.serve(async (req) => {
     let userId = String(p.user_id || "");
     const role = String(p.role || "worker");
     const remove = !!p.remove;
-    const rawIds = Array.isArray(p.base_ids) ? p.base_ids : [];
-    const baseIds = [...new Set(rawIds.map((x: unknown) => String(x || "")).filter(Boolean))];
+    const rawIds: unknown[] = Array.isArray(p.base_ids) ? p.base_ids : [];
+    // тип фиксируем явно: без него Set<unknown> протекал в индексы nameOf[...] и uuid(...) (8 ошибок tsc)
+    const baseIds: string[] = [...new Set(rawIds.map((x) => String(x || "")).filter(Boolean))];
     if (!baseIds.length || baseIds.length > 40) return json({ error: "Укажите от 1 до 40 баз" }, 400);
     for (const id of baseIds) if (!uuid(id)) return json({ error: "Некорректный base_id" }, 400);
     if (!remove && !BASE_ROLES.has(role)) return json({ error: "Роль должна быть базовой (хозрабочий / повар / механик / нач. участка)" }, 400);
