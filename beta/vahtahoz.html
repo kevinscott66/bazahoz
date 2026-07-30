@@ -223,7 +223,7 @@
       <a role="button" tabindex="0" onclick="openTermsSheet()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTermsSheet()}" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a role="button" tabindex="0" onclick="openPrivacySheet()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openPrivacySheet()}" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
     <!-- текст подставляется из APP_BUILD_LABEL при старте (единый источник версии) -->
-    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v209 · БЕТА</div>
+    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v210 · БЕТА</div>
   </div>
 </div>
 
@@ -255,7 +255,7 @@ const STOCK_MERGE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v209";
+const APP_BUILD = "v210";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -389,7 +389,7 @@ const cloud = {
   orgRoles:[], _baseParty:{},   // территориальные/глобальные роли + карта база→партия (RBAC v2)
   channel:null, subscribedBase:null,
   pushTimer:null, pullTimer:null, applying:false, ready:false, busy:false,
-  pushPending:false, retryTimer:null, pullRetryT:null, baseMembers:[], basesLoaded:false,
+  pushPending:false, retryTimer:null, pullRetryT:null, baseMembers:[], basesLoaded:false, membersLoaded:false,
   // синк задач (scope по владельцу): отдельные таймеры/канал/флаги
   tasksTimer:null, tasksRetry:null, tasksPullTimer:null, tasksChannel:null, tasksSubUid:null, tasksBusy:false,
 };
@@ -1304,7 +1304,11 @@ function renderDashboard(){
   const todayTasks = state.tasks.filter(t=>!t.done && t.due===today);
   const overdueTasks = state.tasks.filter(t=>!t.done && t.due && t.due<today);
   const expiringSoon = state.stock.filter(s=>{
-    if(s.type!=="product"||!s.expiry) return false;
+    // ВСЕ доступные роли типы, а не только продукты: плитка ведёт на список склада, где чипы
+    // «⛔ Просрочка»/«⏰ Скоро» считают все типы, и подсветка срока в stockRow тоже.
+    // Просроченная хозхимия давала плитку 0 при чипе «Просрочка (2)» — счётчик противоречил экрану,
+    // на который сам же ведёт, и по нему принимают решения.
+    if(!allowedTypeKeys().includes(s.type) || !s.expiry) return false;
     if(!inStock(s)) return false; // позиции без остатка не считаем «истекающими»
     // окно ≤14 дней (включая просрочку) — единое со списком склада (фильтры «Просрочка»+«Скоро»)
     const d = daysLeft(s.expiry); return d!==null && d<=14;
@@ -1816,7 +1820,29 @@ const RU_MONTHS3=["янв","фев","мар","апр","май","июн","июл"
    onclick="exportJournalsMonth('...')", а op.ts приходит из облака (journal_entries.data.ts)
    и на pull не валидируется. Сырой slice(0,7) пускал туда произвольную строку → инъекция.
    Невалидное → "" (journalMonths такие отбрасывает, чип не создаётся). */
-const monthKeyOf = (ts)=> /^\d{4}-\d{2}/.test(String(ts||"")) ? String(ts).slice(0,7) : "";
+/* Ключ месяца по ЛОКАЛЬНОМУ времени — тому же, которое показывает toLocaleString в списке.
+   ts хранится в UTC, поэтому срез строки давал расхождение: в UTC+7..+11 (Восточная, Рудная —
+   Якутия/Магадан) операция «1 августа 05:00 местного» = «2026-07-31T22:00Z» попадала в ИЮЛЬСКИЙ
+   чип и июльский экспорт, хотя в журнале на экране стоит 01.08. Каждый месяц первые 7–11 часов
+   операций уезжали в отчёт предыдущего месяца, и оба отчёта не сходились с журналом.
+   Формат результата остаётся строго ^\d{4}-\d{2}$ — это же защита data-jrmonth и inline-onclick.
+   Строка без времени («2026-07-15», legacy/импорт) — берём срез, без сдвига в чужой месяц. */
+const monthKeyOf = (ts)=>{
+  const s = String(ts||"");
+  if(!/^\d{4}-\d{2}/.test(s)) return "";
+  if(s.indexOf("T") === -1) return s.slice(0,7);
+  const d = new Date(s);
+  if(isNaN(d)) return "";
+  return String(d.getFullYear()).padStart(4,"0") + "-" + String(d.getMonth()+1).padStart(2,"0");
+};
+// соседние месяцы по UTC, которые могут содержать записи ЛОКАЛЬНОГО месяца ym (сдвиг ±1 сутки)
+function monthKeysToFetch(ym){
+  const m = /^(\d{4})-(\d{2})$/.exec(String(ym||"")); if(!m) return [];
+  const y=+m[1], mo=+m[2];
+  const prev = mo===1  ? `${y-1}-12` : `${y}-${String(mo-1).padStart(2,"0")}`;
+  const next = mo===12 ? `${y+1}-01` : `${y}-${String(mo+1).padStart(2,"0")}`;
+  return [prev, `${y}-${String(mo).padStart(2,"0")}`, next];
+}
 function monthLabel(ym){
   if(!/^\d{4}-\d{2}$/.test(String(ym||""))) return "";
   const p=String(ym).split("-");
@@ -1836,7 +1862,14 @@ async function exportJournalsMonth(ym){
   let byKind = null; const cid = activeCloudId();
   if(cid && cloud.ready && cloudOnline() && cloud.session && cloud.session.access_token){
     try{
-      const rows = await cloudRestAll(`journal_entries?select=kind,data&base_id=eq.${encodeURIComponent(cid)}&data->>ts=like.${encodeURIComponent(ym)}*&order=id`, cloud.session.access_token, {timeout:90000});
+      // Тянем ТРИ месяца по UTC (предыдущий/целевой/следующий) и дорезаем клиентом по локальному
+      // ключу: границы локального месяца лежат внутри соседних UTC-месяцев. Форму запроса не меняем —
+      // это тот же проверенный like-фильтр, а не непроверенный диапазон по data->>ts.
+      const rows = [];
+      for(const mk of monthKeysToFetch(ym)){
+        const part = await cloudRestAll(`journal_entries?select=kind,data&base_id=eq.${encodeURIComponent(cid)}&data->>ts=like.${encodeURIComponent(mk)}*&order=id`, cloud.session.access_token, {timeout:90000});
+        if(Array.isArray(part)) rows.push(...part);
+      }
       if(Array.isArray(rows)){
         byKind={}; for(const k of JOURNAL_KEYS) byKind[k]=[];
         rows.forEach(r=>{ if(r && r.data && byKind[r.kind]) byKind[r.kind].push(r.data); });
@@ -4372,7 +4405,9 @@ function exportCsv(){
   ]));
   const csv = "\uFEFF" + rows.map(r=>r.map(v=>{
     let str = String(v??"");
-    if(/^[=+\-@\t\r]/.test(str)) str = "'" + str;   // защита от CSV-инъекции формул: имя/примечание вида «=…»/«+…» Excel выполнил бы как формулу
+    // Числа НЕ трогаем анти-инъекцией: «-3» — это значение, а не формула, и префикс ' уводил его
+    // в Excel текстом (сумма по столбцу ломалась). Формулу опознаём только у НЕчисловых строк.
+    if(!/^-?\d+(?:[.,]\d+)?$/.test(str) && /^[=+\-@\t\r]/.test(str)) str = "'" + str;
     return /[;"\n\r]/.test(str) ? `"${str.replace(/"/g,'""')}"` : str;
   }).join(";")).join("\r\n");
   triggerDownload(csv, `vahtahoz-sklad-${todayStr()}.csv`, "text/csv;charset=utf-8");
@@ -4862,7 +4897,10 @@ function importData(ev){
         toast(`+${added}, обновлено: ${updated}`);
       }
       if(mode==="replace"){
-        merged.tasks = obj.tasks||[];
+        // Задачи ОБЩИЕ для всех баз устройства (TASKS_KEY), а импортируется ОДНА база — заменять их
+        // файлом нельзя: правки по другим базам исчезли бы локально и ушли в облако как удаление.
+        // Диалог «Заменить всё» обещает замену данных БАЗЫ, про задачи в нём ничего нет.
+        merged.tasks = Array.isArray(state.tasks) ? state.tasks : [];
         merged.log = obj.log||[];
         merged.journals = obj.journals || emptyJournals();
         merged.checklists = obj.checklists || merged.checklists;
@@ -5262,7 +5300,7 @@ async function cloudRefresh(refresh_token){
 // постоянный сбой рефреша → чистый выход на экран входа (аккаунт удалён/токен отозван/сменили пароль)
 async function cloudSessionExpired(reason){
   if(!cloud.session && !cloud.ready) return;   // уже разлогинены — не дублируем
-  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.ready=false; cloud.basesLoaded=false;
+  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.ready=false; cloud.basesLoaded=false; cloud.membersLoaded=false;
   cloud.bases={}; clearAllBasesCache();        // имена баз и снимок остатков протухшей сессии не должны висеть в UI/памяти
   cloud._basesLoading=false; cloud.busy=false; cloud.pushPending=false; cloud.applying=false;   // иначе повторный вход залипнет (cloudOnLogin рано выходит при _basesLoading)
   cloud._conflictAsked={};                      // иначе после входа ДРУГИМ юзером на этом устройстве диалог «какие данные главные» молча пропустится → тихий pull без сохранения копии
@@ -5348,6 +5386,14 @@ function isOffShift(cid){
   }
   return false;
 }
+/* «Членство НЕИЗВЕСТНО» ≠ «членства НЕТ». Вход состоялся (токен валиден), но base_members/org_roles
+   не загрузились — cloudOnLogin ушёл в catch (офлайн-старт на объекте, главный сценарий продукта).
+   Раньше это делало облачную базу read-only для ВСЕХ, включая владельца, и показывало ложное
+   «Вы сняты со смены»: ensureCanEdit блокировал ввод в 20+ точках до события online.
+   Локально это НЕ повод запрещать работу. В облако при этом всё равно ничего не уходит:
+   isOffShift() остаётся fail-closed и блокирует push/pull (защита от wipe пустым RLS), а правки
+   копятся под dirty и уедут сами, когда членство загрузится. */
+function membershipUnknown(){ return !!cloud.ready && !cloud.membersLoaded; }
 function canEditStock(){
   const m=activeMember();
   if(m) return !!m.can_edit_stock && m.active!==false;
@@ -5358,6 +5404,8 @@ function canEditStock(){
     const cid=activeCloudId(); const partyId=(cloud._baseParty||{})[cid];
     return (cloud.orgRoles||[]).some(o=>o.active!==false && o.can_edit_stock && (o.party_id==null || o.party_id===partyId));
   }
+  // связи не было — правим локально, копим dirty, в облако не пушим (см. membershipUnknown)
+  if(membershipUnknown()) return true;
   // облако онлайн + активна облачная база, но членства/орг-роли нет (удалили с базы) — НЕ fail-open «локальный режим»
   if(cloud.ready && activeCloudId()) return false;
   return true;   // локальная/оффлайн база без облачных ролей — одиночный режим
@@ -6266,6 +6314,11 @@ function openSetNewPassword(token){
 }
 function showLoginGate(){
   const g = document.getElementById("loginGate"); if(!g) return;
+  // Открытый лист лежит ВЫШЕ гейта (.sheet z-index 100 против 90 — сделано ради юр-страниц до входа),
+  // поэтому при принудительном разлогине (истекла сессия, удалили аккаунт) карточка позиции или список
+  // участников оставались видимыми и интерактивными поверх экрана входа. Телефон передают следующему —
+  // он видел чужие данные вместо чистого входа.
+  try{ closeSheet(); }catch(_){}
   g.classList.remove("hidden"); g.style.display="flex";  // инлайн display перебивает .hidden — синхронизируем явно
   const go = document.getElementById("lgGo"),
         em = document.getElementById("lgEmail"), pw = document.getElementById("lgPwd"),
@@ -6391,7 +6444,8 @@ async function cloudOnLogin(session, attempt){
     cloud.members = Array.isArray(mem) ? mem : [];
     cloud.orgRoles = Array.isArray(orgs) ? orgs : [];
     cloud.bases = {}; cloud._baseParty = {}; (Array.isArray(bs)?bs:[]).forEach(b=>{ cloud.bases[b.id]=b.name; cloud._baseParty[b.id]=b.party_id||null; });
-    cloud.ready = true; cloud.basesLoaded = true;   // базы реально получены из облака
+    cloud.ready = true; cloud.basesLoaded = true;
+    cloud.membersLoaded = true;   // сервер ОТВЕТИЛ: членство известно (в т.ч. «членства нет» = [])
     cloud._basesLoading = false; clearTimeout(cloud._basesRetryT);   // цикл загрузки баз завершён успехом
     hideLoginGate();                           // успешный вход — прячем полноэкранный гейт
     const reloaded = await cloudAutoLink();
@@ -6477,7 +6531,7 @@ async function cloudLogout(){
   // задачи привязаны к аккаунту (owner) — при выходе НЕ оставляем их локально, иначе следующий юзер их увидит/выгрузит
   state.tasks=[]; try{ localStorage.removeItem(TASKS_KEY); localStorage.removeItem(TASKS_DIRTY); }catch(e){}
   cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
-  cloud.tasksChannel=null; cloud.tasksSubUid=null; cloud.tasksBusy=false; cloud.basesLoaded=false;   // сброс задач: иначе после входа другим юзером realtime молчит
+  cloud.tasksChannel=null; cloud.tasksSubUid=null; cloud.tasksBusy=false; cloud.basesLoaded=false; cloud.membersLoaded=false;   // сброс задач: иначе после входа другим юзером realtime молчит
   cloud._conflictAsked={};   // сброс «спрашивали ли про конфликт данных» — для следующего входа на этом устройстве
   clearAllBasesCache();   // снимок остатков всех баз не должен пережить выход (утечка на общем устройстве)
   // ОБЛАЧНЫЕ БАЗЫ привязаны к аккаунту: при выходе удаляем их локальные профили и КЭШ СКЛАДА с устройства —
@@ -6557,6 +6611,14 @@ async function cloudActivate(cid, attempt){
     // вахта: если есть НЕсинхронизированные правки (копил офлайн, а на сервере сняли со смены) — явно предупреждаем
     // о риске потери и советуем экспорт, а не молчим. RLS всё равно не примет его записи (403).
     const hasDirty = !!localStorage.getItem(cloudDirtyKey(cid));
+    // Права просто НЕ загрузились (офлайн-старт) — это НЕ «сняли со смены». Ложное сообщение
+    // пугало вахту и выглядело как потеря доступа, хотя достаточно дождаться связи.
+    if(membershipUnknown()){
+      setSyncStatus("offline", hasDirty
+        ? "Права не загрузились — работаем локально. Изменения сохранены и уйдут в общую базу, как появится связь"
+        : "Права не загрузились — работаем локально, синхронизируем при связи");
+      return;
+    }
     setSyncStatus("error", hasDirty
       ? "Вы сняты со смены. Несохранённые операции НЕ уйдут в общую базу — сделайте экспорт (⚙️ → Экспорт данных) и передайте начальнику"
       : "Вы сейчас не на смене на этой базе — изменения в общую базу не уйдут");
@@ -7408,7 +7470,8 @@ async function cloudRefreshMyMembership(){
       cloudRest(`org_roles?select=*&user_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:20000}).catch(()=>null),
       cloudRest(`bases?select=id,name,party_id`, tok, {timeout:20000}).catch(()=>null),
     ]);
-    if(Array.isArray(mem)) cloud.members=mem;
+    // сервер ответил → членство известно, даже если холодный старт уходил в catch (basesLoaded=false)
+    if(Array.isArray(mem)){ cloud.members=mem; cloud.membersLoaded=true; }
     if(Array.isArray(orgs)) cloud.orgRoles=orgs;
     if(Array.isArray(bs)){ cloud.bases={}; cloud._baseParty={}; bs.forEach(b=>{ cloud.bases[b.id]=b.name; cloud._baseParty[b.id]=b.party_id||null; }); }
     // если появились новые видимые базы (выдали орг-роль/добавили в базу пока сидел в приложении) — привяжем их,
@@ -7430,7 +7493,12 @@ async function cloudSyncNow(){
   const cid = activeCloudId();
   if(!cid){ toast("База пока не в облаке. При хорошем интернете нажмите ↻ (обновить) вверху — она привяжется"); return; }
   await cloudRefreshMyMembership();   // подхватить возврат/снятие со смены
-  if(isOffShift(cid)){ setSyncStatus("error","Вы сейчас не на смене на этой базе — изменения в общую базу не уйдут"); render(); return; }
+  if(isOffShift(cid)){
+    setSyncStatus(membershipUnknown()?"offline":"error", membershipUnknown()
+      ? "Права не загрузились — работаем локально, синхронизируем при связи"
+      : "Вы сейчас не на смене на этой базе — изменения в общую базу не уйдут");
+    render(); return;
+  }
   toast("Сохранение в облако…"); await cloudActivate(cid);
   if(!isOffShift(cid)) toast("Сохранено в облаке");
 }
