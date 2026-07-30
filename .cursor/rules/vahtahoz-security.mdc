@@ -28,6 +28,12 @@ alwaysApply: true
   (`worker/cook/mechanic/site_manager/accounting`); `accounting` = только чтение склада, без задач и без `can_manage`.
   Роли оргструктуры (`party_chief/director/general_director/owner`) в `base_members` **отвергаются** — их место `org_roles`.
   Добавляешь роль в `role_rank` → обязательно добавь ей ветку пресета, иначе клиентские флаги пройдут как есть.
+  Отказ org-роли — **только на INSERT или при реальной смене роли**, НЕ на любой UPDATE: у баз
+  до v134 в `base_members` лежат org-роли, и `handover_shift` делает по ним
+  `update ... set active=false` — блокировка любого UPDATE ломает пересменку целиком.
+- Порядок миграций держится `supabase/migrations/README.md`, состояние базы проверяется
+  `2026-07-31_verify_applied_state.sql` (только чтение). Опасное промежуточное состояние —
+  `preset_all_roles` без `audit_round3_sql_fixes`: пересменка не работает.
 - Версия сборки — ОДНА константа `APP_BUILD` (+ `CACHE` в `sw.js`); надписи не хардкодить (иначе разъезжаются).
 - `request_reset`/`confirm_reset`: ответ и задержка ОДИНАКОВЫ на всех ветках (включая упор в rate-limit) —
   любое отличие = оракул существования логина. IP для троттлинга — ПОСЛЕДНИЙ `x-forwarded-for`
