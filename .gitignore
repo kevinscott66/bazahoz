@@ -24,6 +24,12 @@ sklad-*.csv
 # --- Секреты инфраструктуры: НИКОГДА не коммитить реальные токены/ключи ---
 # Реальный Cloudflare API-токен живёт только локально (шаблон — cf-token.env.example)
 infra/cloudflare/cf-token.env
+# Ключи Supabase: PAT для Management API + secret key + пароль БД (шаблон — keys.env.example)
+infra/supabase/keys.env
+# страховка на случай копий с другими именами/местами (репозиторий публичный)
+*keys.env
+*-keys.txt
+vahtahoz-supabase-keys*
 *.secret
 # шаблоны *.example коммитим (иначе .env.* выше их бы съел)
 !*.example
