@@ -220,7 +220,7 @@
       <a onclick="openTermsSheet()" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a onclick="openPrivacySheet()" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
     <!-- текст подставляется из APP_BUILD_LABEL при старте (единый источник версии) -->
-    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v205 · БЕТА</div>
+    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v206 · БЕТА</div>
   </div>
 </div>
 
@@ -252,7 +252,7 @@ const STOCK_MERGE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v205";
+const APP_BUILD = "v206";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -3526,7 +3526,33 @@ function saveStock(id, type){
       Object.assign(it,{name,unit,minStock,category,note,updatedAt:new Date().toISOString()});
       syncItemFromBatches(it);
     } else {
+      const wasQty = roundQty(it.qty||0);
       Object.assign(it,{name,qty:roundQty(qty),unit,minStock,expiry,location,category,note,updatedAt:new Date().toISOString()});
+      /* Ручное ЗАНИЖЕНИЕ остатка (инвентаризация) обязано попасть в ЖУРНАЛ, иначе post-pull
+         reconcileLegacyQtyFromJournal(false) поднимет qty назад по ledger и разошлёт старое значение
+         всем телефонам — корректировка отменялась молча, на каждом pull. state.log в ledger не участвует.
+         Пометить карточку «правил руками» нельзя: stockToRow не отправляет updatedAt, rowToStock
+         перезаписывает его серверным, а триггер touch_updated_at бампит при любом UPDATE — то есть
+         это «время касания сервером», а не время правки человеком. Отдельный kind («correction»)
+         тоже нельзя: schema.sql ограничивает kind списком receipt/issue/writeoff/order.
+         ledger считаем ПОСЛЕ Object.assign: если сменили единицу, старые записи выпадают из ledger
+         (fail-closed по unit) и дельту надо считать к НОВОМУ состоянию. */
+      if(roundQty(qty)!==wasQty){
+        const ledger = ledgerQtyForProduct(it);
+        const delta  = roundQty(ledger - roundQty(qty));
+        if(delta > 0){   // журнал выше нового остатка — ровно тот случай, который raise и ломает
+          state.journals.writeoff = state.journals.writeoff || [];
+          state.journals.writeoff.unshift({
+            id: uid(), ts: new Date().toISOString(),
+            productId: it.id, productName: it.name,
+            qty: delta, unit: it.unit||"",
+            stockType: journalStockType(it),
+            note: `Корректировка остатка (инвентаризация): ${fmtQty(wasQty)} → ${fmtQty(roundQty(qty))}`
+          });
+          logOp("STOCK_FIX", `${it.name} -${fmtQty(delta)} ${it.unit||""} (корректировка)`);
+          toast(`Недостача ${fmtQty(delta)} ${it.unit||""} списана по корректировке`);
+        }
+      }
     }
     logOp("STOCK_EDIT", name);
     if(oldName && oldName!==name) propOld = oldName;   // переименование — распространим
