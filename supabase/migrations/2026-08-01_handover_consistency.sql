@@ -203,13 +203,25 @@ select b.name as "база", p.username as "логин", m.role as "роль",
  order by 1, 2;
 
 -- Люди, у которых членство больше чем в одной базе: для них «Передать смену» вернёт multi_base.
-select p.username as "логин",
+select p.username as "логин", p.id as user_id,
        string_agg(b.name || case when m.active then ' (на смене)' else ' (не на смене)' end, ', ' order by b.name) as "базы"
   from base_members m
   join bases b    on b.id = m.base_id
   join profiles p on p.id = m.user_id
- group by p.username
+ group by p.id, p.username
 having count(*) > 1
  order by 1;
+
+-- Записи журнала, НЕВИДИМЫЕ участнику базы (заступающему в том числе): тип строки не
+-- определяется — позиция удалена, а data.stockType не проставлен (записи старых сборок).
+-- can_see_type для таких fail-closed → их видят только владелец и орг-роли. Это НЕ следствие
+-- пересменки и здесь НЕ чинится (ослаблять fail-closed нельзя): цифра нужна, чтобы отличить
+-- «заступающий не видит поступления из-за прав» от «эти строки не видит вообще никто в базе».
+select b.name as "база", je.kind as "журнал", count(*) as "строк не видно участникам"
+  from public.journal_entries je
+  join public.bases b on b.id = je.base_id
+ where app_private.journal_row_type(je.base_id, je.data) not in ('product','household','tool')
+ group by 1, 2
+ order by 3 desc;
 
 select '2026-08-01 handover_consistency: orphan только для управляющих + гонка/повтор + пресет заступающему + is_backend_role' as status;
