@@ -97,7 +97,14 @@
   .prof-hd{ display:flex; align-items:center; gap:12px; padding:4px 6px 18px; }
   .prof-av{ width:44px; height:44px; border-radius:12px; background:var(--accent); color:var(--on-accent); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:19px; flex:none; }
   @media (max-width:340px){ .set-row{ gap:6px; padding:12px 13px; font-size:15px; } .set-row .sr-v{ font-size:13px; } }
-  .light .badge-gray.opacity-50{ opacity:1; color:#9ca3af; }
+  /* Плашки «без места» / «без срока» на карточках склада: 11px, вес 700 — самый мелкий жирный
+     текст в приложении, для него норма AA = 4,5:1. Тёмная тема гасила бейдж классом .opacity-50
+     целиком (текст #e5e7eb поверх #374151 через alpha .5 → 4,09:1 по замеру в браузере), светлая
+     уже держала opacity:1, но серым #9ca3af по #e5e7eb — 2,05:1. Обе темы: opacity:1 и приглушённый
+     цвет, который норму проходит (4,94:1 в тёмной и 4,82:1 в светлой); «блёклость» плашки остаётся
+     читаемой разницей с обычным бейджем (8,33:1 и 6,16:1), а не потерей текста. */
+  .badge-gray.opacity-50{ opacity:1; color:#adb4bf; }
+  .light .badge-gray.opacity-50{ opacity:1; color:#5c6472; }
   .sheet{ position:fixed; inset:0; z-index:100; display:none; }   /* модалка — поверх всего, включая логин-гейт (z-90): чтобы юр-страницы открывались и до входа */
   .sheet.open{ display:flex; }
   .sheet-bg{ position:absolute; inset:0; background:rgba(0,0,0,.6); }
@@ -315,13 +322,19 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v219";
+const APP_BUILD = "v220";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
 try{ const _bl=document.getElementById("buildLabel"); if(_bl) _bl.textContent = "сборка " + APP_BUILD_LABEL; }catch(_){}
 const STORE_KEY = NS+"vahtahoz:v1";
 const JOURNAL_KEYS = ["receipt","issue","writeoff","order"];
+/* Верхняя граница локального журнала НА ВИД. Это страховка от неограниченного роста памяти на
+   очень старой базе, а НЕ рабочее усечение: раньше pull резал журнал до 500 записей ВСЕГДА, и
+   «главный страховочный бэкап» (экспорт всех баз) содержал лишь хвост истории. Теперь держим всё,
+   что пришло из облака, а выбрасывает записи только тот, у кого кончилась память
+   (_saveStateTrimmed), либо этот предел — и оба честно ставят state.journalsTrunc. */
+const JOURNAL_LOCAL_CAP = 5000;
 /* ОБЪЯВЛЕНИЕ ПОДНЯТО СЮДА (было ниже, рядом с формой позиции). Причина — реальный краш:
    boot-цикл нормализации склада на верхнем уровне вызывает normalizeStockItem → _impUnitKey →
    _impMapUnit, а тот на единице вне ранних правил доходит до UNITS.includes(). При объявлении ниже
@@ -376,6 +389,7 @@ const defaultState = {
     ]
   },
   journals: emptyJournals(),
+  journalsTrunc: false,   // «часть истории движений выброшена» — ставится ТОЛЬКО при реальном усечении (память/предел)
   locations: { product: [], household: [], tool: [] },   // места ПРИВЯЗАНЫ К БАЗЕ и у всех разные — стартуем пусто, добавляет пользователь (форма позиции → «＋ Место»)
   lastExpiryNoticeDate: null
 };
@@ -453,11 +467,16 @@ function _saveStateTrimmed(){
   const uploaded = _uploadedJrIds();
   const cut = (logLimit, jrLimit) => {
     const j = { ...(state.journals || {}) };
-    for(const k of JOURNAL_KEYS) j[k] = _trimJournalKeepPending(state.journals?.[k], jrLimit, uploaded);
+    let dropped = false;
+    for(const k of JOURNAL_KEYS){
+      const wasLen = (state.journals?.[k] || []).length;
+      j[k] = _trimJournalKeepPending(state.journals?.[k], jrLimit, uploaded);
+      if((j[k] || []).length < wasLen) dropped = true;   // записи реально выброшены — бэкап больше не полный
+    }
     const lg = (Array.isArray(state.log) && state.log.length>logLimit) ? state.log.slice(0,logLimit) : state.log;
-    return { ...state, log: lg, journals: j };
+    return { ...state, log: lg, journals: j, journalsTrunc: !!(state.journalsTrunc || dropped) };
   };
-  const commit = (snap) => { state.log = snap.log; state.journals = snap.journals; _quotaBlocked=false; };
+  const commit = (snap) => { state.log = snap.log; state.journals = snap.journals; state.journalsTrunc = snap.journalsTrunc; _quotaBlocked=false; };
   // Уровень 1: лог до 200, журналы до 2000 (архив есть в облаке при синке; новые — в начале)
   const lvl1 = cut(200, 2000);
   try{ localStorage.setItem(STORE_KEY, JSON.stringify(lvl1)); commit(lvl1);
@@ -646,9 +665,28 @@ async function addProfile(){
   if(go) switchProfile(id);
   else { saveState(); render(); openProfilesSheet(); }
 }
+/* ПЕРЕИМЕНОВАНИЕ БАЗЫ. Было: кнопка правит только локальный профиль устройства, а выгрузка настроек
+   шлёт в облако locations/categories/надгробия — поля с названием там нет вовсе. У владельца имя
+   менялось, у вахтовиков оставалось прежним, и разговор «открой базу такую-то» ломался.
+   Решение и почему такое:
+     • имя ДОВОДИМ до облака, но только у владельца (is_admin). Политика bases_update в проде —
+       `has_perm(id,'edit_stock')`, то есть сервер пустил бы и повара: любой с правом правки может
+       переименовать общую базу. Это как раз тот случай, когда клиент обязан быть строже сервера,
+       а не наоборот, — переименование общей базы это не «правка склада»;
+     • всем остальным честно говорим прямо в диалоге и в тосте, что имя останется на этом телефоне;
+     • обратный ход: cloudAutoLink подтягивает облачное имя к привязанной базе, поэтому чужое
+       переименование доезжает до этого устройства при входе и при обновлении членства.
+   Провал запроса не откатывает локальное имя — он меняет ТЕКСТ ответа: человек должен знать, что
+   бригада нового имени пока не увидела. */
 async function renameProfile(id){
   const p = profiles.list.find(x=>x.id===id); if(!p) return;
-  const name = await promptSheet(`Переименовать «${p.name}»`, p.name, {title:"Переименовать базу"});
+  const linked = !!p.cloudId;
+  const canCloud = linked && cloud.ready && !!(cloud.profile && cloud.profile.is_admin) && !!(cloud.session && cloud.session.access_token);
+  const hint = !linked
+    ? "База локальная — имя хранится на этом устройстве."
+    : (canCloud ? "База общая: новое имя увидит вся бригада."
+                : "Имя изменится ТОЛЬКО на этом телефоне: общее имя облачной базы меняет владелец.");
+  const name = await promptSheet(`Переименовать «${p.name}»\n${hint}`, p.name, {title:"Переименовать базу"});
   if(name===null) return;
   const nm = cleanName40(name);
   if(!nm || nm===p.name) return;
@@ -657,7 +695,18 @@ async function renameProfile(id){
   saveProfiles(profiles);
   logOp("PROFILE_RENAME", `→ «${nm}»`);
   renderHeader(); openProfilesSheet();
-  toast("База переименована");
+  if(!canCloud){ toast(linked ? "Имя изменено только на этом телефоне" : "База переименована"); return; }
+  try{
+    const tok = cloud.session && cloud.session.access_token;
+    await cloudRest(`bases?id=eq.${encodeURIComponent(p.cloudId)}`, tok, { method:"PATCH", returnResponse:true,
+      headers:{ "Content-Type":"application/json", "Prefer":"return=minimal" },
+      body: JSON.stringify({ name: nm }) });
+    if(cloud.bases) cloud.bases[p.cloudId] = nm;   // локальный снимок имён — чтобы cloudAutoLink не «вернул» старое
+    toast("Переименовано — новое имя ушло бригаде");
+  }catch(e){
+    console.warn("rename push", e);
+    toast("Имя изменено на телефоне, но в общую базу не ушло — повторите при связи");
+  }
 }
 async function deleteProfile(id){
   if(profiles.list.length<=1){ toast("Нельзя удалить единственную базу"); return; }
@@ -793,10 +842,21 @@ const esc = (s) =>(s??"").toString().replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&
 /* Округление количеств: устраняет накопление ошибок плавающей точки (0.1+0.2=0.30000000000000004).
    3 знака достаточно для кг/л (граммы/мл), для шт/кор/уп/меш — фактически целое число. */
 const roundQty = (n) => {
-  const x = Number(n);
+  /* Строку разбираем ТЕМ ЖЕ parseNum, что и поля ввода. «7,5» приходит не только из формы: так
+     пишут количество в JSON-бэкапе, в CSV-накладной (читается raw:true, запятая остаётся) и в
+     облачных данных, набранных на другом устройстве. Number("7,5") = NaN → функция возвращала 0,
+     то есть 7,5 кг молча превращались в НОЛЬ при импорте и при нормализации на старте. */
+  const x = (typeof n === "number") ? n : parseNum(n);
   if(!Number.isFinite(x)) return 0;
   return Math.round(x*1000)/1000;
 };
+/* Остаток на складе отрицательным не бывает, но roundQty намеренно оставлен ЗНАКОВЫМ: на нём
+   считается ledger по журналу (выдач больше приходов — законный минус), разности вида
+   `b.qty - amount` и `it.qty + sign*n`, которые проверяются на «< 0» уже ПОСЛЕ округления, и
+   3-way слияние остатков. Клампим поэтому не внутри roundQty, а точечно — там, где число
+   становится ХРАНИМЫМ остатком карточки или партии: импорт файла, pull из облака, нормализация
+   на старте. Файл с "qty": -5 иначе оседал в базе минусом и уезжал всей бригаде. */
+const stockQty = (n) => Math.max(0, roundQty(n));
 /* Форматирование qty для UI/экспорта: убирает хвостовые нули, оставляя «человеческое» представление. */
 const fmtQty = (n) => {
   const x = roundQty(n);
@@ -972,7 +1032,7 @@ function sanitizeBatches(arr){
   if(!Array.isArray(arr)) return [];
   return arr.filter(b => b && typeof b==="object").map(b => ({
     id: safeId(b.id),
-    qty: roundQty(b.qty||0),
+    qty: stockQty(b.qty||0),   // остаток партии из файла/облака: минус — не «долг», а порча данных (ниже отсеивается фильтром qty>0)
     expiry: (typeof b.expiry==="string" && /^\d{4}-\d{2}-\d{2}$/.test(b.expiry)) ? b.expiry : "",
     location: typeof b.location==="string" ? cleanName40(b.location) : "",   // defense-in-depth поверх esc на рендере
     note: typeof b.note==="string" ? b.note.slice(0,200) : "",
@@ -982,7 +1042,7 @@ function sanitizeBatches(arr){
 function normalizeStockItem(s){
   if(!s || typeof s!=="object") return s;
   if(!STOCK_TYPE_KEYS.includes(s.type)) s.type = "product";
-  if(s.qty!=="" && s.qty!=null) s.qty = roundQty(s.qty);
+  if(s.qty!=="" && s.qty!=null) s.qty = stockQty(s.qty);   // хранимый остаток карточки: не ниже нуля, «7,5» — не ноль
   // канон ед.: пустая→шт, упаковка→уп (иначе unit-aware match плодит дубли)
   if(typeof _impUnitKey==="function"){
     const uk = _impUnitKey(s.unit);
@@ -1271,6 +1331,20 @@ function applyTheme(){
 
 /* ---------- Navigation ---------- */
 let currentView = "dashboard";
+/* ПЕРЕХОД НА СКЛАД С ДАШБОРДА. Плитка обещает конкретное число, а склад помнит фильтры с прошлого
+   захода: вкладку типа, категорию, строку поиска и даже режим журнала. Обычный nav('stock') их не
+   трогал — человек с плитки «Сроки истекают (3)» попадал в «Выдачу» или в пустой список по чужой
+   категории и читал это как «товары пропали». Сбрасываем всё, что сужает выдачу, и включаем ровно
+   тот фильтр, которому плитка соответствует. */
+function navStock(expiryFilter){
+  stockMode = "stock";
+  stockTab = "all";
+  stockCat = "";
+  stockSearch = "";
+  stockLimit = 100;
+  stockExpiryFilter = expiryFilter || "all";
+  nav("stock");
+}
 function nav(view){
   currentView = view;
   document.querySelectorAll("#views > section").forEach(s=>{
@@ -1516,7 +1590,11 @@ function renderDashboard(){
     // окно ≤14 дней (включая просрочку) — единое со списком склада (фильтры «Просрочка»+«Скоро»)
     const d = daysLeft(s.expiry); return d!==null && d<=14;
   });
-  const lowStock = state.stock.filter(s=> inStock(s) && s.minStock!=="" && s.minStock!=null && totalQtyOf(s) <= Number(s.minStock));
+  /* Только типы, доступные роли. Повар не видит инструменты нигде на складе, но счётчик «Низкий
+     запас» считал их наравне со своими: плитка показывала 5, а в списке находилось 3, и разницу
+     объяснить было нечем. Тот же allowedTypeKeys(), что у плитки сроков и у чипов на складе. */
+  const _lowAllowed = allowedTypeKeys();
+  const lowStock = state.stock.filter(s=> _lowAllowed.includes(s.type) && inStock(s) && s.minStock!=="" && s.minStock!=null && totalQtyOf(s) <= Number(s.minStock));
   // роль: у начальника (нет права на задачи) дашборд складской — задачные блоки скрываем
   const _m = activeMember();
   const showTasks = !isRestrictedUser();
@@ -1535,18 +1613,18 @@ function renderDashboard(){
       <button class="btn btn-ghost w-full mt-2 text-sm" onclick="dismissOnboarding()">Понятно</button>
     </div>`:""}
     <div class="grid grid-cols-2 gap-3">
-      ${showTasks?`<button class="card tap text-left" onclick="nav('tasks')">
+      ${showTasks?`<button class="card tap text-left" onclick="taskFilter.cat='Все';nav('tasks')">
         <div class="text-3xl">✅</div>
         <div class="text-2xl font-bold mt-1">${todayTasks.length}</div>
         <div class="text-sm opacity-70">Задачи сегодня</div>
         ${overdueTasks.length?`<div class="mt-1 badge badge-red">Просрочено: ${overdueTasks.length}</div>`:""}
       </button>`:""}
-      <button class="card tap text-left" onclick="nav('stock')">
+      <button class="card tap text-left" onclick="navStock('exp14')">
         <div class="text-3xl">⏰</div>
         <div class="text-2xl font-bold mt-1">${expiringSoon.length}</div>
         <div class="text-sm opacity-70">Сроки истекают</div>
       </button>
-      <button class="card tap text-left" onclick="nav('stock')">
+      <button class="card tap text-left" onclick="navStock('all')">
         <div class="text-3xl">⚠️</div>
         <div class="text-2xl font-bold mt-1">${lowStock.length}</div>
         <div class="text-sm opacity-70">Низкий запас</div>
@@ -1884,7 +1962,24 @@ let stockCatOpen = false;   // раскрыт ли длинный ряд кат�
 let stockMode = "stock"; // stock | receipt | issue | writeoff | order
 let stockLimit = 100;    // сколько карточек показываем (чанкинг)
 let stockSearchT = null; // debounce таймер
-let stockExpiryFilter = "all"; // all | expired | soon (≤7дн)
+let stockExpiryFilter = "all"; // all | expired | soon (≤14дн) | exp14 (просрочка + скоро, приход с плитки дашборда)
+
+/* ПОИСК ПО СКЛАДУ — одна реализация на список и на счётчики чипов сроков. Раньше их было две:
+   список искал по имени, месту карточки и местам/примечаниям партий, а счётчик на чипе — только
+   по s.name. Цифра на чипе не сходилась с тем, что человек видел, перейдя по нему: ищешь «иванова»
+   (примечание партии) — в списке позиция с просроченной партией есть, а чип «⛔ Просрочка» показывает 0.
+   Плюс две вещи, которых не было ни там, ни там:
+     • ё ≡ е — «Гречневая» и «Гречнёвая» набирают вперемешку, и позиция «пропадала» из поиска;
+     • И по словам — «масло слив» и «слив масло» одинаково находят «Масло сливочное» (раньше
+       работала только подстрока целиком, то есть строго в порядке написания). */
+const searchNorm = (s) => String(s==null?"":s).toLowerCase().replace(/ё/g,"е").replace(/\s+/g," ").trim();
+const searchTerms = (q) => searchNorm(q).split(" ").filter(Boolean);
+function stockMatches(s, terms){
+  if(!terms || !terms.length) return true;
+  let hay = searchNorm(s && s.name) + " " + searchNorm(s && s.location);
+  for(const b of ((s && s.batches) || [])) hay += " " + searchNorm(b && b.location) + " " + searchNorm(b && b.note);
+  return terms.every(t => hay.includes(t));
+}
 
 const JOURNAL_META = {
   receipt:  { label:"Поступление", icon:"📥", color:"btn-success", sign:+1, verb:"Пришло" },
@@ -1918,11 +2013,11 @@ function renderStock(){
   const countByCat = {};
   const base = state.stock.filter(s=> stockTab==="all" ? allowed.includes(s.type) : s.type===stockTab);
   base.forEach(s=>{ if(s.category && inStock(s)){ countByCat[s.category]=(countByCat[s.category]||0)+1; } });
-  // счётчики сроков должны совпадать с видимым списком: учитываем категорию и поиск
-  const q = stockSearch.trim().toLowerCase();
+  // счётчики сроков должны совпадать с видимым списком: та же категория и ТОТ ЖЕ поиск (stockMatches),
+  // что и в renderStockList — иначе чип обещает одно число, а список показывает другое
+  const _terms = searchTerms(stockSearch);
   const expScope = base.filter(s=>
-    (!stockCat || s.category===stockCat) &&
-    (!q || (s.name||"").toLowerCase().includes(q))
+    (!stockCat || s.category===stockCat) && stockMatches(s, _terms)
   );
 
   v.innerHTML = `
@@ -1938,8 +2033,8 @@ function renderStock(){
 
     <div class="scroll-x flex gap-2">
       <button class="chip ${stockExpiryFilter==='all'?'active':''}" data-expfilter="all">Все сроки</button>
-      <button class="chip ${stockExpiryFilter==='expired'?'active':''}" data-expfilter="expired">⛔ Просрочка (${expScope.filter(s=>inStock(s)&&s.expiry&&daysLeft(s.expiry)<0).length})</button>
-      <button class="chip ${stockExpiryFilter==='soon'?'active':''}" data-expfilter="soon">⏰ Скоро (${expScope.filter(s=>{if(!inStock(s))return false;const d=s.expiry?daysLeft(s.expiry):null;return d!==null&&d>=0&&d<=14;}).length})</button>
+      <button class="chip ${(stockExpiryFilter==='expired'||stockExpiryFilter==='exp14')?'active':''}" data-expfilter="expired">⛔ Просрочка (${expScope.filter(s=>inStock(s)&&s.expiry&&daysLeft(s.expiry)<0).length})</button>
+      <button class="chip ${(stockExpiryFilter==='soon'||stockExpiryFilter==='exp14')?'active':''}" data-expfilter="soon">⏰ Скоро (${expScope.filter(s=>{if(!inStock(s))return false;const d=s.expiry?daysLeft(s.expiry):null;return d!==null&&d>=0&&d<=14;}).length})</button>
     </div>
 
     <details class="stock-cat" ${stockCatOpen?"open":""}>
@@ -1991,18 +2086,13 @@ function renderStockList(){
   if(stockCat) list = list.filter(s=>s.category===stockCat);
   if(stockExpiryFilter==="expired") list = list.filter(s=>inStock(s) && s.expiry && daysLeft(s.expiry)<0);
   else if(stockExpiryFilter==="soon") list = list.filter(s=>{ if(!inStock(s)) return false; const d=s.expiry?daysLeft(s.expiry):null; return d!==null && d>=0 && d<=14; });
+  // exp14 = ровно то, что считает плитка «Сроки истекают» на дашборде: просрочка И «скоро» одним
+  // списком (окно ≤14 дней вместе с минусом). Отдельного чипа не заводим — подсвечиваем оба
+  // существующих, а нажатие на любой из них сужает выборку до него одного.
+  else if(stockExpiryFilter==="exp14") list = list.filter(s=>{ if(!inStock(s)) return false; const d=s.expiry?daysLeft(s.expiry):null; return d!==null && d<=14; });
   if(stockSearch.trim()){
-    const q = stockSearch.trim().toLowerCase();
-    list = list.filter(s=>{
-      if((s.name||"").toLowerCase().includes(q)) return true;
-      if((s.location||"").toLowerCase().includes(q)) return true;
-      // ищем по местам/примечаниям всех партий
-      for(const b of (s.batches||[])){
-        if((b.location||"").toLowerCase().includes(q)) return true;
-        if((b.note||"").toLowerCase().includes(q)) return true;
-      }
-      return false;
-    });
+    const _terms = searchTerms(stockSearch);   // общая с чипами сроков реализация: имя + место карточки + места/примечания партий, ё≡е, И по словам
+    list = list.filter(s=> stockMatches(s, _terms));
   }
   list = sortedStock(list);
   const total = list.length;
@@ -2020,6 +2110,7 @@ function renderStockList(){
     if(stockSearch.trim()) parts.push(`поиск «${esc(stockSearch.trim())}»`);
     if(stockExpiryFilter==="expired") parts.push("фильтр «⛔ Просрочка»");
     if(stockExpiryFilter==="soon") parts.push("фильтр «⏰ Скоро»");
+    if(stockExpiryFilter==="exp14") parts.push("фильтр «сроки ≤ 14 дней»");
     if(stockCat) parts.push(`категория «${esc(stockCat)}»`);
     const hint = parts.length ? `<div class="text-xs opacity-60 mt-1">Активен ${parts.join(" и ")} — снимите, чтобы увидеть весь склад</div>` : "";
     box.innerHTML = `<div class="card text-center opacity-70">${noFilters
@@ -2531,8 +2622,13 @@ function reconcileLegacyQtyFromJournal(allowDown, allowUp){
   }
   return { fixed: up.length + down.length, up, down };
 }
-// локальный журнал после cloud pull усечён (≤500/kind) → ledger неполный
+/* Можно ли доверять локальному журналу как ПОЛНОМУ ledger-у. Осторожность здесь намеренная: на
+   этом ответе завязан рискованный подъём остатков по журналу, и ошибка в сторону «полный» дороже
+   ошибки в сторону «неполный». Облачная база остаётся «неполной» даже после честного pull —
+   другие участники дописывают движения между синхронизациями. Новое здесь одно: явный флаг
+   journalsTrunc, который ставит тот, кто реально выбросил записи (память или JOURNAL_LOCAL_CAP). */
 function journalLooksIncomplete(){
+  if(state.journalsTrunc === true) return true;
   if(activeCloudId()) return true;
   const jrLen = JOURNAL_KEYS.reduce((n,k)=> n + ((state.journals[k]||[]).length), 0);
   return jrLen >= 500;
@@ -4408,6 +4504,9 @@ async function deleteCategory(type, name){
 /* ---------- Kitchen ---------- */
 function renderKitchen(){
   ensureChecklist();
+  // роль без права правки видит чек-лист, но не может его менять — иначе галочка «щёлкала» и тут же
+  // откатывалась отказом, а это читается как поломка, а не как отсутствие прав
+  const _chkRO = !canEditStock();
   const v = document.querySelector('[data-view="kitchen"]');
   const products = state.stock.filter(s=>s.type==="product");
   const sorted = sortedStock(products).filter(p=>{
@@ -4424,20 +4523,21 @@ function renderKitchen(){
     ${isRestrictedUser()?"":`<div class="card">
       <div class="flex items-center justify-between mb-2">
         <div class="font-bold">Чек-лист кухни</div>
-        <button class="btn btn-ghost" onclick="resetChecklist()">Сбросить</button>
+        ${_chkRO?"":`<button class="btn btn-ghost" onclick="resetChecklist()">Сбросить</button>`}
       </div>
+      ${_chkRO?`<div class="text-xs opacity-70 mb-2">Только просмотр — отмечать пункты может тот, у кого есть право на правку.</div>`:""}
       <div class="space-y-2">
         ${state.checklists.kitchen.map(c=>`
-          <label class="card flex items-center gap-3 tap">
-            <input type="checkbox" class="w-6 h-6" ${c.done?"checked":""} onchange="toggleCheck('${c.id}',this.checked)">
+          <label class="card flex items-center gap-3 ${_chkRO?"opacity-70":"tap"}">
+            <input type="checkbox" class="w-6 h-6" ${c.done?"checked":""} ${_chkRO?"disabled":""} onchange="toggleCheck('${c.id}',this.checked)">
             <span class="flex-1 ${c.done?"line-through opacity-60":""}">${esc(c.text)}</span>
-            <button class="btn btn-ghost px-2 py-1" onclick="removeCheck('${c.id}')" aria-label="Удалить пункт">🗑</button>
+            ${_chkRO?"":`<button class="btn btn-ghost px-2 py-1" onclick="removeCheck('${c.id}')" aria-label="Удалить пункт">🗑</button>`}
           </label>`).join("")}
       </div>
-      <div class="flex gap-2 mt-2">
+      ${_chkRO?"":`<div class="flex gap-2 mt-2">
         <input class="input" id="ckNew" placeholder="Новый пункт..." />
         <button class="btn btn-primary" onclick="addCheck()" aria-label="Добавить пункт" title="Добавить пункт">＋</button>
-      </div>
+      </div>`}
     </div>`}
   `;
 }
@@ -4446,12 +4546,20 @@ function ensureChecklist(){
   if(!Array.isArray(state.checklists.kitchen)) state.checklists.kitchen = [];
   for(const c of state.checklists.kitchen){ if(c && typeof c==="object") c.id = safeId(c.id); }
 }
+/* Чек-лист кухни правит state и уходит в общий бэкап базы, поэтому запирается тем же ensureCanEdit,
+   что и склад. ВАЖНАЯ ОГОВОРКА, чтобы не выдавать желаемое за действительное: у чек-листа НЕТ
+   серверной стороны — он не входит в блоб настроек базы (push шлёт только locations/categories и
+   надгробия) и не синхронизируется вовсе. Значит, здесь клиентская проверка — единственная, и
+   защищает она не общие данные бригады, а совпадение поведения с интерфейсом: ниже, в renderKitchen,
+   роль без прав видит чек-лист только для чтения, и вызов из консоли теперь ведёт себя так же. */
 function toggleCheck(id, done){
+  if(!ensureCanEdit()){ render(); return; }   // render — вернуть галочке фактическое состояние, если её уже перещёлкнул браузер
   ensureChecklist();
   const c = state.checklists.kitchen.find(x=>x.id===id); if(!c) return;
   c.done = done; saveState();
 }
 function addCheck(){
+  if(!ensureCanEdit()) return;
   ensureChecklist();
   const inp = document.getElementById("ckNew");
   const t = inp.value.trim(); if(!t) return;
@@ -4459,11 +4567,13 @@ function addCheck(){
   saveState(); render();
 }
 function removeCheck(id){
+  if(!ensureCanEdit()) return;
   ensureChecklist();
   state.checklists.kitchen = state.checklists.kitchen.filter(x=>x.id!==id);
   saveState(); render();
 }
 function resetChecklist(){
+  if(!ensureCanEdit()) return;
   ensureChecklist();
   state.checklists.kitchen.forEach(c=>c.done=false);
   saveState(); render();
@@ -5121,18 +5231,24 @@ function exportAllProfiles(){
       if(raw){ try{ st = JSON.parse(raw); }catch(e){ st = null; } }
     }
     if(st===null && p.id!==profiles.activeId) damaged.push(p.name);
-    return { id:p.id, name:p.name, state: st };
+    /* cloudId В ФАЙЛЕ. Без него полное восстановление давало базы, оторванные от облака: связь
+       угадывалась только совпадением имени (cloudAutoLink), а после переименования не угадывалась
+       вовсе — восстановленная база молча оставалась локальной. */
+    return { id:p.id, name:p.name, cloudId: p.cloudId || null, state: st };
   });
-  // Журналы в слотах облачных баз урезаны до 500 записей на вид (pull), а файл называется
-  // «главный страховочный бэкап» — поэтому НЕ молчим о неполной истории движений.
-  // Полный архив по одной базе даёт «Экспорт текущей базы (JSON)» онлайн.
-  // ТОЛЬКО облачные базы: локальный журнал режется на 2000 (квота), а не на 500, поэтому локальная
-  // база с 700 записями — это полный журнал, и помечать такой бэкап неполным было ложной тревогой
-  // (а ложная тревога на главном страховочном бэкапе обесценивает предупреждение).
-  const cloudIds = new Set(profiles.list.filter(p=>p.cloudId).map(p=>p.id));
-  const truncated = list.some(x => cloudIds.has(x.id) && x.state && x.state.journals &&
-    JOURNAL_KEYS.some(k => Array.isArray(x.state.journals[k]) && x.state.journals[k].length >= 500));
-  const payload = { __vahtahozProfiles:1, version:1, exportedAt:new Date().toISOString(), activeId: profiles.activeId, profiles:list, journalsMayBeTruncated: truncated };
+  /* Признак неполноты теперь ФАКТИЧЕСКИЙ, а не «по виду». Раньше судили по длине (≥500 записей —
+     значит, наверняка урезано), потому что pull всегда резал журнал до 500. Теперь pull держит всю
+     историю, и «неполный» ставит ровно тот, кто реально что-то выбросил: аварийное сохранение при
+     переполнении памяти или упор в JOURNAL_LOCAL_CAP. Ложных тревог на полном бэкапе больше нет,
+     а настоящая неполнота по-прежнему названа вслух. */
+  const truncated = list.some(x => x.state && x.state.journalsTrunc === true);
+  /* Задачи ОБЩИЕ для всех баз устройства (TASKS_KEY) и лежат ВНЕ слотов баз. Поэтому в файле им
+     нужно отдельное поле: раньше они попадали в бэкап только «попутно», внутри state активной базы,
+     а восстановление их не читало вовсе. version:2 — файл с полями cloudId и tasks; старые файлы
+     (version:1) читаются по-прежнему, ветки восстановления это учитывают. */
+  const payload = { __vahtahozProfiles:1, version:2, exportedAt:new Date().toISOString(), activeId: profiles.activeId,
+    profiles:list, tasks: (isRestrictedUser() ? [] : (Array.isArray(state.tasks) ? state.tasks : [])),
+    journalsMayBeTruncated: truncated };
   triggerDownload(JSON.stringify(payload,null,2), `vahtahoz-ВСЕ-БАЗЫ-${todayStr()}.json`);
   if(truncated) toast("Сохранено. Внимание: история движений в файле неполная — для полного журнала сделайте «Экспорт текущей базы» онлайн");
   if(damaged.length){
@@ -5145,6 +5261,11 @@ function exportAllProfiles(){
 /* ОБЩИЙ КАТАЛОГ: добавить во ВСЕ базы устройства те наименования (тип+имя+ед.), которых там нет,
    с количеством 0. Существующие позиции, остатки, места, сроки, партии НЕ трогаются. */
 async function mergeCatalogs(){
+  /* Права смотрим по АКТИВНОЙ базе — это приближение (функция дописывает наименования во все базы
+     устройства), но совпадает с тем, что видит человек: кнопка живёт в настройках активной базы.
+     Серверный рубеж на месте и здесь: каждая база уезжает в облако своим push-ом под RLS
+     has_perm(base_id,'edit_stock'), поэтому без прав каталог не станет общим ни в одной базе. */
+  if(!ensureCanEdit()) return;
   const bases = profiles.list.map(p=>({
     p, active: p.id===profiles.activeId,
     st: p.id===profiles.activeId ? state : (()=>{ try{ return JSON.parse(localStorage.getItem(slotKey(p.id))||"null"); }catch(_){ return null; } })()
@@ -5226,7 +5347,9 @@ async function importAllProfiles(payload){
     try{ st = validateImport(structuredClone(p.state)); }
     catch(e){ console.warn("Пропущена база", p.name, e); continue; }
     if(isRestrictedUser()) st.tasks = [];   // начальник: «Задачи» из файла не импортируем
-    norm.push({ name: cleanName40(p.name||"База") || "База", state: st });
+    // cloudId несём через нормализацию: без него восстановленная база теряет связь с облаком
+    norm.push({ name: cleanName40(p.name||"База") || "База", state: st,
+                cloudId: (typeof p.cloudId==="string" && p.cloudId) ? p.cloudId : null });
   }
   if(!norm.length){ toast("Не удалось прочитать базы из файла"); return; }
 
@@ -5237,11 +5360,14 @@ async function importAllProfiles(payload){
     // и только если все записи прошли — удаляем старые и фиксируем. Иначе откатываем
     // частично записанное, старые данные остаются нетронутыми (защита от QuotaExceeded).
     const newList = []; let activeId = null; const writtenKeys = [];
+    const _seenCloud = new Set();   // один cloudId — одна база: два слота на одну облачную базу дают гонку push/pull
     try{
       norm.forEach((p,i)=>{
         const id = uid();
         if(i===0) activeId = id;
-        newList.push({ id, name: p.name });
+        const ent = { id, name: p.name };
+        if(p.cloudId && !_seenCloud.has(p.cloudId)){ ent.cloudId = p.cloudId; _seenCloud.add(p.cloudId); }
+        newList.push(ent);
         const key = slotKey(id);
         localStorage.setItem(key, JSON.stringify(p.state)); // бросит при переполнении
         writtenKeys.push(key);
@@ -5277,7 +5403,31 @@ async function importAllProfiles(payload){
     }
     for(const id of oldIds){ if(id!==activeId){ try{ localStorage.removeItem(slotKey(id)); }catch(_){} } }
     for(const op of oldProfs){ if(op.cloudId) clearBaseSyncKeys(op.cloudId); }   // dirty + снимки подписей старых баз не нужны
-    toast("Восстановлено. Перезагрузка…");
+    /* ЗАДАЧИ. Они общие для устройства и живут в TASKS_KEY — вне слотов баз, которые мы только что
+       переписали. Раньше их не трогали вообще: «полное восстановление» оставляло на телефоне
+       задачи, которые были там ДО восстановления, а задачи из бэкапа исчезали без единого слова.
+       Новые файлы (version:2) несут их отдельным полем; в старых берём задачи той базы, которая
+       была активной при выгрузке, — именно туда TASKS_KEY попадал попутно. Сбой записи не
+       откатывает восстановление склада (он уже успешен), но и не молчит. */
+    let _tasks = null;
+    if(Array.isArray(payload.tasks)) _tasks = payload.tasks;
+    else {
+      const _src = incoming.find(p=>p && p.id && payload.activeId && p.id===payload.activeId) || incoming[0];
+      if(_src && _src.state && Array.isArray(_src.state.tasks)) _tasks = _src.state.tasks;
+    }
+    if(isRestrictedUser()) _tasks = null;   // начальник: «Задачи» из файла не восстанавливаем (как и при обычном импорте)
+    let _tasksOk = true;
+    if(_tasks){
+      try{
+        localStorage.setItem(TASKS_KEY, JSON.stringify(_tasks));
+        /* Помечаем к выгрузке. Задачи в облаке принадлежат владельцу записи (RLS: owner_id=auth.uid()),
+           то есть это СВОИ задачи пользователя, а не общие данные бригады. Без dirty ближайший
+           cloudSyncTasks увидел бы «локально грязного нет» и подтянул облачную версию поверх
+           только что восстановленной — восстановление задач отменялось бы само собой. */
+        try{ localStorage.setItem(TASKS_DIRTY, "1"); }catch(_){}
+      }catch(e){ console.error("restore: TASKS_KEY", e); _tasksOk = false; }
+    }
+    toast(_tasksOk ? "Восстановлено. Перезагрузка…" : "Базы восстановлены, но задачи записать не удалось — не хватило места");
     setTimeout(()=>location.reload(), 600);
   } else {
     // Профиль попадает в список ТОЛЬКО после успешной записи слота. Раньше он добавлялся
@@ -5291,6 +5441,8 @@ async function importAllProfiles(payload){
       const id = uid();
       try{
         localStorage.setItem(slotKey(id), JSON.stringify(p.state));
+        // «Добавить как новые базы» — именно НОВЫЕ, локальные: cloudId из файла тут НЕ переносим,
+        // иначе добавленная копия перехватила бы синхронизацию у уже привязанной базы бригады.
         profiles.list.push({ id, name: nm });
         added++;
       }catch(e){ console.error("import: слот базы не записан", e); failed.push(p.name); }
@@ -5302,6 +5454,14 @@ async function importAllProfiles(payload){
   }
 }
 function importData(ev){
+  /* КЛИЕНТСКАЯ проверка, и она НЕ заменяет серверную. Настоящий рубеж — RLS: stock_items и
+     journal_entries принимают запись только под has_perm(base_id,'edit_stock'), а has_perm требует
+     ещё и base_members.active — то есть снятый со смены не запишет ничего, даже позвав importData
+     из консоли. Проверено по политикам в supabase/migrations (снимок RBAC + тело has_perm).
+     Здесь проверка нужна за другим: чтобы не давать простого пути (локальные данные всё равно
+     менялись, а участник бригады видел бы у себя чужой импорт до следующего pull) и чтобы поведение
+     совпадало с интерфейсом, где у роли без прав правка недоступна. */
+  if(!ensureCanEdit()){ try{ ev.target.value = ""; }catch(_){} return; }
   const f = ev.target.files[0]; if(!f){ return; }
   const inputEl = ev.target;
   const r = new FileReader();
@@ -5749,7 +5909,7 @@ document.addEventListener("click", e=>{
 });
 
 /* ---------- Expose for inline handlers ---------- */
-Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTaskItem,moveTask,taskFilter,
+Object.assign(window,{nav,navStock,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTaskItem,moveTask,taskFilter,
   openStockEdit,saveStock,deleteStock,openBatchAdd,saveBatch,openBatchEdit,saveBatchEdit,deleteBatch,quickAdjust,
   openOpEdit,saveOp,deleteOp,editOp,saveOpEdit,orderReceive,
   openCategoriesEdit,addCategory,renameCategory,deleteCategory,
@@ -7342,6 +7502,17 @@ async function cloudAutoLink(){
       if(!switchTo) switchTo=id;
     }
   }
+  /* ИМЯ ОБЩЕЙ БАЗЫ — из облака. Локальный профиль хранит своё название с момента привязки и раньше
+     не обновлялся никогда: владелец переименовывал базу у себя, а на телефонах бригады висело
+     старое имя до полного пересоздания профиля. Облако тут источник истины (то же правило, что и
+     для данных), поэтому подтягиваем. Санитайзим, как и при создании: имя пишет другой участник. */
+  for(const p of profiles.list){
+    if(!p.cloudId) continue;
+    const cn = cloud.bases[p.cloudId];
+    if(!cn || cn===p.name) continue;
+    const clean = cleanName40(cn);
+    if(clean && clean!==p.name){ p.name = clean; changed = true; }
+  }
   if(changed) saveProfiles(profiles);
   if(switchTo && !activeCloudId()){ switchProfile(switchTo, true); return true; }   // true = автопривязка, в обход роль-гарда
   // ДЕАДЛОК ограниченной роли: активная — локальная «База 1» (создаётся по умолчанию), а привязанная к членству
@@ -7364,7 +7535,10 @@ async function cloudRelinkIfNeeded(){
   // дотягиваем привязку только при ОДНОЗНАЧНОМ совпадении имени (имя облачной базы встречается ровно раз) —
   // иначе можно привязать не к той одноимённой базе.
   const hasUnlinkedMatch = profiles.list.some(x=>!x.cloudId && cloudNames.filter(n=>n===x.name).length===1);
-  if(hasUnlinkedMatch){ await cloudAutoLink(); return true; }
+  // ещё один повод сходить в cloudAutoLink: имя привязанной базы разъехалось с облачным
+  // (владелец переименовал её с другого устройства) — тянем новое имя сюда
+  const nameDrift = profiles.list.some(x=>x.cloudId && cloud.bases[x.cloudId] && cloud.bases[x.cloudId]!==x.name);
+  if(hasUnlinkedMatch || nameDrift){ await cloudAutoLink(); return true; }
   return false;
 }
 /* активация облачной базы: первичная выгрузка / подтягивание / разрешение оффлайн-правок */
@@ -7587,7 +7761,15 @@ async function cloudPull(cid){
         _reconChanged = !!(rec.fixed || created || relinked);
       }catch(e){ console.warn("post-pull stock reconcile", e); }
     }
-    for(const k in J) J[k] = J[k].slice(0,500);
+    /* Было: `J[k].slice(0,500)` — жёсткое усечение НА ВИД при КАЖДОМ pull, независимо от того,
+       кончилась память или нет. cloudRestAll тянет из облака ВСЮ историю постранично, и она тут же
+       выбрасывалась: локально оставался хвост, из-за чего экспорт всех баз — файл, подписанный как
+       главный страховочный бэкап, — содержал 500 последних записей вместо всей истории движений.
+       Теперь оставляем всё, что пришло; урезание живёт там, где ему и место, — в аварийном
+       _saveStateTrimmed при переполнении localStorage (уровни 2000 и 500 записей). */
+    let _jrCapped = false;
+    for(const k in J){ if(J[k].length > JOURNAL_LOCAL_CAP){ J[k] = J[k].slice(0, JOURNAL_LOCAL_CAP); _jrCapped = true; } }
+    state.journalsTrunc = _jrCapped;   // упёрлись в предел — говорим об этом прямо, а не молча
     state.journals = J;
     // ЗАДАЧИ НЕ ТЯНЕМ из облака — они общие-локальные (одно расписание на все базы),
     // не зависят от базы и не видны начальнику. state.tasks остаётся как есть (из loadGlobalTasks).
@@ -8390,7 +8572,9 @@ async function cloudRefreshMyMembership(){
     // иначе пользователь не увидит новые базы до перезахода (org_roles/base_members без реалтайма).
     if(Array.isArray(bs)){
       const linked = new Set(profiles.list.filter(x=>x.cloudId).map(x=>x.cloudId));
-      if(Object.keys(cloud.bases).some(cid=>!linked.has(cid))) await cloudAutoLink();
+      // ...и переименование общей базы, сделанное с другого устройства: cloudAutoLink подтянет имя
+      const drift = profiles.list.some(x=>x.cloudId && cloud.bases[x.cloudId] && cloud.bases[x.cloudId]!==x.name);
+      if(drift || Object.keys(cloud.bases).some(cid=>!linked.has(cid))) await cloudAutoLink();
     }
     renderHeader();
   }catch(_){}
