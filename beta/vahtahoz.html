@@ -2021,11 +2021,17 @@ async function exportJournalsMonth(ym){
       if(k==="order") row["Статус"]=op.status==="received"?"Принят":"Ожидает";
       row["Примечание"]=op.note||""; return row;
     });
-    const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Дата":"","Наименование":""}]));
+    const ws=XLSX.utils.json_to_sheet(rows.length?rows:[{"Дата":"","Наименование":""}]);
     ws["!cols"]=[{wch:16},{wch:34},{wch:11},{wch:9},{wch:16},{wch:12},{wch:10},{wch:24}];
     XLSX.utils.book_append_sheet(wb, ws, meta.label.slice(0,28));
   }
-  saveXlsx(wb, `vahtahoz-журналы-${ym}-${_fileSafe(activeProfileName())}.xlsx`);
+  // до этой точки был и await ensureXlsx(), и (для облачной базы) запрос архива за месяц —
+  // сохраняем из свежего клика по кнопке листа, иначе в обёртке файл молча не появлялся
+  const cnt = JOURNAL_KEYS.reduce((n,k)=>n+((byKind?byKind[k]:state.journals[k])||[]).filter(op=>monthKeyOf(op.ts)===ym).length, 0);
+  saveXlsx(wb, `vahtahoz-журналы-${ym}-${_fileSafe(activeProfileName())}.xlsx`, {
+    title: `Журналы за ${monthLabel(ym)||ym}`,
+    note: `Записей: ${cnt}${byKind?" (полный архив из облака)":""}. Нажмите «Сохранить файл».`,
+  });
 }
 function renderJournal(kind){
   const m = JOURNAL_META[kind];
@@ -3064,16 +3070,23 @@ function openReceiptImportSheet(){
 }
 
 async function downloadReceiptTemplate(){
+  // Если модуль УЖЕ загружен, ensureXlsx резолвится сразу и жест клика ещё жив — пишем файл без лишнего
+  // шага (лист импорта остаётся открытым). Если модуль тянется по сети — жест истёк, и в нативной
+  // обёртке сохранение молча не срабатывало → предлагаем кнопку (см. saveXlsx/offer).
+  const warm = !!window.XLSX;
   let XLSX; try{ XLSX = await ensureXlsx(); }catch(e){ toast("Не удалось загрузить Excel-модуль (нужна сеть в первый раз)"); return; }
   const sample = [
     { "Наименование":"Манная крупа", "Количество":7, "Ед. изм.":"кг", "Категория":"Крупы", "Срок годности":"", "Место":"Склад А", "Примечание":"", "Дата":"2026-07-22" },
     { "Наименование":"Молоко сгущённое", "Количество":24, "Ед. изм.":"шт", "Категория":"Молочные продукты", "Срок годности":"2027-01-15", "Место":"", "Примечание":"Поставщик X", "Дата":"2026-07-24" },
   ];
-  const ws = xlsxGuard(XLSX.utils.json_to_sheet(sample));
+  const ws = XLSX.utils.json_to_sheet(sample);
   ws["!cols"] = [{wch:28},{wch:12},{wch:10},{wch:20},{wch:14},{wch:14},{wch:22},{wch:12}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Поступление");
-  saveXlsx(wb, `vahtahoz-шаблон-поступление.xlsx`);
+  saveXlsx(wb, `vahtahoz-шаблон-поступление.xlsx`, warm ? null : {
+    title: "Шаблон готов",
+    note: "Нажмите «Сохранить файл», затем откройте импорт заново и выберите заполненный файл.",
+  });
 }
 
 function _impFileHint(name){
@@ -4456,16 +4469,12 @@ function _xlNum(v){
      && typeof parseNum==="function") n = parseNum(v);
   return Number.isFinite(n) ? n : "";
 }
-function xlsxGuard(ws){
-  for(const addr in ws){
-    if(addr[0]==="!") continue;
-    const c = ws[addr];
-    if(c && c.t==="s" && typeof c.v==="string" && /^[=+\-@\t\r]/.test(c.v)){
-      c.v = "'" + c.v; if(c.w!=null) c.w = "'" + c.w;
-    }
-  }
-  return ws;
-}
+/* Анти-инъекции («формула из ячейки») в XLSX НЕ нужна и была вредна. В xlsx формула — это отдельный
+   элемент <f> в XML, строковое значение ячейки формулой не становится ни при каких условиях (в отличие
+   от CSV, где Excel парсит текст — там экранирование в exportCsv остаётся). А апостроф, который ставил
+   бывший xlsxGuard, в xlsx НЕ съедается при открытии: он часть значения. Реальные данные («-» в
+   примечании, «+7…» в телефоне, «=» в наименовании) уезжали в файл как «'-», «'+7…» — испорченный
+   экспорт при нулевой пользе. Поэтому листы отдаём как есть. */
 async function exportXlsx(){
   toast("Подготовка файла…");
   let XLSX;
@@ -4483,7 +4492,7 @@ async function exportXlsx(){
     "Место": locationsOf(s).join("; "),
     "Примечание": s.note||"",
   }));
-  const ws = xlsxGuard(XLSX.utils.json_to_sheet(stockRows));
+  const ws = XLSX.utils.json_to_sheet(stockRows);
   ws["!cols"] = [{wch:10},{wch:22},{wch:40},{wch:10},{wch:10},{wch:10},{wch:14},{wch:16},{wch:30}];
   XLSX.utils.book_append_sheet(wb, ws, "Остатки");
 
@@ -4503,7 +4512,7 @@ async function exportXlsx(){
     }
   }
   if(batchRows.length){
-    const wsB = xlsxGuard(XLSX.utils.json_to_sheet(batchRows));
+    const wsB = XLSX.utils.json_to_sheet(batchRows);
     wsB["!cols"] = [{wch:40},{wch:22},{wch:10},{wch:10},{wch:14},{wch:18},{wch:30}];
     XLSX.utils.book_append_sheet(wb, wsB, "Партии");
   }
@@ -4524,7 +4533,7 @@ async function exportXlsx(){
       }
       return r;
     });
-    const sh = xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Дата":"","Наименование":"","Количество":"","Ед. изм.":"","Примечание":""}]));
+    const sh = XLSX.utils.json_to_sheet(rows.length?rows:[{"Дата":"","Наименование":"","Количество":"","Ед. изм.":"","Примечание":""}]);
     sh["!cols"] = [{wch:18},{wch:40},{wch:10},{wch:10},{wch:30},{wch:12},{wch:18}];
     XLSX.utils.book_append_sheet(wb, sh, title);
   };
@@ -4545,13 +4554,16 @@ async function exportXlsx(){
       "Порядок": _xlNum(t.order),
       "Готово": t.done?"✓":"",
     }));
-    const tsh = xlsxGuard(XLSX.utils.json_to_sheet(taskRows.length?taskRows:[{"Задача":"","Категория":"","Приоритет":"","Повтор":"","Срок":"","Время":"","Порядок":"","Готово":""}]));
+    const tsh = XLSX.utils.json_to_sheet(taskRows.length?taskRows:[{"Задача":"","Категория":"","Приоритет":"","Повтор":"","Срок":"","Время":"","Порядок":"","Готово":""}]);
     tsh["!cols"] = [{wch:40},{wch:16},{wch:12},{wch:10},{wch:12},{wch:8},{wch:8},{wch:10}];
     XLSX.utils.book_append_sheet(wb, tsh, "Задачи");
   }
 
-  saveXlsx(wb, `vahtahoz-${todayStr()}.xlsx`);
-  toast("Excel сохранён");
+  // сохранение — через лист с кнопкой: жест «клика по Экспорту» уже потрачен на await ensureXlsx()
+  saveXlsx(wb, `vahtahoz-${todayStr()}.xlsx`, {
+    title: "Excel готов",
+    note: `База «${activeProfileName()}», позиций: ${stockRows.length}. Нажмите «Сохранить файл».`,
+  });
 }
 function exportCsv(){
   const header = ["Тип","Категория","Наименование","Количество","Ед. изм.","Мин. запас","Срок годности","Место","Примечание"];
@@ -4666,14 +4678,17 @@ async function runFilteredXlsx(){
       "Примечание": s.note||"",
     };
   });
-  const ws = xlsxGuard(XLSX.utils.json_to_sheet(rows));
+  const ws = XLSX.utils.json_to_sheet(rows);
   ws["!cols"] = [{wch:10},{wch:22},{wch:40},{wch:10},{wch:8},{wch:10},{wch:14},{wch:16},{wch:18},{wch:30}];
   if(ws["!ref"]) ws["!autofilter"] = { ref: ws["!ref"] };   // автофильтр в Excel по шапке
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Склад (фильтр)");
-  saveXlsx(wb, `vahtahoz-${_filterTag(f)}-${todayStr()}.xlsx`);
-  closeSheet();
-  toast(`Excel сохранён · ${list.length} поз.`);
+  // лист выбора фильтров заменится листом сохранения (closeSheet тут закрыл бы уже ЕГО)
+  const res = saveXlsx(wb, `vahtahoz-${_filterTag(f)}-${todayStr()}.xlsx`, {
+    title: "Excel готов",
+    note: `Позиций под фильтр: ${list.length}. Нажмите «Сохранить файл».`,
+  });
+  if(res !== "offered") closeSheet();
 }
 
 // Универсальное сохранение файла. В НАТИВНЫХ обёртках (Capacitor iOS/Android WKWebView/WebView) обычный
@@ -4707,13 +4722,25 @@ function triggerDownload(text, filename, mime){
   saveBlob(new Blob([text],{type:mime||"application/json"}), filename);
 }
 // Excel через универсальный сейв (не XLSX.writeFile — он делает тот же не-работающий в обёртках download)
-function saveXlsx(wb, filename){
+/* offer={title,note} — НЕ сохранять сразу, а показать лист с кнопкой (см. offerFileSaveBlob).
+   Нужно там, где до сохранения был await (ensureXlsx подгружает модуль по сети, экспорт журналов ещё и
+   тянет облачный архив): к этому моменту transient user activation истекла, navigator.share даёт
+   NotAllowedError, а фолбэк <a download> в Capacitor-обёртке молча ничего не делает — при этом тост
+   рапортовал «Excel сохранён». Возвращает "offered", если файл ещё не записан (лист уже на экране —
+   зовущему НЕ надо ни closeSheet, ни тоста «сохранён»). */
+function saveXlsx(wb, filename, offer){
   try{
     const X = window.XLSX;   // вызывается ПОСЛЕ ensureXlsx() в экспорт-функции → уже загружен
-    if(!X){ toast("Excel ещё грузится — повторите"); return; }
+    if(!X){ toast("Excel ещё грузится — повторите"); return false; }
     const buf = X.write(wb, { type:"array", bookType:"xlsx" });
-    saveBlob(new Blob([buf], { type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), filename);
-  }catch(e){ console.warn("saveXlsx", e); toast("Не удалось сформировать Excel"); }
+    const blob = new Blob([buf], { type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    if(offer){
+      offerFileSaveBlob(blob, filename, offer.title || "Файл готов", offer.note || "Нажмите «Сохранить файл».");
+      return "offered";
+    }
+    saveBlob(blob, filename);
+    return true;
+  }catch(e){ console.warn("saveXlsx", e); toast("Не удалось сформировать Excel"); return false; }
 }
 /* ПОЛНЫЕ журналы базы из облака для бэкапа. Локальный state.journals после pull урезан до 500
    записей на вид (см. slice(0,500)), поэтому JSON-бэкап содержал лишь хвост истории движений —
@@ -4772,6 +4799,24 @@ function doPendingSave(){
   closeSheet();
   triggerDownload(p.text, p.filename);   // синхронно в обработчике клика → share/download работают
 }
+/* То же самое для готового Blob (Excel): текст пересобирать нечем, а держать мегабайтный xlsx строкой
+   нельзя. Ломалось ровно так же: экспорт Excel всегда идёт после await ensureXlsx() (а экспорт журналов
+   и после запроса в облако), поэтому в нативной обёртке share/download молча не срабатывали. */
+let _pendingSaveBlob = null;
+function offerFileSaveBlob(blob, filename, title, note){
+  _pendingSaveBlob = { blob, filename };
+  openSheet(`
+    <div class="font-bold text-xl mb-2">${esc(title)}</div>
+    <div class="text-sm opacity-80 mb-4" style="line-height:1.5">${esc(note)}</div>
+    <button class="btn btn-primary w-full" onclick="doPendingSaveBlob()">Сохранить файл</button>
+    <button class="btn btn-ghost w-full mt-2" onclick="_pendingSaveBlob=null;closeSheet()">Отмена</button>`);
+}
+function doPendingSaveBlob(){
+  const p = _pendingSaveBlob; _pendingSaveBlob = null;
+  if(!p) return;
+  closeSheet();
+  saveBlob(p.blob, p.filename);   // синхронно в обработчике клика → жест свежий, share работает
+}
 /* opts.localOnly — писать файл СРАЗУ, без обращения к облаку. Нужно для аварийного экспорта при
    переполнении памяти: там последняя операция могла не лечь на диск, и откладывать запись файла
    на сетевой запрос (до 120 с) нельзя. */
@@ -4780,7 +4825,9 @@ async function exportData(opts){
   // у начальника (нет прав на задачи) «Задачи» не выгружаем
   const localOnly = !!(opts && opts.localOnly);
   const cid = activeCloudId();
-  const fname = `vahtahoz-${activeProfileName()}-${todayStr()}.json`;
+  // _fileSafe: имя базы приходит из облака и может содержать «/», «:», кавычки — в имени файла это
+  // либо ломало сохранение, либо резало имя по разделителю пути (файл «терялся»)
+  const fname = `vahtahoz-${_fileSafe(activeProfileName())}-${todayStr()}.json`;
   const pack = (journals)=>{
     const base = journals ? { ...state, journals } : state;
     const out = isRestrictedUser() ? { ...base, tasks: [] } : base;
@@ -5081,17 +5128,25 @@ function importData(ev){
                   note: "Перенос исходного остатка", createdAt: found.createdAt||new Date().toISOString()
                 });
               }
-              // дедуп по (qty, expiry, location, note) — защита от двойного импорта
+              /* Дедуп по ID партии. Раньше сравнивались (qty|expiry|location|note) — и ДВЕ реально
+                 разные партии «25 кг, без срока, Склад А» (два мешка) сливались в одну: половина
+                 остатка исчезала молча, ровно в операции, которую пользователь считает безопасной
+                 («Объединить»). От повторного импорта того же файла хватает id: он в файле есть и
+                 не меняется. Партии БЕЗ id (руками правленый/очень старый бэкап) — прежняя логика
+                 по подписи, там id сравнивать не с чем. */
               const sig = b => `${roundQty(b.qty||0)}|${b.expiry||""}|${b.location||""}|${b.note||""}`;
-              const existing = new Set(found.batches.map(sig));
+              const existingIds = new Set(found.batches.map(b=>b.id).filter(Boolean));
+              const existingSig = new Set(found.batches.filter(b=>!b.id).map(sig));
               for(const b of src.batches){
-                if(existing.has(sig(b))) continue;
+                if(b.id){ if(existingIds.has(b.id)) continue; }
+                else if(existingSig.has(sig(b))) continue;
+                // id партии СОХРАНЯЕМ (если он есть) — иначе повторный импорт снова не узнает её
                 found.batches.push({
-                  id: uid(), qty: roundQty(b.qty||0),
+                  id: b.id || uid(), qty: roundQty(b.qty||0),
                   expiry: b.expiry||"", location: b.location||"",
                   note: b.note||"", createdAt: b.createdAt||new Date().toISOString()
                 });
-                existing.add(sig(b));
+                if(b.id) existingIds.add(b.id); else existingSig.add(sig(b));
               }
               syncItemFromBatches(found);
             } else if(hasBatches(found)){
@@ -5171,6 +5226,15 @@ function importData(ev){
       console.error("Import error:", e);
       toast("Не удалось прочитать файл — проверьте формат");
     }
+  };
+  /* Сбой чтения самого файла (файл удалён/переименован после выбора, нет прав, iCloud-файл не
+     скачался, ошибка носителя) не вызывает onload вообще: раньше не было ни тоста, ни очистки
+     input — экран просто не реагировал на «Импорт», и повторный выбор ТОГО ЖЕ файла тоже молчал
+     (значение input не сброшено → событие change не срабатывает). */
+  r.onerror = () => {
+    inputEl.value = "";
+    console.error("importData: FileReader", r.error);
+    toast("Не удалось прочитать файл с устройства — скопируйте его в память телефона и повторите");
   };
   r.readAsText(f);
 }
@@ -5375,7 +5439,7 @@ Object.assign(window,{nav,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTask
   openProfilesSheet,switchProfile,addProfile,renameProfile,deleteProfile,exportAllProfiles,mergeCatalogs,
   toggleCheck,addCheck,resetChecklist,removeCheck,
   exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,exportJournalsMonth,clearLog,wipeAll,toggleTheme,setTheme,
-  doPendingSave,   // вызывается из onclick шита сохранения — обязателен в window
+  doPendingSave,doPendingSaveBlob,   // вызываются из onclick шита сохранения — обязательны в window
   openCloudSheet,openExportSheet,openBackupSheet,openJournalSheet,openStockReconcileSheet,openGrantBasesSheet,doGrantBases,openBroadcastSheet,sendBroadcast,
   openAboutSheet,openFaqSheet,openPrivacySheet,openTermsSheet,openRecoveryEmailSheet,
   openMove,doMove,
@@ -6226,19 +6290,26 @@ async function exportAllBasesXlsx(){
   _allBasesCache.forEach(b=>{
     if(b.rows===null) return;   // недоступную базу пропускаем
     const rows=(b.rows||[]).map(_acctRow);
-    const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}])); ws["!cols"]=_ACCT_COLS;
+    const ws=XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}]); ws["!cols"]=_ACCT_COLS;
     XLSX.utils.book_append_sheet(wb, ws, _sheetName(b.name, used));   // лист на базу
   });
   if(!wb.SheetNames.length){ XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Нет данных"]]), "Пусто"); }
-  saveXlsx(wb, `vahtahoz-по-базам-${todayStr()}.xlsx`);
+  const loaded = _allBasesCache.filter(b=>b.rows!==null).length;
+  saveXlsx(wb, `vahtahoz-по-базам-${todayStr()}.xlsx`, {
+    title: "Excel по всем базам готов",
+    note: `Листов (баз): ${loaded}. Нажмите «Сохранить файл».`,
+  });
 }
 async function exportOneBaseXlsx(baseId){
   const b=(_allBasesCache||[]).find(x=>x.id===baseId); if(!b||!b.rows){ toast("Нет данных по базе"); return; }
   let XLSX; try{ XLSX=await ensureXlsx(); }catch(e){ toast("Не удалось сделать Excel"); return; }
   const rows=b.rows.map(_acctRow);
-  const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}])); ws["!cols"]=_ACCT_COLS;
+  const ws=XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}]); ws["!cols"]=_ACCT_COLS;
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, _sheetName(b.name, new Set()));
-  saveXlsx(wb, `vahtahoz-${_fileSafe(b.name)}-${todayStr()}.xlsx`);
+  saveXlsx(wb, `vahtahoz-${_fileSafe(b.name)}-${todayStr()}.xlsx`, {
+    title: `Excel: ${b.name}`,
+    note: `Позиций: ${rows.length}. Нажмите «Сохранить файл».`,
+  });
 }
 const cloudDirtyKey = (cid)=>`${NS}vahtahoz_dirty_${cid}`;
 // удалить все sync-маркеры базы (dirty + снимки подписей) — при удалении/замене базы, чтобы не копить мусор
