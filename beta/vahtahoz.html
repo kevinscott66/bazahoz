@@ -6258,7 +6258,7 @@ function openShift(uid){
            <button class="btn btn-ghost w-full" onclick="memberRotate('${uid}')">Снять со смены</button>`
         : `<button class="btn btn-success w-full" onclick="memberRotate('${uid}')">Вернуть на смену</button>`}
     </div>
-    <div class="text-xs opacity-60 mt-2">«Передать смену» отдаёт задачи заступающему и закрывает смену уходящему. «Снять со смены» просто закрывает доступ — задачи остаются у работника. Делайте передачу, когда уходящий уже не вносит изменения.</div>
+    ${canRotateMember(m) ? `<div class="text-xs opacity-60 mt-2">«Передать смену» отдаёт задачи заступающему и закрывает смену уходящему. «Снять со смены» просто закрывает доступ — задачи остаются у работника. Делайте передачу, когда уходящий уже не вносит изменения.</div>` : ""}
     <button class="btn btn-ghost w-full mt-3" data-close>Отмена</button>`);
 }
 function openHandover(fromUid){
