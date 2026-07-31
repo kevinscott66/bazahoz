@@ -17,11 +17,11 @@
 -- причём верификатор этого не показывал.
 -- =============================================================================
 
+
 -- Флаг «идёт полный пакет»: файлы ниже снимают ВСЕ перегрузки своих функций перед созданием
 -- и обычно предупреждают, если сняли более новую редакцию. Внутри пакета это не проблема —
 -- следующий по порядку файл тут же вернёт актуальную версию, поэтому предупреждения глушим.
 set vahtahoz.apply_all = '1';
-
 
 -- ─────────────────────────── 2026-07-30_base_member_preset_all_roles.sql ───────────────────────────
 -- 2026-07-30 (v203) — дыра: пресет флагов применялся НЕ ко всем известным ролям.
@@ -2827,6 +2827,28 @@ begin
 end $$;
 
 -- ── 1. handover_shift v2 ──────────────────────────────────────────────────────────
+do $handover$
+declare cur text := (
+  select p.prosrc from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public' and p.proname = 'handover_shift'
+  order by p.oid desc limit 1
+);
+begin
+  -- ДОБАВЛЕНО 2026-08-01 (round 9). Этот раздел пересоздавал handover_shift БЕЗУСЛОВНО и потому
+  -- откатывал более новую редакцию (2026-08-01_handover_round9_fixes.sql) — тот же дефект, из-за
+  -- которого файл 2026-07-28 молча откатывал этот файл. Ловушка настоящая: раннбук и бэклог
+  -- советуют «вставить ПОВТОРНО handover_consistency», и такая повторная вставка ПОСЛЕ round 9
+  -- вернула бы дыры round 9 (увод задач чужой базы, «успех» без пересменки).
+  -- Теперь раздел выполняется, только если более новой редакции нет.
+  if cur is not null and cur like '%@round9%' then
+    if coalesce(current_setting('vahtahoz.apply_all', true), '') <> '1' then
+      raise warning 'На базе уже стоит БОЛЕЕ НОВАЯ редакция handover_shift (round9) — раздел 1 файла handover_consistency ПРОПУЩЕН, чтобы не откатить пересменку. Нужно переустановить — применяйте 2026-08-01_handover_round9_fixes.sql.';
+    end if;
+    return;
+  end if;
+
+  execute $ho$
 create or replace function public.handover_shift(p_base uuid, p_from uuid, p_to uuid)
 returns integer
 language plpgsql
@@ -2931,7 +2953,10 @@ begin
   end if;
 
   return moved;
-end$function$;
+end$function$
+  $ho$;
+end
+$handover$;
 
 -- клиент ходит через Edge Function (service_role); прямой RPC пользователям не нужен
 revoke execute on function public.handover_shift(uuid, uuid, uuid) from public, anon, authenticated;
