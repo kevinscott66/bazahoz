@@ -2,6 +2,12 @@
    network-first важен: после деплоя фикса пользователь получает свежий vahtahoz.html
    сразу при наличии сети, а кэш используется только как офлайн-резерв. */
 const CACHE = "vahtahoz-BETA-v214";
+// Cache Storage общий на ORIGIN, а не на путь регистрации SW: бета (/beta/) и стабильная (/)
+// живут на одном домене vahta.razvedchick.ru и видят одни и те же ключи caches.keys().
+// Раньше activate чистил ВСЁ подряд (k !== CACHE) — заход в бету удалял кэш стабильной
+// и наоборот, и офлайн-версия сайта (весь смысл этого SW) переставала открываться.
+// Поэтому здесь удаляем только СВОЮ линейку версий — только "vahtahoz-BETA-*".
+const isMyCache = k => k !== CACHE && k.startsWith("vahtahoz-BETA-");
 const PRECACHE = [
   "./vahtahoz.html",
   "./manifest.webmanifest",
@@ -34,7 +40,7 @@ self.addEventListener("activate", e => {
     // второй рубеж: старый кэш удаляем ТОЛЬКО когда новый действительно содержит оболочку
     if (await c.match(SHELL)) {
       const keys = await caches.keys();
-      await Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)));
+      await Promise.all(keys.filter(isMyCache).map(k => caches.delete(k)));
     } else {
       console.warn("activate: оболочки нет в", CACHE, "— прежний кэш оставлен как офлайн-резерв");
     }
