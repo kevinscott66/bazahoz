@@ -39,3 +39,6 @@ vahtahoz-supabase-keys*
 *.secret
 # шаблоны *.example коммитим (иначе .env.* выше их бы съел)
 !*.example
+
+# Результат сборки для Cloudflare Pages — не коммитим.
+dist/

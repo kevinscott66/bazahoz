@@ -1,0 +1,36 @@
+# Заголовки Cloudflare Pages.
+#
+# no-cache НЕ значит «не кэшировать». Значит «перед выдачей спроси, не изменилось ли».
+# Это ровно то, на что рассчитан network-first в sw.js: после выкатки человек с сетью
+# получает свежий vahtahoz.html сразу, а кэш остаётся офлайн-резервом.
+#
+# Без этих строк граница Cloudflare может держать старую оболочку, и выкатка будет
+# выглядеть как «правка не доехала». Проверять по заголовку cf-cache-status в ответе.
+
+/vahtahoz.html
+  Cache-Control: no-cache
+
+/beta/vahtahoz.html
+  Cache-Control: no-cache
+
+# Служебный обработчик обязан обновляться сразу: иначе телефоны продолжат отдавать
+# старую оболочку из кэша даже после выкатки.
+/sw.js
+  Cache-Control: no-cache
+
+/beta/sw.js
+  Cache-Control: no-cache
+
+# Оболочка лежит без расширения (см. scripts/build-site.sh) — тип задаём явно,
+# иначе Pages отдаст её как поток байт и браузер предложит скачать файл.
+/vahtahoz
+  Content-Type: text/html; charset=utf-8
+
+/beta/vahtahoz
+  Content-Type: text/html; charset=utf-8
+
+/vahtahoz.html
+  Content-Type: text/html; charset=utf-8
+
+/beta/vahtahoz.html
+  Content-Type: text/html; charset=utf-8
