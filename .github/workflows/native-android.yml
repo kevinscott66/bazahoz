@@ -63,8 +63,21 @@ jobs:
         id: keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
+          set -euo pipefail
           if [ -n "$KEYSTORE_BASE64" ]; then
+            # Все четыре секрета нужны вместе. Раньше ветку «релиз» выбирал ОДИН секрет с ключом,
+            # а остальные три проверялись только тем, что gradle на них споткнётся. Проверяем сразу:
+            # непонятная ошибка на шаге сборки хуже понятной на шаге подготовки.
+            for pair in "ANDROID_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" "ANDROID_KEY_ALIAS=$KEY_ALIAS" "ANDROID_KEY_PASSWORD=$KEY_PASSWORD"; do
+              if [ -z "${pair#*=}" ]; then
+                echo "::error::Секрет ${pair%%=*} пуст, а ANDROID_KEYSTORE_BASE64 задан — подписать нечем"
+                exit 1
+              fi
+            done
             printf '%s' "$KEYSTORE_BASE64" | tr -d '\r\n ' | base64 -d > "$RUNNER_TEMP/vahtahoz.jks"
             if [ ! -s "$RUNNER_TEMP/vahtahoz.jks" ]; then
               echo "::error::ANDROID_KEYSTORE_BASE64 задан, но раскодировался в пустой файл — проверьте base64"
@@ -96,24 +109,41 @@ jobs:
           VH_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           VH_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
+          set -euo pipefail
           chmod +x gradlew
           if [ "${{ steps.keystore.outputs.signed }}" = "true" ]; then
-            ./gradlew assembleRelease --no-daemon --stacktrace
+            # VH_REQUIRE_SIGNING=1 — договор с build.gradle: если ключ до gradle не доехал,
+            # сборка обязана упасть здесь, а не выдать неподписанный APK, который дальше
+            # уедет в артефакт под рабочим именем.
+            VH_REQUIRE_SIGNING=1 ./gradlew assembleRelease --no-daemon --stacktrace
           else
             ./gradlew assembleDebug --no-daemon --stacktrace
           fi
 
+      # Барьер перед артефактом. Раньше здесь были ПРЕДУПРЕЖДЕНИЯ: неподписанный или отладочный
+      # файл спокойно доезжал до артефакта под рабочим именем, а если в образе раннера не
+      # оказывалось apksigner — проверка просто не выполнялась. Теперь на рабочем пути каждая
+      # проверка — условие выпуска: не сошлось или проверить нечем — сборка падает.
       - name: Переименовать и проверить APK
         id: apk
         working-directory: native/android
         run: |
-          set -e
-          if [ "${{ steps.keystore.outputs.signed }}" = "true" ]; then
-            SRC=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          set -euo pipefail
+          SIGNED="${{ steps.keystore.outputs.signed }}"
+          if [ "$SIGNED" = "true" ]; then
+            # Имя файла НЕ угадываем через `ls | head -1`: gradle кладёт рядом
+            # app-release-unsigned.apk, если подпись не назначена, и раньше именно он мог
+            # попасть под рабочее имя. Берём ровно ожидаемый файл и падаем, если его нет.
+            SRC="app/build/outputs/apk/release/app-release.apk"
             OUT="vahtahoz-${{ steps.version.outputs.name }}.apk"
           else
-            SRC=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+            SRC="app/build/outputs/apk/debug/app-debug.apk"
             OUT="vahtahoz-${{ steps.version.outputs.name }}-DEBUG-NE-DLYA-RABOTY.apk"
+          fi
+          if [ ! -f "$SRC" ]; then
+            echo "::error::Ожидался $SRC, но его нет. Что собралось:"
+            ls -la app/build/outputs/apk/*/ || true
+            exit 1
           fi
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
           cp "$SRC" "$GITHUB_WORKSPACE/artifacts/$OUT"
@@ -122,25 +152,57 @@ jobs:
           echo "file=$OUT" >> "$GITHUB_OUTPUT"
           echo "--- что получилось ---"
           ls -la
-          # Проверки информативные: разные образы раннера несут разные build-tools,
-          # поэтому отсутствие утилиты не должно ронять сборку.
-          SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-          APKSIGNER=$(ls "$SDK"/build-tools/*/apksigner 2>/dev/null | tail -1 || true)
-          if [ -n "$APKSIGNER" ]; then
-            echo "--- подпись ---"
-            "$APKSIGNER" verify --verbose --print-certs "$OUT" || echo "::warning::apksigner сообщил о проблеме с подписью"
+
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          find_tool() {
+            [ -n "$SDK" ] || return 0
+            ls "$SDK"/build-tools/*/"$1" 2>/dev/null | sort -V | tail -1 || true
+          }
+          APKSIGNER=$(find_tool apksigner)
+          AAPT2=$(find_tool aapt2)
+
+          if [ "$SIGNED" != "true" ]; then
+            # Отладочная ветка: файл и так назван так, что спутать нельзя, ронять сборку
+            # из-за отсутствия инструмента незачем — это проверенное рабочее поведение.
+            echo "Отладочная сборка, строгие проверки подписи не применяются."
+            if [ -n "$APKSIGNER" ]; then "$APKSIGNER" verify --print-certs "$OUT" || true; fi
+            exit 0
           fi
-          AAPT2=$(ls "$SDK"/build-tools/*/aapt2 2>/dev/null | tail -1 || true)
-          if [ -n "$AAPT2" ]; then
-            echo "--- манифест ---"
-            BADGING=$("$AAPT2" dump badging "$OUT" 2>/dev/null || true)
-            echo "$BADGING" | head -5
-            if echo "$BADGING" | grep -q "application-debuggable"; then
-              echo "::warning::APK помечен как debuggable — хранилище приложения читается через adb"
-            else
-              echo "android:debuggable выключен — хранилище приложения через adb не читается"
-            fi
+
+          # --- дальше только РАБОЧАЯ сборка, здесь всё строго ---
+          if [ -z "$APKSIGNER" ]; then
+            echo "::error::apksigner не найден в $SDK — проверить подпись нечем, выпускать нельзя"
+            exit 1
           fi
+          if [ -z "$AAPT2" ]; then
+            echo "::error::aapt2 не найден в $SDK — проверить манифест нечем, выпускать нельзя"
+            exit 1
+          fi
+
+          echo "--- подпись ---"
+          CERTS=$("$APKSIGNER" verify --verbose --print-certs "$OUT")
+          echo "$CERTS"
+          # Ключ отладки Android одинаков у всех и лежит на каждой машине разработчика:
+          # подписанный им APK — это не рабочая сборка, как бы она ни называлась.
+          if echo "$CERTS" | grep -qi "CN=Android Debug"; then
+            echo "::error::APK подписан отладочным ключом Android, а не ключом владельца"
+            exit 1
+          fi
+
+          echo "--- манифест ---"
+          BADGING=$("$AAPT2" dump badging "$OUT")
+          echo "$BADGING" | head -5 || true
+          if echo "$BADGING" | grep -q "application-debuggable"; then
+            echo "::error::APK помечен как debuggable — хранилище приложения читается через adb"
+            exit 1
+          fi
+          # Отладочная сборка ставится под ru.razvedchick.vahta.debug — под рабочим именем
+          # такой файл оказаться не должен ни при каких обстоятельствах.
+          if ! echo "$BADGING" | grep -q "package: name='ru.razvedchick.vahta'"; then
+            echo "::error::Не тот идентификатор приложения — под рабочим именем это выпускать нельзя"
+            exit 1
+          fi
+          echo "Проверки пройдены: подпись владельца, debuggable выключен, идентификатор рабочий."
 
       - name: Выгрузить подписанный APK
         if: steps.keystore.outputs.signed == 'true'
