@@ -64,6 +64,10 @@
   .chip-add.active{ background:transparent; color:var(--accent); }
   .nav-btn{ flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; padding:8px 4px; font-size:11px; color:#9ca3af; }
   .nav-icon{ width:22px; height:22px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; }
+  /* Значки действий — та же линейная манера, что у пяти кнопок снизу (.nav-icon). Эмодзи ✏️/🗑
+     рисовал шрифт системы: на Android они цветные и разного веса, рядом со строгой навигацией
+     смотрелись наклейками. vertical-align — чтобы значок сидел на строке рядом с текстом. */
+  .ico{ display:inline-block; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; vertical-align:middle; }
   .nav-btn.active{ color:var(--accent); position:relative; }
   .light .nav-btn{ color:#6b7280; }
   .badge{ font-size:11px; font-weight:700; padding:3px 8px; border-radius:999px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; flex-shrink:0; }   /* flex-shrink:0 — как флекс-элемент бейдж сжимался и вместе с overflow:hidden резал надпись. Вертикаль НЕ фиксируем здесь (align-self сломал бы контейнеры с items-center) — её лечит items-start на самом контейнере. */
@@ -358,7 +362,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v223";
+const APP_BUILD = "v224";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -887,8 +891,8 @@ function openProfilesSheet(){
       ${isActive
         ? `<span class="badge badge-green">текущая</span>`
         : `<button class="btn btn-primary text-xs" data-profact="switch">Открыть</button>`}
-      <button class="btn btn-ghost text-xs" data-profact="rename" aria-label="Переименовать базу" title="Переименовать">✏️</button>
-      ${isActive?"":`<button class="btn btn-ghost text-xs" data-profact="delete" aria-label="Удалить базу" title="Удалить">🗑</button>`}
+      <button class="btn btn-ghost text-xs" data-profact="rename" aria-label="Переименовать базу" title="Переименовать">${ico("edit")}</button>
+      ${isActive?"":`<button class="btn btn-ghost text-xs" data-profact="delete" aria-label="Удалить базу" title="Удалить">${ico("trash")}</button>`}
     </div>`;
   }).join("");
   openSheet(`
@@ -1197,7 +1201,22 @@ function normalizeStockItem(s){
     if(uk) s.unit = uk;
     else if(!String(s.unit||"").trim()) s.unit = "шт";
   } else if(!String(s.unit||"").trim()) s.unit = "шт";
-  if(typeof s.expiry==="string" && s.expiry && !/^\d{4}-\d{2}-\d{2}$/.test(s.expiry)) s.expiry = "";   // невалидную дату карточки не держим
+  /* Срок карточки: гасим не только «строку не того вида». JSON из облака и из файла бэкапа даёт
+     и числа, и массивы, а проверка была только для строк — значение уезжало в разметку как есть.
+     `["\" onfocus=… x=\""]` в шаблоне `value="${vExp}"` разрывает атрибут: то же самое, что уже
+     ловили на fmtDate. Трогаем ТОЛЬКО присутствующее поле — иначе у каждой карточки без срока
+     появлялся бы новый ключ и уезжал в облако пустой правкой. */
+  if(s.expiry!=null && (typeof s.expiry!=="string" || (s.expiry && !/^\d{4}-\d{2}-\d{2}$/.test(s.expiry)))) s.expiry = "";
+  /* Мин. запас не проверялся вообще НИГДЕ, кроме формы: из облака и бэкапа сюда попадала любая
+     строка, и она же рисовалась в value="…" без экранирования. Оставляем ровно то, что пишет
+     saveStock: пусто или число. «abc» → пусто, а НЕ ноль: ноль зажёг бы «низкий запас» на всём
+     складе (та же ловушка описана в saveStock). */
+  if(s.minStock!=null && s.minStock!==""){
+    const _ms = s.minStock;
+    const ok = (typeof _ms==="number" && Number.isFinite(_ms))
+            || (typeof _ms==="string" && /^[0-9 \u00A0.,]+$/.test(_ms) && /\d/.test(_ms));
+    s.minStock = ok ? Math.max(0, roundQty(_ms)) : "";
+  }
   if(Array.isArray(s.batches)){
     s.batches = sanitizeBatches(s.batches);
     if(s.batches.length===0) delete s.batches;
@@ -1734,11 +1753,36 @@ function filterChipState(){
     return { on:parts.length>0, n:parts.length, red:c.expired,
       aria:`Фильтры склада${parts.length?": "+parts.join(", "):""}${c.expired?`. Просрочено позиций: ${c.expired}`:""}` };
   }
-  return null;   // дашборд/кухня/ещё и режимы журнала — фильтровать нечего
+  /* Журналы. Кнопка фильтра в шапке одна на весь склад, и в режимах истории она раньше просто
+     пропадала — при том что фильтр там есть (месяц), просто был вынесен лентой чипов в тело
+     экрана. Теперь месяц и статус заказа живут там же, где остальные фильтры, а лента чипов
+     не отъедает высоту у самой истории. «Свежий месяц» — состояние по умолчанию, оно фильтром
+     не считается; «весь архив» и выбор старого месяца — считаются. */
+  if(currentView==="stock" && JOURNAL_META[stockMode]){
+    const months = journalMonths();
+    const sel = journalSelMonth(months);
+    const parts = [];
+    if(sel === null && months.length) parts.push("весь архив");
+    else if(sel && months[0] && sel !== months[0]) parts.push(monthLabel(sel));
+    if(stockMode==="order" && journalStatus!=="all") parts.push(journalStatus==="received" ? "принятые" : "ожидающие");
+    return { on:parts.length>0, n:parts.length,
+      aria:`Фильтр журнала «${JOURNAL_META[stockMode].label}»${parts.length?": "+parts.join(", "):""}` };
+  }
+  return null;   // дашборд, кухня, «ещё» — фильтровать нечего
 }
 /* Воронка — общепринятый значок фильтра (тот же силуэт в Excel, 1С, Госуслугах). Обводка
    currentColor, поэтому на залитой кнопке (btn-primary) значок сам становится контрастным. */
-const FUNNEL_SVG = '<svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8.2V20l-4 1.5v-8.3z"/></svg>';
+/* Линейные значки для кнопок действий — рисуются так же, как значки нижней панели (см. .ico).
+   Держим их в одном месте: они встречаются в семи разных списках, и раньше каждый раз это был
+   эмодзи, который на части телефонов подменялся своим начертанием. */
+const ICON_PATHS = {
+  edit:  '<path d="M4 20h4L18.5 9.5a2.12 2.12 0 10-3-3L5 17v3z"/><path d="M13.5 6.5l4 4"/>',
+  pin:   '<path d="M12 21s7-6.2 7-11a7 7 0 10-14 0c0 4.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.6"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  trash: '<path d="M4 7h16"/><path d="M10 4h4a1 1 0 011 1v2H9V5a1 1 0 011-1z"/><path d="M6 7l1 12a2 2 0 002 2h6a2 2 0 002-2l1-12"/><path d="M10 11v6M14 11v6"/>'
+};
+const ico = (name, size)=> `<svg class="ico" viewBox="0 0 24 24" width="${size||20}" height="${size||20}" aria-hidden="true">${ICON_PATHS[name]||""}</svg>`;
+const FUNNEL_SVG ='<svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8.2V20l-4 1.5v-8.3z"/></svg>';
 function renderFilterChip(){
   const fc = document.getElementById("filterChip");
   if(!fc) return;
@@ -1767,6 +1811,7 @@ function renderFilterChip(){
 function openFilterSheet(){
   if(currentView==="tasks") openTaskFilterSheet();
   else if(currentView==="stock" && stockMode==="stock") openStockFilterSheet();
+  else if(currentView==="stock" && JOURNAL_META[stockMode]) openJournalFilterSheet();
 }
 /* ЛИСТ ФИЛЬТРОВ ПОСЛЕ ВЫБОРА. Обработчик перерисовывает экран и открывает лист заново — иначе
    галочка осталась бы на прежнем пункте, а счётчики («Просрочка (N)», числа по категориям) не
@@ -1856,6 +1901,37 @@ function openStockFilterSheet(){
       _fChip(stockCat==="", "Все категории", `data-fcat=""`)
       + cats.map(cc=>_fChip(stockCat===cc, `${esc(cc)}${countByCat[cc]?` (${countByCat[cc]})`:""}`, `data-fcat="${esc(cc)}"`)).join("")
     )}` : ""}
+    <button class="btn btn-ghost w-full mt-4" data-close>Готово</button>`);
+  _fCompact();
+}
+/* ФИЛЬТР ЖУРНАЛА. Месяцы были лентой чипов в теле экрана: на базе с историей за полтора года это
+   восемнадцать чипов в горизонтальной прокрутке — и они же занимали строку над каждой записью.
+   Здесь они переносятся по строке и не мешают истории. «Весь архив» — новый пункт: до него
+   посмотреть историю целиком (и искать по ней) было нельзя вовсе, месяц выбирался всегда. */
+function openJournalFilterSheet(){
+  const kind = stockMode;
+  const m = JOURNAL_META[kind];
+  if(!m) return;
+  const months = journalMonths();
+  const sel = journalSelMonth(months);
+  // счётчик записей по месяцам — того же журнала, что открыт: цифра на чипе должна совпасть со
+  // списком, а не с суммой по всем четырём журналам (месяцы-то общие)
+  const perMonth = {};
+  for(const op of (state.journals[kind]||[])){ const mk = monthKeyOf(op.ts); if(mk) perMonth[mk] = (perMonth[mk]||0)+1; }
+  const dirty = (sel===null && months.length) || (sel && months[0] && sel!==months[0]) || journalStatus!=="all";
+  openSheet(`
+    ${_fHead(`${m.icon} ${m.label}`, dirty?`data-jrreset="1"`:"")}
+    ${kind==="order" ? `<div class="text-sm opacity-70 mb-2">Статус</div>
+      ${_fRow(
+        _fChip(journalStatus==="all", "Все", `data-jrstatus="all"`)
+        + _fChip(journalStatus==="pending",  "Ожидают", `data-jrstatus="pending"`)
+        + _fChip(journalStatus==="received", "Приняты", `data-jrstatus="received"`)
+      )}` : ""}
+    ${months.length ? `<div class="text-sm opacity-70 ${kind==="order"?"mt-4":""} mb-2">Месяц</div>
+      ${_fRow(
+        _fChip(sel===null, "Весь архив", `data-jrmonth="all"`)
+        + months.map(ym=>_fChip(sel===ym, `${monthLabel(ym)}${perMonth[ym]?` (${perMonth[ym]})`:""}`, `data-jrmonth="${ym}"`)).join("")
+      )}` : `<div class="text-sm opacity-70">Записей пока нет — фильтровать нечего.</div>`}
     <button class="btn btn-ghost w-full mt-4" data-close>Готово</button>`);
   _fCompact();
 }
@@ -2316,6 +2392,21 @@ const JOURNAL_META = {
   order:    { label:"Заказы",      icon:"🛒", color:"btn-primary", sign: 0, verb:"Заказано" },
 };
 
+/* Лента режимов («Остатки · Поступление · Выдача · Списание · Заказы») прокручиваемая, и на узком
+   экране активный режим оказывался за правым краем: человек нажал «Выдачу», а на виду остались
+   «Остатки» и «Поступление» — не видно, где ты. Подтягиваем активный чип к левому краю ленты.
+   Двигаем scrollLeft у самой ленты, а не scrollIntoView: тот дёргает и страницу по вертикали. */
+function scrollModeTabIntoView(v){
+  const act = v.querySelector(".scroll-x .chip.active");
+  const lane = act && act.parentElement;
+  if(!lane) return;
+  // Подвигаем НА МИНИМУМ: если активный чип и так виден целиком, лента не трогается. Иначе
+  // подтягиваем его к ближней кромке — соседние режимы остаются на виду, и понятно, что лента
+  // прокручивается дальше. Полное «к левому краю» прятало «Остатки» без нужды.
+  const right = act.offsetLeft + act.offsetWidth;
+  if(right > lane.scrollLeft + lane.clientWidth) lane.scrollLeft = right - lane.clientWidth + 12;
+  else if(act.offsetLeft < lane.scrollLeft) lane.scrollLeft = Math.max(0, act.offsetLeft - 12);
+}
 function renderStock(){
   const v = document.querySelector('[data-view="stock"]');
   if(STOCK_TYPE_KEYS.includes(stockTab) && !allowedTypeKeys().includes(stockTab)) stockTab="all";   // роль потеряла доступ к типу
@@ -2328,6 +2419,9 @@ function renderStock(){
     </div>`;
   if(stockMode!=="stock"){
     v.innerHTML = modeTabs + renderJournal(stockMode);
+    wireJournalSearch();
+    renderJournalList();
+    scrollModeTabIntoView(v);
     return;
   }
 
@@ -2368,6 +2462,7 @@ function renderStock(){
       renderFilterChip();   // бейдж просрочки считается в срезе с учётом поиска
     }, 150);
   });
+  scrollModeTabIntoView(v);
   renderStockList();
 }
 
@@ -2427,7 +2522,51 @@ function renderStockList(){
 }
 
 /* ---------- Journals (операции) + помесячный архив ---------- */
-let journalMonth = null;   // выбранный месяц архива (YYYY-MM); null → последний (текущий)
+let journalMonth = null;   // выбранный месяц архива (YYYY-MM); "all" → все месяцы; null → последний
+let journalSearch = "";    // строка поиска по журналу (общая на все четыре — см. renderJournal)
+let journalSearchT = null; // debounce таймер
+let journalStatus = "all"; // только «Заказы»: all | pending | received
+let journalLimit = 200;    // сколько записей показываем (чанкинг, как на складе)
+
+/* ПОИСК ПО ЖУРНАЛУ. Раньше история листалась только глазами: «когда в последний раз выдавали
+   сахар» на базе с четырьмя сотнями записей в месяц — это прокрутка вручную, и человек шёл
+   за ответом в Excel-выгрузку. Ищем по тому же принципу, что и склад (searchNorm: ё≡е и И по
+   словам), но по полям записи: наименование, примечание, место партии, дата операции и срок
+   партии. Дата — в том же виде, в каком она в карточке (01.08.2026), чтобы «01.08» находило
+   день, а не заставляло вспоминать ISO. */
+const opDateText = (ts)=>{
+  const d = new Date(String(ts||""));
+  if(isNaN(d)) return "";
+  return String(d.getDate()).padStart(2,"0")+"."+String(d.getMonth()+1).padStart(2,"0")+"."+d.getFullYear();
+};
+function journalMatches(op, terms){
+  if(!terms || !terms.length) return true;
+  if(!op) return false;
+  const hay = searchNorm(op.productName) + " " + searchNorm(op.note) + " " + searchNorm(op.batchLocation)
+            + " " + opDateText(op.ts) + " " + (op.batchExpiry ? fmtDate(op.batchExpiry) : "");
+  return terms.every(t => hay.includes(t));
+}
+/* Выбранный месяц: "all" — весь архив, иначе выбранный (если он ещё есть в данных), иначе свежий.
+   Отдельная функция, потому что то же самое нужно и кнопке фильтра в шапке, и листу фильтров. */
+function journalSelMonth(months){
+  if(journalMonth === "all") return null;
+  return (journalMonth && months.includes(journalMonth)) ? journalMonth : (months[0] || null);
+}
+/* Срез журнала после ВСЕХ условий (месяц → статус → поиск), свежие сверху. Один источник и для
+   списка, и для итогов, и для подсказки «найдено в других месяцах»: пока их было два, счётчик
+   на экране расходился со списком (это уже ловили на складе — см. stockExpScope). */
+function journalScope(kind, opts){
+  const months = journalMonths();
+  const selMonth = (opts && "month" in opts) ? opts.month : journalSelMonth(months);
+  let list = [...(state.journals[kind]||[])].sort((a,b)=> (b.ts||"").localeCompare(a.ts||""));
+  if(selMonth) list = list.filter(op=>monthKeyOf(op.ts)===selMonth);
+  if(kind==="order" && journalStatus!=="all"){
+    list = list.filter(op => journalStatus==="received" ? op.status==="received" : op.status!=="received");
+  }
+  const terms = searchTerms(journalSearch);
+  if(terms.length) list = list.filter(op => journalMatches(op, terms));
+  return { months, selMonth, list };
+}
 const RU_MONTHS3=["янв","фев","мар","апр","май","июн","июл","авг","сен","окт","ноя","дек"];
 /* ISO → YYYY-MM, СТРОГО. Ключ месяца подставляется в data-атрибут чипа и внутрь
    onclick="exportJournalsMonth('...')", а op.ts приходит из облака (journal_entries.data.ts)
@@ -2509,13 +2648,48 @@ async function exportJournalsMonth(ym){
   if(!total){ toast(`За ${monthLabel(ym)||ym} записей нет — сохранять нечего`); return; }
   saveXlsx(wb, `vahtahoz-журналы-${ym}-${_fileSafe(activeProfileName())}.xlsx`);
 }
+/* Оболочка журнала: кнопки, поиск и пустой контейнер списка. Сам список рисует renderJournalList —
+   иначе при каждом наборе буквы пересоздавался бы <input>, и фокус с кареткой слетали бы на
+   каждой букве (той же болезнью болел поиск по складу, там это уже разведено). */
 function renderJournal(kind){
   const m = JOURNAL_META[kind];
   const months = journalMonths();
-  const selMonth = (journalMonth && months.includes(journalMonth)) ? journalMonth : (months[0]||null);
-  let list = [...(state.journals[kind]||[])].sort((a,b)=> (b.ts||"").localeCompare(a.ts||""));
-  if(selMonth) list = list.filter(op=>monthKeyOf(op.ts)===selMonth);
-  const rows = list.map(op=>{
+  const selMonth = journalSelMonth(months);
+  return `
+    <button class="btn ${m.color} w-full mt-3" onclick="openOpEdit('${kind}')">＋ ${m.label}</button>
+    ${kind==="receipt" ? `<button class="btn btn-ghost w-full mt-2" onclick="openReceiptImportSheet()">📥 Импорт поступления из Excel</button>` : ""}
+    <input class="input mt-2" id="jrSearchInp" placeholder="Поиск по истории…" value="${esc(journalSearch)}" autocomplete="off" />
+    ${selMonth
+      // подпись в одну строку: «всех журналов» переносило кнопку на две и растягивало шапку раздела
+      ? `<button class="btn btn-ghost w-full mt-2" title="Все четыре журнала за месяц одним файлом" onclick="exportJournalsMonth('${selMonth}')">📊 Экспорт журналов за ${monthLabel(selMonth)}</button>`
+      /* Выгрузка всегда помесячная (четыре листа за месяц) — при «всём архиве» экспортировать
+         нечего, но и молча прятать кнопку нельзя: человек решит, что выгрузка пропала. Ведём
+         в тот же лист фильтров, где месяц и выбирается. */
+      : (months.length ? `<button class="btn btn-ghost w-full mt-2" onclick="openFilterSheet()">📊 Экспорт за месяц — выберите месяц</button>` : "")}
+    <div id="jrListBox"></div>`;
+}
+/* Поиск с задержкой 150 мс и частичной перерисовкой — ровно как на складе. */
+function wireJournalSearch(){
+  const inp = document.getElementById("jrSearchInp");
+  if(!inp) return;
+  inp.addEventListener("input", ()=>{
+    clearTimeout(journalSearchT);
+    journalSearchT = setTimeout(()=>{
+      journalSearch = inp.value;
+      journalLimit = 200;
+      renderJournalList();
+    }, 150);
+  });
+}
+function renderJournalList(){
+  const box = document.getElementById("jrListBox");
+  if(!box) return;
+  const kind = stockMode;
+  const m = JOURNAL_META[kind];
+  if(!m) return;
+  const { selMonth, list } = journalScope(kind);
+  const shown = list.slice(0, journalLimit);
+  const rows = shown.map(op=>{
     const _dWhen = new Date(op.ts);
     const when = isNaN(_dWhen) ? "—" : _dWhen.toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
     const status = kind==="order"
@@ -2524,8 +2698,8 @@ function renderJournal(kind){
           : `<span class="badge badge-yellow">Ожидает</span>`)
       : "";
     const qtyBadge = `<span class="badge badge-gray">${fmtQty(op.qty)} ${esc(op.unit||"")}</span>`;
-    const locBadge = op.batchLocation ? `<span class="badge badge-gray">📍 ${esc(op.batchLocation)}</span>` : "";
-    const expBadge = op.batchExpiry ? `<span class="badge badge-gray">⏰ ${fmtDate(op.batchExpiry)}</span>` : "";
+    const locBadge = op.batchLocation ? `<span class="badge badge-gray">${ico("pin",13)} ${esc(op.batchLocation)}</span>` : "";
+    const expBadge = op.batchExpiry ? `<span class="badge badge-gray">${ico("clock",13)} ${fmtDate(op.batchExpiry)}</span>` : "";
     // зеркальные записи из принятого заказа: редактировать нельзя — это рассинхронизирует с order; удалять можно (deleteOp умеет)
     const linkedToOrder = kind==="receipt" && (state.journals.order||[]).some(o=>o.receiptId===op.id);
     const oid = safeId(op.id);
@@ -2544,31 +2718,56 @@ function renderJournal(kind){
           </div>
           ${op.note?`<div class="text-xs opacity-80 mt-1">${esc(op.note)}</div>`:""}
         </div>
-        <div class="flex flex-col gap-1">
-          ${linkedToOrder ? `<button class="btn btn-ghost opacity-40" disabled title="Редактируйте исходный заказ" aria-label="Редактировать (через заказ)">✏️</button>` : `<button class="btn btn-ghost" onclick="editOp('${kind}','${oid}')" aria-label="Редактировать запись">✏️</button>`}
-          <button class="btn btn-ghost" onclick="deleteOp('${kind}','${oid}')" aria-label="Удалить запись">🗑</button>
+        <!-- Кнопки В СТРОКУ, а не столбиком: два блока по 52px растягивали карточку до 110px при
+             содержимом в две строки, и на экран влезало пять записей вместо восьми. Прокрутка
+             истории — основное занятие в этом разделе. Размер кнопок не тронут (те же 52). -->
+        <div class="flex gap-1">
+          ${linkedToOrder ? `<button class="btn btn-ghost opacity-40" disabled title="Редактируйте исходный заказ" aria-label="Редактировать (через заказ)">${ico("edit")}</button>` : `<button class="btn btn-ghost" onclick="editOp('${kind}','${oid}')" aria-label="Редактировать запись">${ico("edit")}</button>`}
+          <button class="btn btn-ghost" onclick="deleteOp('${kind}','${oid}')" aria-label="Удалить запись">${ico("trash")}</button>
         </div>
       </div>
       ${receiveBtn?`<div class="mt-2">${receiveBtn}</div>`:""}
     </div>`;
-  }).join("") || `<div class="card text-center opacity-70">Записей нет</div>`;
+  }).join("");
 
-  // группируем суммы по единицам (шт+кг смешивать нельзя)
+  // группируем суммы по единицам (шт+кг смешивать нельзя). Считаем по ВСЕЙ выборке, а не по
+  // показанному куску: иначе после «Показать ещё» итог менялся бы прямо на глазах.
   const byUnit = {};
   list.forEach(o=>{ const u = o.unit||"—"; byUnit[u] = roundQty((byUnit[u]||0) + Number(o.qty||0)); });
   const sumStr = Object.entries(byUnit)
     .map(([u,v])=>`${fmtQty(v)} ${esc(u)}`)
     .join(", ");
 
-  return `
-    <button class="btn ${m.color} w-full mt-3" onclick="openOpEdit('${kind}')">＋ ${m.label}</button>
-    ${kind==="receipt" ? `<button class="btn btn-ghost w-full mt-2" onclick="openReceiptImportSheet()">📥 Импорт поступления из Excel</button>` : ""}
-    ${months.length ? `<div class="scroll-x flex gap-2 mt-2" id="jrMonthChips">
-      ${months.map(ym=>`<button class="chip ${ym===selMonth?'active':''}" data-jrmonth="${ym}">${monthLabel(ym)}</button>`).join("")}
-    </div>
-    <button class="btn btn-ghost w-full mt-2" onclick="exportJournalsMonth('${selMonth}')">📊 Экспорт всех журналов за ${monthLabel(selMonth)}</button>` : ""}
-    <div class="text-xs opacity-70 mt-2">${selMonth?`Месяц ${monthLabel(selMonth)} · `:""}записей: ${list.length}${sumStr?` · сумма по ед.: ${sumStr}`:""}</div>
-    <div class="space-y-2 mt-2">${rows}</div>`;
+  /* ПУСТОЙ СПИСОК ОБЯЗАН НАЗВАТЬ ПРИЧИНУ. «Записей нет» при выбранном месяце и включённом поиске
+     читается как «история пропала». Отдельно — самый частый случай: искали в текущем месяце, а
+     запись прошлогодняя. Тогда сразу считаем, сколько совпадений во всём архиве, и предлагаем
+     раскрыть его одним нажатием, а не подбирать месяц наугад. */
+  let body;
+  if(!shown.length){
+    const hints = [];
+    if(journalSearch.trim() && selMonth){
+      const all = journalScope(kind, {month:null}).list.length;
+      if(all) hints.push(`<button class="btn btn-ghost w-full mt-2" data-jrmonth="all">Найдено во всём архиве: ${all} — показать</button>`);
+    }
+    const parts = [];
+    if(journalSearch.trim()) parts.push(`поиск «${esc(journalSearch.trim())}»`);
+    if(selMonth) parts.push(`месяц ${monthLabel(selMonth)}`);
+    if(kind==="order" && journalStatus!=="all") parts.push(journalStatus==="received"?"только принятые":"только ожидающие");
+    body = `<div class="card text-center opacity-70">Записей нет${
+      parts.length?`<div class="text-xs opacity-60 mt-1">Активно: ${parts.join(", ")}</div>`:""}</div>${hints.join("")}`;
+  } else {
+    const more = list.length > shown.length
+      ? `<button class="btn btn-ghost w-full mt-2" id="jrMore">Показать ещё (${list.length - shown.length})</button>`
+      : "";
+    body = `<div class="space-y-2 mt-2">${rows}</div>${more}`;
+  }
+
+  box.innerHTML = `
+    <div class="text-xs opacity-70 mt-2">${selMonth?`Месяц ${monthLabel(selMonth)}`:"Весь архив"} · записей: ${list.length}${
+      shown.length<list.length?` (показано ${shown.length})`:""}${sumStr?` · сумма по ед.: ${sumStr}`:""}</div>
+    ${body}`;
+  const moreBtn = document.getElementById("jrMore");
+  if(moreBtn) moreBtn.addEventListener("click", ()=>{ journalLimit += 200; renderJournalList(); });
 }
 
 // Общий пикер «поиск позиции склада» для форм операций (openOpEdit/editOp).
@@ -3997,15 +4196,15 @@ function stockRow(it){
   const qtyBadge = out ? `<span class="badge badge-gray">${left}</span>` : `<span class="badge badge-green">${left}</span>`;
   const locs = locationsOf(it);
   const loc = locs.length===0 ? ""
-    : locs.length===1 ? `<span class="badge badge-gray">📍 ${esc(locs[0])}</span>`
-    : `<span class="badge badge-gray">📍 ${locs.length} мест</span>`;
+    : locs.length===1 ? `<span class="badge badge-gray">${ico("pin",13)} ${esc(locs[0])}</span>`
+    : `<span class="badge badge-gray">${ico("pin",13)} ${locs.length} мест</span>`;
   const cat = it.category?`<span class="badge badge-gray">${esc(it.category)}</span>`:"";
   // показываем ближайший срок (агрегат по партиям); при нескольких партиях добавляем "+N"
   const bCnt = batchesOf(it).length;
   const nearestExp = nearestExpiryOf(it);
   const expExtra = bCnt>1 ? ` +${bCnt-1}` : "";
   // срок не показываем у позиции без остатка (qty=0): нет товара — нет срока
-  const exp = (nearestExp && inStock(it))?`<span class="badge badge-gray">⏰ ${fmtDate(nearestExp)}${expExtra}</span>`:"";
+  const exp = (nearestExp && inStock(it))?`<span class="badge badge-gray">${ico("clock",13)} ${fmtDate(nearestExp)}${expExtra}</span>`:"";
   // раскрывающаяся панель партий — показывается, если их ≥ 2
   const batchPanel = bCnt>=2 ? `
     <details class="mt-2" onclick="event.stopPropagation()">
@@ -4016,8 +4215,8 @@ function stockRow(it){
           const cls = d===null?"badge-gray":(d<0?"badge-red":(d<=3?"badge-red":(d<=14?"badge-yellow":"badge-gray")));
           return `<div class="text-xs flex flex-wrap gap-1 items-center pl-2 border-l-2 border-gray-700">
             ${batchQtyBadge(b, it)}
-            ${b.location?`<span class="badge badge-gray">📍 ${esc(b.location)}</span>`:""}
-            ${b.expiry?`<span class="badge ${cls}">⏰ ${fmtDate(b.expiry)}</span>`:""}
+            ${b.location?`<span class="badge badge-gray">${ico("pin",13)} ${esc(b.location)}</span>`:""}
+            ${b.expiry?`<span class="badge ${cls}">${ico("clock",13)} ${fmtDate(b.expiry)}</span>`:""}
             ${b.note?`<span class="opacity-60">${esc(b.note)}</span>`:""}
           </div>`;
         }).join("")}
@@ -4188,7 +4387,7 @@ function openStockEdit(id, typeDefault){
      получал подтверждение — и ничего не менялось. Теперь поля отключены и рядом написано, где
      срок и место правятся на самом деле. */
   const batchNote = batched
-    ? `<div class="text-xs opacity-70" style="margin-top:-6px">Количество, срок и место у этой позиции считаются ПО ПАРТИЯМ. Правьте их в нужной партии — ✏️ в списке партий ниже.</div>`
+    ? `<div class="text-xs opacity-70" style="margin-top:-6px">Количество, срок и место у этой позиции считаются ПО ПАРТИЯМ. Правьте их в нужной партии — ${ico("edit",18)} в списке партий ниже.</div>`
     : "";
   const batchesSection = (id && bList.length>0) ? `
     <div class="border-t border-gray-700 pt-3">
@@ -4197,12 +4396,12 @@ function openStockEdit(id, typeDefault){
         ${bList.slice().sort(byExpiry).map(b=>`
           <div class="flex flex-wrap items-center gap-2 text-xs">
             ${batchQtyBadge(b, it)}
-            ${b.location?`<span class="badge badge-gray">📍 ${esc(b.location)}</span>`:`<span class="badge badge-gray opacity-50">без места</span>`}
-            ${b.expiry?`<span class="badge badge-gray">⏰ ${fmtDate(b.expiry)}</span>`:`<span class="badge badge-gray opacity-50">без срока</span>`}
+            ${b.location?`<span class="badge badge-gray">${ico("pin",13)} ${esc(b.location)}</span>`:`<span class="badge badge-gray opacity-50">без места</span>`}
+            ${b.expiry?`<span class="badge badge-gray">${ico("clock",13)} ${fmtDate(b.expiry)}</span>`:`<span class="badge badge-gray opacity-50">без срока</span>`}
             <span class="flex-1"></span>
             <button class="btn btn-ghost text-xs px-2" onclick="openMove('${id}','${b.id}')" aria-label="Перенести партию на другое место">🔀</button>
-            <button class="btn btn-ghost text-xs px-2" onclick="openBatchEdit('${id}','${b.id}')" aria-label="Редактировать партию">✏️</button>
-            <button class="btn btn-ghost text-xs px-2" onclick="deleteBatch('${id}','${b.id}')" aria-label="Удалить партию">🗑</button>
+            <button class="btn btn-ghost text-xs px-2" onclick="openBatchEdit('${id}','${b.id}')" aria-label="Редактировать партию">${ico("edit")}</button>
+            <button class="btn btn-ghost text-xs px-2" onclick="deleteBatch('${id}','${b.id}')" aria-label="Удалить партию">${ico("trash")}</button>
           </div>
         `).join("")}
       </div>
@@ -4223,7 +4422,7 @@ function openStockEdit(id, typeDefault){
           ${UNITS.map(u=>`<option ${it.unit===u?"selected":""}>${u}</option>`).join("")}
         </select>
       </div>
-      <input class="input" id="sm" type="text" inputmode="decimal" placeholder="Мин. запас" value="${it.minStock??""}" />
+      <input class="input" id="sm" type="text" inputmode="decimal" placeholder="Мин. запас" value="${esc(it.minStock??"")}" />
       ${batchNote}
 
       <div>
@@ -4233,12 +4432,12 @@ function openStockEdit(id, typeDefault){
       <div>
         <div class="text-sm opacity-70 mb-1">Место хранения${batched?" (из партий)":""}</div>
         ${batched
-          ? `<div class="flex flex-wrap gap-2">${vLocs.length?vLocs.map(l=>`<span class="badge badge-gray">📍 ${esc(l)}</span>`).join(""):`<span class="badge badge-gray opacity-50">без места</span>`}</div>`
+          ? `<div class="flex flex-wrap gap-2">${vLocs.length?vLocs.map(l=>`<span class="badge badge-gray">${ico("pin",13)} ${esc(l)}</span>`).join(""):`<span class="badge badge-gray opacity-50">без места</span>`}</div>`
           : `<div class="scroll-x flex gap-2"><button class="chip ${vLoc?"":"active"}" data-loc="" onclick="${CHIP_PICK}">без места</button>${getLocationsWithOrphan(tk, it.location).map(l=>`<button class="chip ${vLoc===l?"active":""}" data-loc="${esc(l)}" onclick="${CHIP_PICK}">${esc(l)}</button>`).join("")}<button type="button" class="chip chip-add" onclick="addLocChip(this,'${tk}')" aria-label="Добавить место хранения">＋ Место</button></div>`}
       </div>
       <div>
         <div class="text-sm opacity-70 mb-1">${expiryLabel}${batched?" (из партий)":""}</div>
-        <input class="input" id="se" type="date" value="${vExp}" ${batched?"disabled":""} />
+        <input class="input" id="se" type="date" value="${esc(vExp)}" ${batched?"disabled":""} />
       </div>
       <textarea class="input" id="sno" rows="2" placeholder="Примечание">${esc(it.note)}</textarea>
 
@@ -4289,7 +4488,7 @@ function saveStock(id, type){
       const ignored = roundQty(qty)!==roundQty(totalQtyOf(it)) || (expiry||"")!==(nearestExpiryOf(it)||"");
       Object.assign(it,{name,unit,minStock,category,note,updatedAt:new Date().toISOString()});
       syncItemFromBatches(it);
-      if(ignored) setTimeout(()=>toast("Количество, срок и место берутся из партий — измените их в нужной партии (✏️ в списке партий)"), 60);
+      if(ignored) setTimeout(()=>toast("Количество, срок и место берутся из партий — измените их в нужной партии (карандаш в списке партий)"), 60);
     } else {
       Object.assign(it,{name,qty:roundQty(qty),unit,minStock,expiry,location,category,note,updatedAt:new Date().toISOString()});
       // остаток стал нулём вручную — срок и место уходят вместе с ним (см. clearExpiryOnZero).
@@ -4393,7 +4592,7 @@ function openBatchEdit(itemId, batchId){
       <div class="text-sm opacity-70">Количество (${fmtQty(b.qty)} ${esc(it.unit||"")}) меняется через ＋/− на карточке. Здесь — срок, место и примечание.</div>
       <div>
         <div class="text-sm opacity-70 mb-1">Срок годности</div>
-        <input class="input" id="bee" type="date" value="${b.expiry||""}" />
+        <input class="input" id="bee" type="date" value="${esc(b.expiry||"")}" />
       </div>
       <div>
         <div class="text-sm opacity-70 mb-1">Место хранения</div>
@@ -4666,8 +4865,8 @@ function openLocationsEdit(){
           return `<div class="flex items-center gap-2 text-sm py-1 border-b border-gray-800" data-locname="${esc(name)}">
             <span class="flex-1 min-w-0 truncate">${esc(name)}</span>
             ${used?`<span class="badge badge-gray">${used}</span>`:`<span class="opacity-40 text-xs">не используется</span>`}
-            <button class="btn btn-ghost text-xs" data-locact="rename" aria-label="Переименовать место хранения" title="Переименовать">✏️</button>
-            <button class="btn btn-ghost text-xs" data-locact="delete" aria-label="Удалить место хранения" title="Удалить">🗑</button>
+            <button class="btn btn-ghost text-xs" data-locact="rename" aria-label="Переименовать место хранения" title="Переименовать">${ico("edit")}</button>
+            <button class="btn btn-ghost text-xs" data-locact="delete" aria-label="Удалить место хранения" title="Удалить">${ico("trash")}</button>
           </div>`;
         }).join("")}
     </div>
@@ -4704,8 +4903,8 @@ function openCategoriesEdit(){
         <div class="font-semibold truncate">${esc(c)}</div>
         <div class="text-xs opacity-70">${cnt} поз.</div>
       </div>
-      <button class="btn btn-ghost" data-cat-action="rename" data-cat-type="${type}" data-cat-name="${esc(c)}" aria-label="Переименовать категорию" title="Переименовать">✏️</button>
-      <button class="btn btn-danger" data-cat-action="delete" data-cat-type="${type}" data-cat-name="${esc(c)}" aria-label="Удалить категорию" title="Удалить">🗑</button>
+      <button class="btn btn-ghost" data-cat-action="rename" data-cat-type="${type}" data-cat-name="${esc(c)}" aria-label="Переименовать категорию" title="Переименовать">${ico("edit")}</button>
+      <button class="btn btn-danger" data-cat-action="delete" data-cat-type="${type}" data-cat-name="${esc(c)}" aria-label="Удалить категорию" title="Удалить">${ico("trash")}</button>
     </div>`;
   }).join("") || `<div class="text-sm opacity-70">Нет категорий</div>`;
 
@@ -4800,7 +4999,7 @@ function renderKitchen(){
           <label class="card flex items-center gap-3 ${_chkRO?"opacity-70":"tap"}">
             <input type="checkbox" class="w-6 h-6" ${c.done?"checked":""} ${_chkRO?"disabled":""} onchange="toggleCheck('${c.id}',this.checked)">
             <span class="flex-1 ${c.done?"line-through opacity-60":""}">${esc(c.text)}</span>
-            ${_chkRO?"":`<button class="btn btn-ghost px-2 py-1" onclick="removeCheck('${c.id}')" aria-label="Удалить пункт">🗑</button>`}
+            ${_chkRO?"":`<button class="btn btn-ghost px-2 py-1" onclick="removeCheck('${c.id}')" aria-label="Удалить пункт">${ico("trash")}</button>`}
           </label>`).join("")}
       </div>
       ${_chkRO?"":`<div class="flex gap-2 mt-2">
@@ -5967,6 +6166,8 @@ function importData(ev){
       state.seededAt = state.seededAt || new Date().toISOString();
       // сбрасываем фильтры, т.к. категории могли полностью смениться
       stockCat = ""; stockSearch = ""; stockLimit = 100; stockMode = "stock"; stockTab = "all"; stockExpiryFilter = "all";
+      // журнал пришёл из файла целиком: месяцы и статусы теперь другие, старый выбор показал бы пустоту
+      journalMonth = null; journalSearch = ""; journalStatus = "all"; journalLimit = 200;
       saveState(); applyTheme(); render();
       if(mode==="replace") toast(`Заменено: ${state.stock.length} поз.`);
     }catch(e){
@@ -6089,7 +6290,7 @@ function expiryNoticeOnOpen(){
       <div class="space-y-2 mb-3">
         ${sortedStock(soon).map(s=>{const d=daysLeft(s.expiry);const txt=d===0?"Сегодня":`${d} дн.`;const q=qtyFor(s,dd=>dd>=0&&dd<=3);const loc=locFor(s,dd=>dd>=0&&dd<=3);return `<div class="card flex items-start justify-between gap-2"><span class="flex-1 min-w-0 break-words">${esc(s.name)} <span class="opacity-70">(${fmtQty(q)} ${esc(s.unit||"")}${loc?` · 📍 ${esc(loc)}`:""})</span></span><span class="badge badge-yellow">${txt}</span></div>`;}).join("")}
       </div>`:""}
-      ${expired.length?`<button class="btn btn-danger w-full" onclick="writeoffExpired()">🗑 Списать всю просрочку (${expiredTargets})</button>`:""}
+      ${expired.length?`<button class="btn btn-danger w-full" onclick="writeoffExpired()">${ico("trash")} Списать всю просрочку (${expiredTargets})</button>`:""}
       <button class="btn btn-primary w-full mt-2" onclick="openExpiredView()">Перейти к складу</button>
       <button class="btn btn-ghost w-full mt-2" data-close>Позже</button>
     `;
@@ -6179,12 +6380,30 @@ document.getElementById("filterChip").addEventListener("click", ()=>openFilterSh
 /* ---------- Global delegation для data-атрибутов (защита от апострофов в именах) ---------- */
 document.addEventListener("click", e=>{
   const modeBtn = e.target.closest("[data-stockmode]");
-  if(modeBtn){ stockMode = modeBtn.dataset.stockmode; stockLimit=100; render(); return; }
+  // Переключили журнал/остатки — счётчик показанных записей начинается заново. Строку поиска НЕ
+  // трогаем: она на виду в поле ввода, и «где ещё проходила эта позиция» переключением журналов —
+  // штатный сценарий (в отличие от фильтра сроков, который был скрыт и вводил в заблуждение).
+  if(modeBtn){ stockMode = modeBtn.dataset.stockmode; stockLimit=100; journalLimit=200; render(); return; }
   /* [data-stocktab] и [data-expfilter] жили тут со времён лент чипов на полотне. Ленты уехали в лист
      фильтров (data-ftab / data-fexp ниже), элементов с этими атрибутами в разметке не осталось —
      обработчики убраны, чтобы делегирование не выглядело живым кодом. */
   const jrMonthBtn = e.target.closest("[data-jrmonth]");
-  if(jrMonthBtn){ journalMonth = jrMonthBtn.dataset.jrmonth; render(); return; }
+  if(jrMonthBtn){
+    journalMonth = jrMonthBtn.dataset.jrmonth; journalLimit = 200; render();
+    // тот же атрибут висит на подсказке «найдено во всём архиве» в пустом списке — там лист
+    // фильтров не открыт, и открывать его по нажатию не нужно
+    if(jrMonthBtn.closest("#sheet")) reopenFilterSheet(openJournalFilterSheet);
+    return;
+  }
+  const jrStatusBtn = e.target.closest("[data-jrstatus]");
+  if(jrStatusBtn){
+    journalStatus = jrStatusBtn.dataset.jrstatus; journalLimit = 200;
+    render(); reopenFilterSheet(openJournalFilterSheet); return;
+  }
+  if(e.target.closest("[data-jrreset]")){
+    journalMonth = null; journalStatus = "all"; journalLimit = 200;
+    render(); reopenFilterSheet(openJournalFilterSheet); return;
+  }
   /* Выбор в ЛИСТЕ фильтров. Через data-атрибуты, а не inline-onclick: имена категорий приходят от
      пользователя и содержат апострофы. После выбора перерисовываем и экран, и сам лист — иначе
      галочка осталась бы на прежнем пункте. */
