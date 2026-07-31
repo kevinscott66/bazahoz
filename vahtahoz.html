@@ -175,8 +175,13 @@
       <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px;max-width:38vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Сменить базу" aria-label="Сменить базу"></button>
     </div>
   </header>
-  <!-- тонкий статус-бар синхронизации (под шапкой) -->
-  <div id="syncBar" class="hidden" style="position:sticky;top:0;z-index:30;font-size:12px;text-align:center;padding:5px 10px;color:#fff;overflow:hidden;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical"></div>
+  <!-- тонкий статус-бар синхронизации (под шапкой).
+       top = env(safe-area-inset-top), а НЕ 0: sticky липнет к верху ВЬЮПОРТА, а padding-top от .safe-top
+       висит на #app и прокручивается вместе с ним. При top:0 полоса при прокрутке уезжала под Dynamic
+       Island / «чёлку» / строку состояния, и текст («Выгрузка в облако…») пропадал — он и так обрезан
+       по двум строкам, так что скрывалась именно содержательная часть. На аппаратах без вырезки
+       env(...)=0 → ровно прежнее поведение (top:0), вёрстка не меняется. -->
+  <div id="syncBar" class="hidden" style="position:sticky;top:env(safe-area-inset-top);z-index:30;font-size:12px;text-align:center;padding:5px 10px;color:#fff;overflow:hidden;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical"></div>
 
   <!-- Views -->
   <main id="views" class="px-4 pt-2">
