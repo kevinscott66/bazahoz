@@ -88,8 +88,15 @@ declare
   from_manage boolean;
   to_active   boolean;
 begin
-  -- (4) авторизация: позитивный признак бэкенда, а не «нет auth.uid()»
-  if not public.is_backend_role() and not public.can_manage_base(p_base) then
+  -- (4) авторизация: позитивный признак бэкенда, а не «нет auth.uid()».
+  -- coalesce обязателен и НЕ является перестраховкой. До round 6 is_backend_role возвращала NULL
+  -- на валидном JSON без топ-уровневого "role" ({}, {"role":null}, массив, скаляр). Тогда
+  -- `not NULL` = NULL, `NULL and true` = NULL, а `if NULL then raise` исключение НЕ бросает —
+  -- проверка молча пропускает вызывающего. Здесь обёртка стоит независимо от того, применён ли
+  -- round 6: файлы могут лечь в любом порядке, и авторизация не должна зависеть от этого.
+  -- can_manage_base → has_perm → `select exists(...) or exists(...)`, NULL вернуть не может,
+  -- поэтому второй операнд обёртки не требует.
+  if not coalesce(public.is_backend_role(), false) and not public.can_manage_base(p_base) then
     raise exception 'forbidden' using errcode = '42501';
   end if;
   if p_from is null or p_to is null then raise exception 'not_members'; end if;
