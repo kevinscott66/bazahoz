@@ -312,7 +312,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v214";
+const APP_BUILD = "v218";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -6204,14 +6204,56 @@ async function memberRotate(uid){
   if(!await confirmSheet(msg,{ yes: off?"Снять со смены":"Вернуть на смену", danger:off, title: off?"Снять со смены":"Вернуть на смену" })) return;
   await _patchMember(uid, { active: !off }, off?"Снят со смены":"Возвращён на смену");
 }
+/* ── Пересменка: клиент повторяет ТЕ ЖЕ правила, что применяет сервер ──────────────────────────
+   Иначе человек проходит весь путь (выбор → подтверждение) и только потом получает 403/400.
+   (1) Ранг. Edge Function (action "handover") отвергает снятие того, чей ранг РАВЕН или ВЫШЕ вашего;
+       исключения — владелец и «сам себе». Ранговые таблицы клиента и сервера сверены и совпадают. */
+function canRotateMember(m){
+  if(!m) return false;
+  if(cloud.profile && cloud.profile.is_admin) return true;
+  if(cloud.profile && m.user_id===cloud.profile.id) return true;   // себя снять можно всегда
+  const mine = myRank();
+  if(!mine) return true;   // права ещё не загрузились — не мешаем, решит сервер (прежнее поведение)
+  return rankOf(m.role) < mine;
+}
+/* (2) «Сирота». handover_shift (миграция 2026-08-01_handover_consistency.sql) проверяет остаток
+   управляющих ТОЛЬКО если уходящий сам держал can_manage, и считает управляющим также активную
+   орг-роль, покрывающую базу. Клиент видит лишь СВОИ орг-роли — чужие учитывает сервер, поэтому
+   наша проверка заведомо не строже серверной и ложных отказов не добавляет. */
+function _orgManagesBase(cid){
+  /* Признак владельца (is_admin) управляющим ЗДЕСЬ не считается: строки в org_roles у владельца нет,
+     и серверная проверка «сироты» его не исключает. Ровно на этом клиент и сервер расходились —
+     предупреждения не было, а отказ был. */
+  const party = (cloud._baseParty||{})[cid] || null;
+  return (cloud.orgRoles||[]).some(o=> o && o.active!==false
+      && (o.can_manage===true || ["party_chief","director","general_director"].includes(o.role))
+      && (!o.party_id || o.party_id===party));
+}
+function _handoverWouldOrphan(fromUid, toUid){
+  const from=_findBM(fromUid);
+  if(!from || !from.can_manage) return false;            // уходящий не управлял — число управляющих не меняется
+  if(_orgManagesBase(activeCloudId())) return false;     // базой управляют из оргструктуры
+  return (cloud.baseMembers||[]).filter(m=>{
+    let manage=!!m.can_manage, active=(m.active!==false);
+    if(m.user_id===fromUid) active=false;
+    if(m.user_id===toUid)   active=true;
+    return manage && active;
+  }).length===0;
+}
+// кандидаты в заступающие: все участники базы, кроме уходящего, у которых передача НЕ оставит базу без управляющего
+function handoverCandidates(fromUid){
+  return (cloud.baseMembers||[]).filter(o=> o.user_id!==fromUid && !_handoverWouldOrphan(fromUid, o.user_id));
+}
 // меню «Смена»: снять/вернуть, либо передать смену заступающему (с задачами)
 function openShift(uid){
   const m=_findBM(uid); if(!m){ toast("Список устарел. Закройте и откройте заново"); return; }
   const active = m.active!==false;
-  const others = (cloud.baseMembers||[]).filter(x=>x.user_id!==uid);
+  const others = handoverCandidates(uid);
   openSheet(`<div class="font-bold text-xl mb-3">Смена: ${esc(m.username)}</div>
     <div class="space-y-2">
-      ${active
+      ${!canRotateMember(m)
+        ? `<div class="text-sm err-text">Снять со смены можно только того, кто ниже вас по должности. Обратитесь к вышестоящему.</div>`
+        : active
         ? `${others.length?`<button class="btn btn-primary w-full" onclick="openHandover('${uid}')">Передать смену</button>`:""}
            <button class="btn btn-ghost w-full" onclick="memberRotate('${uid}')">Снять со смены</button>`
         : `<button class="btn btn-success w-full" onclick="memberRotate('${uid}')">Вернуть на смену</button>`}
@@ -6221,8 +6263,17 @@ function openShift(uid){
 }
 function openHandover(fromUid){
   const from=_findBM(fromUid); if(!from) return;
-  const others=(cloud.baseMembers||[]).filter(x=>x.user_id!==fromUid);
-  if(!others.length){ toast("Нет заступающего. Сначала добавьте работника кнопкой «＋ Добавить»"); return; }
+  // те же три отказа, что даёт сервер, — до выбора кандидата, а не после подтверждения
+  if(!canRotateMember(from)){ toast("Нельзя снять со смены того, кто равен вам или выше по должности"); return; }
+  if(from.active===false){ toast(`«${from.username}» уже не на смене — обновите список`); return; }
+  const all=(cloud.baseMembers||[]).filter(x=>x.user_id!==fromUid);
+  const others=handoverCandidates(fromUid);
+  if(!others.length){
+    toast(all.length
+      ? "Некому передать: база останется без управляющего. Сначала назначьте другого «Начальника участка»"
+      : "Нет заступающего. Сначала добавьте работника кнопкой «＋ Добавить»");
+    return;
+  }
   openSheet(`<div class="font-bold text-xl mb-3">Передать смену</div>
     <div class="text-sm opacity-70 mb-2">От «${esc(from.username)}» — кому передать смену и задачи?</div>
     <div class="space-y-2">
@@ -6233,11 +6284,14 @@ function openHandover(fromUid){
 async function doHandover(fromUid, toUid){
   const from=_findBM(fromUid), to=_findBM(toUid);
   if(!from || !to){ toast("Список устарел. Закройте и откройте заново"); return; }
-  // защита: после пересменки в базе должен остаться активный управляющий (если ты не владелец)
-  if(!(cloud.profile && cloud.profile.is_admin)){
-    const mgrs=(cloud.baseMembers||[]).filter(m=>{ let manage=!!m.can_manage, active=(m.active!==false); if(m.user_id===fromUid) active=false; if(m.user_id===toUid) active=true; return manage&&active; }).length;
-    if(mgrs===0){ toast("База останется без управляющего. Сначала назначьте другого «Начальника участка»"); return; }
-  }
+  /* Те же проверки, что и на сервере (см. canRotateMember/_handoverWouldOrphan). Раньше здесь
+     ВЛАДЕЛЕЦ проходил мимо проверки «останется ли управляющий», а SQL владельца не исключал:
+     предупреждения не было, а отказ был — владелец жал и получал непонятную ошибку. Теперь
+     исключения нет, зато проверка (как и в БД после 2026-08-01) запускается только если уходящий
+     сам держал управление, и учитывает орг-роли — иначе она мешала бы законной пересменке
+     хозрабочего на базе, которой управляют из оргструктуры. */
+  if(!canRotateMember(from)){ toast("Нельзя снять со смены того, кто равен вам или выше по должности"); return; }
+  if(_handoverWouldOrphan(fromUid, toUid)){ toast("База останется без управляющего. Сначала назначьте другого «Начальника участка»"); return; }
   if(!await confirmSheet(`Передать смену от «${from.username}» к «${to.username}»?\nВсе задачи «${from.username}» перейдут к «${to.username}». «${from.username}» уйдёт со смены и потеряет доступ к базе, «${to.username}» заступит и получит доступ.`,{ yes:"Передать смену", title:"Передать смену" })) return;
   if(cloud._handoverBusy) return; cloud._handoverBusy=true;
   try{
@@ -6727,9 +6781,12 @@ async function cloudInit(){
       return;
     }
     if(cloud.ready){
+      // членство — ДО проверки активной базы (см. cloudSyncNow): пока не было связи, человека могли
+      // вернуть на смену, а до этого RLS не отдавал ему ни одной базы и acid был null
+      await cloudRefreshMyMembership();
       await cloudRelinkIfNeeded();   // дотянуть привязку локальных баз, если вход прошёл, но autolink не отработал
       const acid=activeCloudId();
-      if(acid){ await cloudRefreshMyMembership(); setSyncStatus("syncing","Сеть появилась — синхронизация…"); cloudActivate(acid); }
+      if(acid){ setSyncStatus("syncing","Сеть появилась — синхронизация…"); cloudActivate(acid); }
       // задачи: до-выгружаем отложенные правки и пере-синкаем (не зависят от базы)
       if(localStorage.getItem(TASKS_DIRTY)) cloudPushTasksNow().catch(()=>{}); else cloudSyncTasks().catch(()=>{});
     }
@@ -7784,7 +7841,7 @@ async function cloudPushNow(){
   // на раннем выходе снимаем pushPending (dirty остаётся durable-маркером несинхронизации)
   // off-shift/только-просмотр: нет доступа по RLS, dirty храним (не сбрасываем молча) до прав/возврата на смену.
   // _wipeOverride гасим и здесь: разрешение одноразовое и не должно доживать до будущих проходов (см. finally).
-  if(!cid || !cloud.ready || cloud.applying || !cloudOnline() || isOffShift(cid) || !canEditStock()){ cloud.pushPending=false; cloud._wipeOverride=null; return; }
+  if(!cid || !cloud.ready || cloud.applying || !cloudOnline() || isOffShift(cid) || !canEditStock()){ cloud.pushPending=false; cloud._wipeOverride=null; cloudDrainRemoteMissed(); return; }
   // Две выгрузки НЕ должны идти одновременно: их снимки rows/curSig разъезжаются, а сохранение
   // и восстановление cloud.busy (_outerBusy) при наложении оставляло busy=true навсегда —
   // после этого realtime-pull и активация базы мертвы до перезапуска приложения.
@@ -7798,7 +7855,7 @@ async function cloudPushNow(){
   let _outerBusy = cloud.busy;
   try{ await ensureSB(); }
   catch(e){
-    cloud._pushing=false; cloud.pushPending=false; cloud._wipeOverride=null;   // см. finally: разрешение одноразовое
+    cloud._pushing=false; cloud.pushPending=false; cloud._wipeOverride=null; cloudDrainRemoteMissed();   // см. finally
     console.warn("cloudPushNow ensureSB", e);
     setSyncStatus(cloudOnline() ? "error" : "offline", cloudOnline() ? "Библиотека облака не загрузилась — обновите страницу" : undefined);
     return;
@@ -8300,13 +8357,20 @@ async function cloudSyncNow(){
   if(cloud.busy){ return; }   // сохранение уже идёт — двойной тап не плодит второй проход
   // базы не загрузились (слабый интернет) → перезапускаем их загрузку; cloudOnLogin сам активирует базу при успехе
   if(!cloud.basesLoaded && cloud.session){ toast("Загрузка баз…"); await cloudOnLogin(cloud.session, 0).catch(()=>{}); return; }
+  /* Членство обновляем ДО проверки активной базы. Пока человек снят со смены (active=false), RLS не
+     отдаёт ему НИ ОДНОЙ базы: cloud.bases пуст и activeCloudId() возвращает null. Заступающий,
+     которому смену только что передали, жал значок синхронизации и получал «База пока не в облаке» —
+     помогал только перезапуск приложения или повторный вход, а это плохая инструкция для вахты.
+     cloudRefreshMyMembership перечитывает base_members/org_roles/bases и сам привязывает появившиеся
+     базы (cloudAutoLink), поэтому ниже cid уже находится. Первому входу это не мешает: там всё
+     отрабатывает cloudOnLogin выше (ветка !basesLoaded). */
+  await cloudRefreshMyMembership();
   await cloudRelinkIfNeeded();   // если база ещё не связана с облаком (после сбоя входа) — привяжем по имени
   const cid = activeCloudId();
   if(!cid){ toast("База пока не в облаке. При хорошем интернете нажмите значок синхронизации вверху справа — она привяжется"); return; }
   // Защита от порчи склада остановила выгрузку: обычный cloudActivate тут бесполезен — он увидит
   // живой dirty и снова уйдёт в тот же отказ. Даём пользователю реальный выбор вместо круга.
   if(cloud._wipePending === cid){ await cloudResolveWipe(cid); return; }
-  await cloudRefreshMyMembership();   // подхватить возврат/снятие со смены
   if(isOffShift(cid)){
     setSyncStatus(membershipUnknown()?"offline":"error", membershipUnknown()
       ? "Права не загрузились — работаем локально, синхронизируем при связи"

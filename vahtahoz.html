@@ -309,7 +309,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v216";
+const APP_BUILD = "v217";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -504,6 +504,11 @@ const cloud = {
   pushPending:false, retryTimer:null, pullRetryT:null, baseMembers:[], basesLoaded:false, membersLoaded:false,
   // синк задач (scope по владельцу): отдельные таймеры/канал/флаги
   tasksTimer:null, tasksRetry:null, tasksPullTimer:null, tasksChannel:null, tasksSubUid:null, tasksBusy:false,
+  _remoteMissed:false,          // чужая правка прилетела, пока шли push/pull → добрать ОДИН pull после (см. cloudOnRemote)
+  // защита от порчи склада (suspectWipe): cid базы, чья выгрузка остановлена, и ОДНОРАЗОВОЕ разрешение
+  // пользователя «это я удалил намеренно» (снимается сразу после выгрузки — иначе защита выключилась
+  // бы навсегда, и следующая настоящая порча слота уехала бы в облако молча).
+  _wipePending:null, _wipeOverride:null,
 };
 
 /* ---------- Utils ---------- */
@@ -2080,7 +2085,7 @@ async function exportJournalsMonth(ym){
       row["Примечание"]=op.note||""; return row;
     });
     total += rows.length;
-    const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Дата":"","Наименование":""}]));
+    const ws=XLSX.utils.json_to_sheet(rows.length?rows:[{"Дата":"","Наименование":""}]);
     ws["!cols"]=[{wch:16},{wch:34},{wch:11},{wch:9},{wch:16},{wch:12},{wch:10},{wch:24}];
     XLSX.utils.book_append_sheet(wb, ws, meta.label.slice(0,28));
   }
@@ -3129,7 +3134,7 @@ async function downloadReceiptTemplate(){
     { "Наименование":"Манная крупа", "Количество":7, "Ед. изм.":"кг", "Категория":"Крупы", "Срок годности":"", "Место":"Склад А", "Примечание":"", "Дата":"2026-07-22" },
     { "Наименование":"Молоко сгущённое", "Количество":24, "Ед. изм.":"шт", "Категория":"Молочные продукты", "Срок годности":"2027-01-15", "Место":"", "Примечание":"Поставщик X", "Дата":"2026-07-24" },
   ];
-  const ws = xlsxGuard(XLSX.utils.json_to_sheet(sample));
+  const ws = XLSX.utils.json_to_sheet(sample);
   ws["!cols"] = [{wch:28},{wch:12},{wch:10},{wch:20},{wch:14},{wch:14},{wch:22},{wch:12}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Поступление");
@@ -4523,16 +4528,12 @@ function _xlNum(v){
      && typeof parseNum==="function") n = parseNum(v);
   return Number.isFinite(n) ? n : "";
 }
-function xlsxGuard(ws){
-  for(const addr in ws){
-    if(addr[0]==="!") continue;
-    const c = ws[addr];
-    if(c && c.t==="s" && typeof c.v==="string" && /^[=+\-@\t\r]/.test(c.v)){
-      c.v = "'" + c.v; if(c.w!=null) c.w = "'" + c.w;
-    }
-  }
-  return ws;
-}
+/* Анти-инъекции («формула из ячейки») в XLSX НЕ нужна и была вредна. В xlsx формула — это отдельный
+   элемент <f> в XML, строковое значение ячейки формулой не становится ни при каких условиях (в отличие
+   от CSV, где Excel парсит текст — там экранирование в exportCsv остаётся). А апостроф, который ставил
+   бывший xlsxGuard, в xlsx НЕ съедается при открытии: он часть значения. Реальные данные («-» в
+   примечании, «+7…» в телефоне, «=» в наименовании) уезжали в файл как «'-», «'+7…» — испорченный
+   экспорт при нулевой пользе. Поэтому листы отдаём как есть. */
 /* Флаг «экспорт уже идёт». ensureXlsx() тянет модуль по сети, и повторный тап по кнопке во время
    загрузки запускал ВТОРОЙ экспорт: оба вызова ждали общий промис _xlsxLoading, оба доходили до
    сохранения — получалось два одинаковых файла (а при сбое загрузки — два одинаковых CSV).
@@ -4578,7 +4579,7 @@ async function _exportXlsxRun(){
     "Место": locationsOf(s).join("; "),
     "Примечание": s.note||"",
   }));
-  const ws = xlsxGuard(XLSX.utils.json_to_sheet(stockRows));
+  const ws = XLSX.utils.json_to_sheet(stockRows);
   ws["!cols"] = [{wch:10},{wch:22},{wch:40},{wch:10},{wch:10},{wch:10},{wch:14},{wch:16},{wch:30}];
   XLSX.utils.book_append_sheet(wb, ws, "Остатки");
 
@@ -4598,7 +4599,7 @@ async function _exportXlsxRun(){
     }
   }
   if(batchRows.length){
-    const wsB = xlsxGuard(XLSX.utils.json_to_sheet(batchRows));
+    const wsB = XLSX.utils.json_to_sheet(batchRows);
     wsB["!cols"] = [{wch:40},{wch:22},{wch:10},{wch:10},{wch:14},{wch:18},{wch:30}];
     XLSX.utils.book_append_sheet(wb, wsB, "Партии");
   }
@@ -4619,7 +4620,7 @@ async function _exportXlsxRun(){
       }
       return r;
     });
-    const sh = xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Дата":"","Наименование":"","Количество":"","Ед. изм.":"","Примечание":""}]));
+    const sh = XLSX.utils.json_to_sheet(rows.length?rows:[{"Дата":"","Наименование":"","Количество":"","Ед. изм.":"","Примечание":""}]);
     sh["!cols"] = [{wch:18},{wch:40},{wch:10},{wch:10},{wch:30},{wch:12},{wch:18}];
     XLSX.utils.book_append_sheet(wb, sh, title);
   };
@@ -4640,7 +4641,7 @@ async function _exportXlsxRun(){
       "Порядок": _xlNum(t.order),
       "Готово": t.done?"✓":"",
     }));
-    const tsh = xlsxGuard(XLSX.utils.json_to_sheet(taskRows.length?taskRows:[{"Задача":"","Категория":"","Приоритет":"","Повтор":"","Срок":"","Время":"","Порядок":"","Готово":""}]));
+    const tsh = XLSX.utils.json_to_sheet(taskRows.length?taskRows:[{"Задача":"","Категория":"","Приоритет":"","Повтор":"","Срок":"","Время":"","Порядок":"","Готово":""}]);
     tsh["!cols"] = [{wch:40},{wch:16},{wch:12},{wch:10},{wch:12},{wch:8},{wch:8},{wch:10}];
     XLSX.utils.book_append_sheet(wb, tsh, "Задачи");
   }
@@ -4767,7 +4768,7 @@ async function runFilteredXlsx(){
       "Примечание": s.note||"",
     };
   });
-  const ws = xlsxGuard(XLSX.utils.json_to_sheet(rows));
+  const ws = XLSX.utils.json_to_sheet(rows);
   ws["!cols"] = [{wch:10},{wch:22},{wch:40},{wch:10},{wch:8},{wch:10},{wch:14},{wch:16},{wch:18},{wch:30}];
   if(ws["!ref"]) ws["!autofilter"] = { ref: ws["!ref"] };   // автофильтр в Excel по шапке
   const wb = XLSX.utils.book_new();
@@ -5997,14 +5998,56 @@ async function memberRotate(uid){
   if(!await confirmSheet(msg,{ yes: off?"Снять со смены":"Вернуть на смену", danger:off, title: off?"Снять со смены":"Вернуть на смену" })) return;
   await _patchMember(uid, { active: !off }, off?"Снят со смены":"Возвращён на смену");
 }
+/* ── Пересменка: клиент повторяет ТЕ ЖЕ правила, что применяет сервер ──────────────────────────
+   Иначе человек проходит весь путь (выбор → подтверждение) и только потом получает 403/400.
+   (1) Ранг. Edge Function (action "handover") отвергает снятие того, чей ранг РАВЕН или ВЫШЕ вашего;
+       исключения — владелец и «сам себе». Ранговые таблицы клиента и сервера сверены и совпадают. */
+function canRotateMember(m){
+  if(!m) return false;
+  if(cloud.profile && cloud.profile.is_admin) return true;
+  if(cloud.profile && m.user_id===cloud.profile.id) return true;   // себя снять можно всегда
+  const mine = myRank();
+  if(!mine) return true;   // права ещё не загрузились — не мешаем, решит сервер (прежнее поведение)
+  return rankOf(m.role) < mine;
+}
+/* (2) «Сирота». handover_shift (миграция 2026-08-01_handover_consistency.sql) проверяет остаток
+   управляющих ТОЛЬКО если уходящий сам держал can_manage, и считает управляющим также активную
+   орг-роль, покрывающую базу. Клиент видит лишь СВОИ орг-роли — чужие учитывает сервер, поэтому
+   наша проверка заведомо не строже серверной и ложных отказов не добавляет. */
+function _orgManagesBase(cid){
+  /* Признак владельца (is_admin) управляющим ЗДЕСЬ не считается: строки в org_roles у владельца нет,
+     и серверная проверка «сироты» его не исключает. Ровно на этом клиент и сервер расходились —
+     предупреждения не было, а отказ был. */
+  const party = (cloud._baseParty||{})[cid] || null;
+  return (cloud.orgRoles||[]).some(o=> o && o.active!==false
+      && (o.can_manage===true || ["party_chief","director","general_director"].includes(o.role))
+      && (!o.party_id || o.party_id===party));
+}
+function _handoverWouldOrphan(fromUid, toUid){
+  const from=_findBM(fromUid);
+  if(!from || !from.can_manage) return false;            // уходящий не управлял — число управляющих не меняется
+  if(_orgManagesBase(activeCloudId())) return false;     // базой управляют из оргструктуры
+  return (cloud.baseMembers||[]).filter(m=>{
+    let manage=!!m.can_manage, active=(m.active!==false);
+    if(m.user_id===fromUid) active=false;
+    if(m.user_id===toUid)   active=true;
+    return manage && active;
+  }).length===0;
+}
+// кандидаты в заступающие: все участники базы, кроме уходящего, у которых передача НЕ оставит базу без управляющего
+function handoverCandidates(fromUid){
+  return (cloud.baseMembers||[]).filter(o=> o.user_id!==fromUid && !_handoverWouldOrphan(fromUid, o.user_id));
+}
 // меню «Смена»: снять/вернуть, либо передать смену заступающему (с задачами)
 function openShift(uid){
   const m=_findBM(uid); if(!m){ toast("Список устарел. Закройте и откройте заново"); return; }
   const active = m.active!==false;
-  const others = (cloud.baseMembers||[]).filter(x=>x.user_id!==uid);
+  const others = handoverCandidates(uid);
   openSheet(`<div class="font-bold text-xl mb-3">Смена: ${esc(m.username)}</div>
     <div class="space-y-2">
-      ${active
+      ${!canRotateMember(m)
+        ? `<div class="text-sm err-text">Снять со смены можно только того, кто ниже вас по должности. Обратитесь к вышестоящему.</div>`
+        : active
         ? `${others.length?`<button class="btn btn-primary w-full" onclick="openHandover('${uid}')">Передать смену</button>`:""}
            <button class="btn btn-ghost w-full" onclick="memberRotate('${uid}')">Снять со смены</button>`
         : `<button class="btn btn-success w-full" onclick="memberRotate('${uid}')">Вернуть на смену</button>`}
@@ -6014,8 +6057,17 @@ function openShift(uid){
 }
 function openHandover(fromUid){
   const from=_findBM(fromUid); if(!from) return;
-  const others=(cloud.baseMembers||[]).filter(x=>x.user_id!==fromUid);
-  if(!others.length){ toast("Нет заступающего. Сначала добавьте работника кнопкой «＋ Добавить»"); return; }
+  // те же три отказа, что даёт сервер, — до выбора кандидата, а не после подтверждения
+  if(!canRotateMember(from)){ toast("Нельзя снять со смены того, кто равен вам или выше по должности"); return; }
+  if(from.active===false){ toast(`«${from.username}» уже не на смене — обновите список`); return; }
+  const all=(cloud.baseMembers||[]).filter(x=>x.user_id!==fromUid);
+  const others=handoverCandidates(fromUid);
+  if(!others.length){
+    toast(all.length
+      ? "Некому передать: база останется без управляющего. Сначала назначьте другого «Начальника участка»"
+      : "Нет заступающего. Сначала добавьте работника кнопкой «＋ Добавить»");
+    return;
+  }
   openSheet(`<div class="font-bold text-xl mb-3">Передать смену</div>
     <div class="text-sm opacity-70 mb-2">От «${esc(from.username)}» — кому передать смену и задачи?</div>
     <div class="space-y-2">
@@ -6026,11 +6078,14 @@ function openHandover(fromUid){
 async function doHandover(fromUid, toUid){
   const from=_findBM(fromUid), to=_findBM(toUid);
   if(!from || !to){ toast("Список устарел. Закройте и откройте заново"); return; }
-  // защита: после пересменки в базе должен остаться активный управляющий (если ты не владелец)
-  if(!(cloud.profile && cloud.profile.is_admin)){
-    const mgrs=(cloud.baseMembers||[]).filter(m=>{ let manage=!!m.can_manage, active=(m.active!==false); if(m.user_id===fromUid) active=false; if(m.user_id===toUid) active=true; return manage&&active; }).length;
-    if(mgrs===0){ toast("База останется без управляющего. Сначала назначьте другого «Начальника участка»"); return; }
-  }
+  /* Те же проверки, что и на сервере (см. canRotateMember/_handoverWouldOrphan). Раньше здесь
+     ВЛАДЕЛЕЦ проходил мимо проверки «останется ли управляющий», а SQL владельца не исключал:
+     предупреждения не было, а отказ был — владелец жал и получал непонятную ошибку. Теперь
+     исключения нет, зато проверка (как и в БД после 2026-08-01) запускается только если уходящий
+     сам держал управление, и учитывает орг-роли — иначе она мешала бы законной пересменке
+     хозрабочего на базе, которой управляют из оргструктуры. */
+  if(!canRotateMember(from)){ toast("Нельзя снять со смены того, кто равен вам или выше по должности"); return; }
+  if(_handoverWouldOrphan(fromUid, toUid)){ toast("База останется без управляющего. Сначала назначьте другого «Начальника участка»"); return; }
   if(!await confirmSheet(`Передать смену от «${from.username}» к «${to.username}»?\nВсе задачи «${from.username}» перейдут к «${to.username}». «${from.username}» уйдёт со смены и потеряет доступ к базе, «${to.username}» заступит и получит доступ.`,{ yes:"Передать смену", title:"Передать смену" })) return;
   if(cloud._handoverBusy) return; cloud._handoverBusy=true;
   try{
@@ -6402,7 +6457,7 @@ async function exportAllBasesXlsx(){
   _allBasesCache.forEach(b=>{
     if(b.rows===null) return;   // недоступную базу пропускаем
     const rows=(b.rows||[]).map(_acctRow);
-    const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}])); ws["!cols"]=_ACCT_COLS;
+    const ws=XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}]); ws["!cols"]=_ACCT_COLS;
     XLSX.utils.book_append_sheet(wb, ws, _sheetName(b.name, used));   // лист на базу
   });
   // ни одной доступной базы — файл с единственной ячейкой «Нет данных» только путал: не сохраняем
@@ -6413,7 +6468,7 @@ async function exportOneBaseXlsx(baseId){
   const b=(_allBasesCache||[]).find(x=>x.id===baseId); if(!b||!b.rows){ toast("Нет данных по базе"); return; }
   let XLSX; try{ XLSX=await ensureXlsx(); }catch(e){ toast("Не удалось сделать Excel"); return; }
   const rows=b.rows.map(_acctRow);
-  const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}])); ws["!cols"]=_ACCT_COLS;
+  const ws=XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}]); ws["!cols"]=_ACCT_COLS;
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, _sheetName(b.name, new Set()));
   saveXlsx(wb, `vahtahoz-${_fileSafe(b.name)}-${todayStr()}.xlsx`);
 }
@@ -6513,9 +6568,12 @@ async function cloudInit(){
       return;
     }
     if(cloud.ready){
+      // членство — ДО проверки активной базы (см. cloudSyncNow): пока не было связи, человека могли
+      // вернуть на смену, а до этого RLS не отдавал ему ни одной базы и acid был null
+      await cloudRefreshMyMembership();
       await cloudRelinkIfNeeded();   // дотянуть привязку локальных баз, если вход прошёл, но autolink не отработал
       const acid=activeCloudId();
-      if(acid){ await cloudRefreshMyMembership(); setSyncStatus("syncing","Сеть появилась — синхронизация…"); cloudActivate(acid); }
+      if(acid){ setSyncStatus("syncing","Сеть появилась — синхронизация…"); cloudActivate(acid); }
       // задачи: до-выгружаем отложенные правки и пере-синкаем (не зависят от базы)
       if(localStorage.getItem(TASKS_DIRTY)) cloudPushTasksNow().catch(()=>{}); else cloudSyncTasks().catch(()=>{});
     }
@@ -7309,6 +7367,7 @@ async function cloudPull(cid){
     cloud.applying=false;
     // если во время загрузки появилась несинхронизированная правка — до-выгружаем её
     if(localStorage.getItem(cloudDirtyKey(cid))) cloudMaybePush();
+    else cloudDrainRemoteMissed();
     render();
   }
 }
@@ -7530,7 +7589,9 @@ function markDirty(cid){
 async function cloudPushNow(){
   const cid = activeCloudId();
   // на раннем выходе снимаем pushPending (dirty остаётся durable-маркером несинхронизации)
-  if(!cid || !cloud.ready || cloud.applying || !cloudOnline() || isOffShift(cid) || !canEditStock()){ cloud.pushPending=false; return; }   // off-shift/только-просмотр: нет доступа по RLS, dirty храним (не сбрасываем молча) до прав/возврата на смену
+  // off-shift/только-просмотр: нет доступа по RLS, dirty храним (не сбрасываем молча) до прав/возврата на смену.
+  // _wipeOverride гасим и здесь: разрешение одноразовое и не должно доживать до будущих проходов (см. finally).
+  if(!cid || !cloud.ready || cloud.applying || !cloudOnline() || isOffShift(cid) || !canEditStock()){ cloud.pushPending=false; cloud._wipeOverride=null; cloudDrainRemoteMissed(); return; }
   // Две выгрузки НЕ должны идти одновременно: их снимки rows/curSig разъезжаются, а сохранение
   // и восстановление cloud.busy (_outerBusy) при наложении оставляло busy=true навсегда —
   // после этого realtime-pull и активация базы мертвы до перезапуска приложения.
@@ -7544,7 +7605,7 @@ async function cloudPushNow(){
   let _outerBusy = cloud.busy;
   try{ await ensureSB(); }
   catch(e){
-    cloud._pushing=false; cloud.pushPending=false;
+    cloud._pushing=false; cloud.pushPending=false; cloud._wipeOverride=null; cloudDrainRemoteMissed();   // см. finally
     console.warn("cloudPushNow ensureSB", e);
     setSyncStatus(cloudOnline() ? "error" : "offline", cloudOnline() ? "Библиотека облака не загрузилась — обновите страницу" : undefined);
     return;
@@ -7580,7 +7641,11 @@ async function cloudPushNow(){
       } else {
         suspectWipe = !_typeRestricted && prevCount>=20 && rows.length < prevCount*0.1;
       }
-      if((rows.length===0 || suspectWipe) && prevCount>0){
+      // ОДНОРАЗОВОЕ разрешение: пользователь через диалог (cloudResolveWipe) подтвердил, что удалил склад
+      // САМ. Без него защита fail-closed навсегда блокировала бы законную массовую чистку базы.
+      // Флаг снимается в finally того же прохода — на следующий push защита снова в силе.
+      const _wipeOk = (cloud._wipeOverride === cid);
+      if(!_wipeOk && (rows.length===0 || suspectWipe) && prevCount>0){
         if(suspectWipe) _suspectWipe=true;   // помним: при усыхании НЕ снимаем dirty и не говорим «synced»
         console.warn("cloudPush: склад подозрительно мал ("+rows.length+" из "+prevCount+") — выгрузка склада пропущена (защита от порчи)");
       } else {
@@ -7629,6 +7694,9 @@ async function cloudPushNow(){
         del.forEach(id=>{ delete mergedSig[id]; });
         saveStockSig(cid, mergedSig);
         saveSyncSig(cid, "stockAllowed", curSig);
+        // разрешение ИСПОЛЬЗОВАНО: склад уехал в облако, снимок пересчитан. Снимаем сразу здесь (а не в конце
+        // push-а) — дальше идут настройки/журналы, их сбой не должен оставлять защиту выключенной.
+        if(_wipeOk){ cloud._wipeOverride=null; cloud._wipePending=null; }
         // === НАСТРОЙКИ (места/категории) — СВОЯ дельта, НЕ на каждое изменение склада ===
         // Шлём ТОЛЬКО если списки реально менялись (иначе смена количества зря переписывала
         // блоб и могла затереть чужие правки). При выгрузке ОБЪЕДИНЯЕМ с облаком (union) —
@@ -7705,9 +7773,16 @@ async function cloudPushNow(){
       }
     }
     // ЗАДАЧИ НЕ ВЫГРУЖАЕМ — они общие-локальные (одно расписание на все базы устройства).
+    if(!_suspectWipe && cloud._wipePending===cid) cloud._wipePending=null;   // склад восстановился сам (pull/правки) — снимаем ожидание решения
     if(_suspectWipe){
-      // склад выглядит повреждённым: НЕ снимаем dirty (чтобы при восстановлении не потерять маркер) и зовём обновить из облака
-      setSyncStatus("error","Склад повреждён. Нажмите значок синхронизации вверху справа — восстановим из облака");
+      /* Склад выглядит повреждённым: НЕ снимаем dirty (чтобы при восстановлении не потерять маркер).
+         РАНЬШЕ статус звал «нажать ↻, чтобы восстановить из облака» — а ↻ (cloudSyncNow → cloudActivate)
+         видел живой dirty и снова уходил в push, упираясь в тот же отказ; cloudPull при dirty вообще
+         не стартует. То есть кнопка НИКОГДА не восстанавливала, и человек жал её по кругу.
+         Теперь ↻ открывает явный выбор (cloudResolveWipe): восстановить из облака ИЛИ подтвердить,
+         что удаление намеренное. По умолчанию — по-прежнему fail-closed: облако не трогаем. */
+      cloud._wipePending = cid;
+      setSyncStatus("error","Склад резко уменьшился, выгрузка остановлена, общая база цела. Нажмите значок синхронизации вверху справа");
     } else if(_dirtyGen !== _genAtStart){
       // пока шла выгрузка, пользователь успел что-то изменить — эта правка НЕ в нашем снимке.
       // dirty НЕ снимаем (иначе при сбое следующей выгрузки retry не запустится, а pull затрёт
@@ -7730,7 +7805,15 @@ async function cloudPushNow(){
       cloud.retryTimer = setTimeout(()=>{ if(localStorage.getItem(cloudDirtyKey(activeCloudId()))) cloudPushNow(); }, 6000);
     }
   }
-  finally{ cloud.busy=_outerBusy; cloud.pushPending=false; cloud._pushing=false; }   // восстанавливаем прежнее: вложенный вызов оставит busy=true до finally самого cloudActivate
+  finally{
+    cloud.busy=_outerBusy; cloud.pushPending=false; cloud._pushing=false;   // восстанавливаем прежнее: вложенный вызов оставит busy=true до finally самого cloudActivate
+    /* Разрешение «это я удалил намеренно» ОДНОРАЗОВОЕ: если проход не дошёл до успешного upsert
+       склада (сеть, RLS, исключение), флаг иначе остался бы включённым до перезагрузки страницы —
+       защита для этой базы выключена, и следующая НАСТОЯЩАЯ порча слота уехала бы в общую базу молча. */
+    cloud._wipeOverride = null;
+    // чужая правка прилетела, пока шла выгрузка → добираем ОДИН pull
+    cloudDrainRemoteMissed();
+  }
 }
 // ===================== ЗАДАЧИ В ОБЛАКЕ (scope по владельцу, не по базе) =====================
 // Задачи — ОБЩИЕ для всех баз устройства (одно расписание у хоза). В облаке хранятся
@@ -7885,9 +7968,27 @@ function cloudSubscribeTasks(){
     cloud.tasksSubUid=uid;
   }catch(e){ console.warn("cloudSubscribeTasks", e); }
 }
+/* Догоняющий pull после ЛЮБОЙ занятости. cloudOnRemote при busy/pushPending/applying только ставит
+   флаг — снять его обязан тот, кто был занят: и загрузка, и ВЫГРУЗКА (busy/pushPending чаще всего
+   означает именно её). Флаг снимаем ДО планирования: повтор возможен только от НОВОГО события —
+   цикла «pull → pull» не будет. */
+function cloudDrainRemoteMissed(){
+  if(!cloud._remoteMissed) return;
+  cloud._remoteMissed = false;
+  clearTimeout(cloud.pullTimer);
+  cloud.pullTimer = setTimeout(()=>{
+    const c = activeCloudId();
+    if(c && cloud.ready && cloud.session && !cloud.busy && !cloud.pushPending && !cloud.applying &&
+       !localStorage.getItem(cloudDirtyKey(c))) cloudPull(c).catch(()=>{});
+  }, 800);
+}
 function cloudOnRemote(){
   clearTimeout(cloud.pullTimer);               // всегда гасим прежний отложенный pull, иначе он сработает после dirty и затрёт правки
-  if(cloud.busy || cloud.pushPending || cloud.applying) return;  // push/pull в полёте — не стартуем второй pull
+  // push/pull в полёте — второй pull не стартуем. НО событие нельзя просто выбросить: чужая правка,
+  // прилетевшая во время нашей загрузки, не попадала в этот pull (он уже читал облако ДО неё) и не
+  // планировала следующий — экран висел устаревшим до случайного следующего триггера (своя правка,
+  // возврат сети, перезапуск). Запоминаем «был remote во время занятости» и добираем ОДИН pull в finally.
+  if(cloud.busy || cloud.pushPending || cloud.applying){ cloud._remoteMissed = true; return; }
   // есть несинхронизированные локальные правки → не тянем (затёрли бы своё); сначала выгрузим их
   const cid0 = activeCloudId();
   if(cid0 && localStorage.getItem(cloudDirtyKey(cid0))){ cloudMaybePush(); return; }
@@ -7955,16 +8056,66 @@ async function cloudRefreshMyMembership(){
     renderHeader();
   }catch(_){}
 }
+/* Разбор ситуации «склад подозрительно усох» (suspectWipe остановил выгрузку).
+   Раньше выхода из неё через интерфейс НЕ БЫЛО: dirty не снимался, ↻ снова звал push (тот же отказ),
+   cloudPull при dirty не стартует — лечило только Настройки→«Обновить из облака», о которых статус молчал.
+   Два честных исхода, оба явные; отмена ничего не меняет (fail-closed: облако не трогаем, dirty жив). */
+async function cloudResolveWipe(cid){
+  const nm = cloud.bases[cid] || "облачная база";
+  const choice = await chooseSheet(
+    `В базе «${nm}» на этом телефоне осталось меньше 10% позиций от прошлой выгрузки. Отправка в общую базу остановлена — в облаке данные целы. Что произошло?`,
+    [ { label:"Данные пропали — восстановить из облака", value:"pull", color:"btn-primary" },
+      { label:"Это я удалил намеренно — отправить в облако", value:"push", color:"btn-danger" } ]);
+  if(choice==="pull"){
+    // Отбрасываем несинхронизированное локальное — иначе cloudPull снова свернёт в push (см. его первую проверку).
+    // Снимок НЕ трогаем: он нужен как ориентир при следующей сверке.
+    cloud._wipePending = null; cloud._wipeOverride = null;
+    clearTimeout(cloud.pushTimer); clearTimeout(cloud.retryTimer); cloud.pushPending = false;
+    try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(_){}
+    setSyncStatus("syncing","Восстановление из облака…");
+    try{ await cloudPull(cid); toast("Восстановлено из облака"); }
+    catch(e){ toast("Не удалось восстановить — проверьте интернет и повторите"); }
+    render();
+    return;
+  }
+  if(choice==="push"){
+    // Второе подтверждение: это удаление у ВСЕЙ бригады, а не только на своём телефоне.
+    const ok = await confirmSheet(
+      "Позиции, которых нет на этом телефоне, будут УДАЛЕНЫ из общей базы у всех участников. Отменить это будет нельзя.",
+      { danger:true, yes:"Да, удалить у всех", no:"Отмена", title:"⚠️ Удаление общих данных" });
+    if(!ok) return;   // отказ = прежнее поведение: защита в силе, dirty жив, облако цело
+    cloud._wipeOverride = cid;   // ОДНОРАЗОВО: cloudPushNow гасит флаг в finally — и после успеха, и после сбоя
+    cloud._wipePending = null;
+    setSyncStatus("syncing","Отправка в облако…");
+    await cloudPushNow();
+    // Разрешение уже погашено. Если выгрузка не прошла (сеть/права), человек не должен уйти в
+    // уверенности, что удалил у всех: dirty жив, защита снова в силе — говорим прямо.
+    if(localStorage.getItem(cloudDirtyKey(cid))) toast("Не отправлено — проверьте интернет и повторите");
+    render();
+    return;
+  }
+  // отмена диалога — ничего не меняем (защита остаётся включённой)
+}
 async function cloudSyncNow(){
   if(!cloud.ready){ toast("Сначала войдите в облако"); return; }
   if(!cloudOnline()){ toast("Нет интернета — попробуйте позже"); return; }
   if(cloud.busy){ return; }   // сохранение уже идёт — двойной тап не плодит второй проход
   // базы не загрузились (слабый интернет) → перезапускаем их загрузку; cloudOnLogin сам активирует базу при успехе
   if(!cloud.basesLoaded && cloud.session){ toast("Загрузка баз…"); await cloudOnLogin(cloud.session, 0).catch(()=>{}); return; }
+  /* Членство обновляем ДО проверки активной базы. Пока человек снят со смены (active=false), RLS не
+     отдаёт ему НИ ОДНОЙ базы: cloud.bases пуст и activeCloudId() возвращает null. Заступающий,
+     которому смену только что передали, жал значок синхронизации и получал «База пока не в облаке» —
+     помогал только перезапуск приложения или повторный вход, а это плохая инструкция для вахты.
+     cloudRefreshMyMembership перечитывает base_members/org_roles/bases и сам привязывает появившиеся
+     базы (cloudAutoLink), поэтому ниже cid уже находится. Первому входу это не мешает: там всё
+     отрабатывает cloudOnLogin выше (ветка !basesLoaded). */
+  await cloudRefreshMyMembership();
   await cloudRelinkIfNeeded();   // если база ещё не связана с облаком (после сбоя входа) — привяжем по имени
   const cid = activeCloudId();
   if(!cid){ toast("База пока не в облаке. При хорошем интернете нажмите значок синхронизации вверху справа — она привяжется"); return; }
-  await cloudRefreshMyMembership();   // подхватить возврат/снятие со смены
+  // Защита от порчи склада остановила выгрузку: обычный cloudActivate тут бесполезен — он увидит
+  // живой dirty и снова уйдёт в тот же отказ. Даём пользователю реальный выбор вместо круга.
+  if(cloud._wipePending === cid){ await cloudResolveWipe(cid); return; }
   if(isOffShift(cid)){
     setSyncStatus(membershipUnknown()?"offline":"error", membershipUnknown()
       ? "Права не загрузились — работаем локально, синхронизируем при связи"
