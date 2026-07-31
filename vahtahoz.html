@@ -146,16 +146,15 @@
   .btn:focus-visible, .chip:focus-visible, .nav-btn:focus-visible, .input:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
   /* косметика: кнопки в 3-колоночной сетке (типы склада) — компактнее, чтобы подписи не обрезались на узком iPhone */
   .grid-cols-3 > .btn{ padding:0 6px; font-size:15px; gap:4px; min-width:0; }
-  /* Очень узкий экран: приветствие с датой — украшение, а чип базы и кнопка фильтра — рабочие
-     органы шапки. При нехватке места приветствие ужималось до одной буквы («Д…»); честнее убрать
-     его совсем, чем показывать огрызок. Дата видна на дашборде. */
   /* Приветствие с датой — украшение, и оно уступает рабочим органам шапки: чипу базы и кнопке
-     фильтра. Раньше порог стоял на 359px, но кнопка фильтра появилась на «Складе» и «Задачах»,
-     и на ходовых 390px приветствие сжималось до «Доб…» — обрубок, который выглядит поломкой.
-     Порог поднят до 429px: на телефоне шапка показывает базу и фильтр целиком, а приветствие
-     возвращается на планшетах и в десктопном браузере, где место есть. Дата при этом никуда
-     не пропадает — она и так на дашборде. */
-  @media (max-width:429px){ #greeting, #dateStr{ display:none; } }
+     фильтра. МЕДИА-ЗАПРОСА ЗДЕСЬ БОЛЬШЕ НЕТ, и вот почему. Порог по ширине экрана врал в обе
+     стороны: место в шапке съедает не ширина, а КНОПКА ФИЛЬТРА (она есть только на «Складе» и
+     «Задачах») и длина имени базы. Порог 359px оставлял «Доб…» на ходовых 390px; поднятый до 429px
+     он убрал приветствие И ДАТУ с 390/412 совсем — там, где до кнопки фильтра они помещались
+     целиком, — а на 430 вернул вместе с обрубком (156px ужимались до 104). Обрубок просто переехал.
+     Теперь решает ЗАМЕР: fitHeaderGreeting() показывает ровно то, что влезает целиком (см. рядом
+     с renderHeader). Прежнее обоснование «дата и так на дашборде» было вдобавок неверным —
+     текущей даты на дашборде нет, там только сроки задач. */
   @media (max-width:360px){ .grid-cols-3 > .btn{ font-size:13px; padding:0 4px; } }
   /* iPhone SE / очень узкие: подписи в 3-колоночной сетке (типы склада, выбор темы) переносим, а не обрезаем */
   /* min-height 44px, а не 40: height:auto тут снимает базовые 52px от .btn, и «＋ Продукт/Хозтовар/
@@ -209,7 +208,7 @@
 <div id="app" class="max-w-[640px] mx-auto safe-top safe-bot">
   <!-- Header -->
   <header class="px-4 pt-4 pb-2 flex items-center justify-between">
-    <div class="min-w-0 flex-1" style="margin-right:8px">
+    <div id="hdrGreet" class="min-w-0 flex-1" style="margin-right:8px">
       <div id="greeting" class="text-xl font-bold truncate">ВахтаХоз</div>
       <div id="dateStr" class="text-sm text-gray-400 truncate"></div>
     </div>
@@ -217,7 +216,12 @@
       <button id="syncChip" class="btn btn-ghost text-xs hidden" style="padding:6px 10px;flex:0 0 auto" title="Синхронизация с облаком" aria-label="Синхронизация с облаком"></button>
       <!-- чип базы ужимается ПЕРВЫМ: имя базы читаемо и в обрезанном виде («2 отряд РоГРП…»),
            а кнопка фильтра при сжатии перестала бы попадать под палец (44×44 — нижняя граница) -->
-      <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px;min-width:0;flex:1 1 auto;max-width:38vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Сменить базу" aria-label="Сменить базу"></button>
+      <!-- max-width был 38vw — и на 320/360 резал даже КОРОТКОЕ имя («🏠 2 Западная», 131px → 122px),
+           хотя рядом место было: кнопка фильтра и чип вместе укладывались в строку. Потолок поднят
+           до 48vw (на 320px это 154px — короткое имя влезает целиком), а приоритет сжатия сохранён
+           явным flex-shrink:2: под давлением длинного имени первым ужимается чип базы, а не кнопка
+           фильтра, которой нужно оставаться под пальцем (44×44). -->
+      <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px;min-width:0;flex:1 2 auto;max-width:48vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Сменить базу" aria-label="Сменить базу"></button>
       <button id="filterChip" class="btn btn-ghost text-xs" style="display:none;padding:6px 10px;min-width:44px;min-height:44px;max-width:52vw;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Фильтры" aria-label="Фильтры"></button>
     </div>
   </header>
@@ -465,17 +469,32 @@ function _uploadedJrIds(){
     return map;
   }catch(_){ return null; }
 }
-/* Усечение журнала до `limit`, но НЕ за счёт невыгруженных записей.
+/* Усечение журнала до `limit`, но НЕ за счёт записей, которых в облаке нет.
    Порядок в журнале — новые в начале (unshift), поэтому «свежие» = меньшие индексы.
-   Если одних невыгруженных больше лимита — возвращаем их все: пусть запись упадёт
-   и пользователь получит честный отказ с предложением экспорта, а не тихую потерю
-   движений склада, которых нет больше нигде (остатки уже подняты applyStockDelta,
-   а journalLooksIncomplete() навсегда запретит сверку вниз для облачной базы). */
-function _trimJournalKeepPending(arr, limit, uploaded){
+   «УЖЕ ВЫГРУЖЕНО» — ЭТО СОВПАДЕНИЕ СОДЕРЖИМОГО, А НЕ ЗНАКОМЫЙ id. Снимок подписей хранит
+   id→подпись ровно для этого. Правка записи (количество, дата, примечание, привязка к товару)
+   id не меняет, поэтому проверка «id есть в снимке» считала отредактированную запись выгруженной
+   и выбрасывала её с диска, хотя в облаке лежала ЕЁ СТАРАЯ ВЕРСИЯ. Работа без связи (норма на
+   вахте) плюс перезапуск до первой синхронизации — и правка исчезала молча, а поднятый остаток
+   склада оставался: журнал и склад расходились навсегда, поймать это было нечем (для облачной
+   базы журнал всегда «неполный», сверка вниз запрещена). Сравниваем подпись: разошлась — значит
+   эта версия записи существует только здесь, и трогать её нельзя.
+   Если одних таких больше лимита — возвращаем их все: пусть запись упадёт и пользователь получит
+   честный отказ с предложением экспорта, а не тихую потерю движений склада, которых нет больше
+   нигде (остатки уже подняты applyStockDelta).
+   ЦЕНА. Подпись считается только когда журнал ДЛИННЕЕ лимита (иначе выход первой строкой) и только
+   у записей, чей id есть в снимке. Это в разы дешевле полной сериализации состояния, ради ухода от
+   которой хвост на диске и вводили (замер: 8000 записей — 26 мс против 4 мс без проверки). */
+function _trimJournalKeepPending(arr, limit, uploaded, kind){
   if(!Array.isArray(arr) || arr.length<=limit) return arr;
   if(!uploaded) return arr.slice(0, limit);
   const keep = new Set();
-  for(let i=0;i<arr.length;i++){ const r=arr[i]; if(!r) continue; if(!r.id || !(r.id in uploaded)) keep.add(i); }
+  for(let i=0;i<arr.length;i++){
+    const r=arr[i]; if(!r) continue;
+    const sig = r.id ? uploaded[r.id] : undefined;
+    if(sig===undefined){ keep.add(i); continue; }              // в облаке такой записи нет вовсе
+    if(kind && sig!==_sigOf({kind, data:r})) keep.add(i);      // выгружалась, но с тех пор изменена
+  }
   for(let i=0;i<arr.length && keep.size<limit;i++){ if(arr[i]) keep.add(i); }
   return arr.filter((_,i)=>keep.has(i));
 }
@@ -490,7 +509,7 @@ function _saveStateTrimmed(){
     let dropped = false;
     for(const k of JOURNAL_KEYS){
       const wasLen = (state.journals?.[k] || []).length;
-      j[k] = _trimJournalKeepPending(state.journals?.[k], jrLimit, uploaded);
+      j[k] = _trimJournalKeepPending(state.journals?.[k], jrLimit, uploaded, k);
       if((j[k] || []).length < wasLen) dropped = true;   // записи реально выброшены — бэкап больше не полный
     }
     const lg = (Array.isArray(state.log) && state.log.length>logLimit) ? state.log.slice(0,logLimit) : state.log;
@@ -525,16 +544,23 @@ const JOURNAL_STORE_SOFT_CAP = 500;
    десктопе, то есть полторы-три секунды замершего экрана на вахтовом телефоне. Когда хранилище
    близко к пределу, к этому добавлялась вторая, аварийная сериализация: 624 мс против 8-10 мс.
    Цену убираем там, где записи существуют НЕ ТОЛЬКО ЗДЕСЬ. У облачной базы всё, что уже выгружено
-   (лежит в снимке подписей журнала), хранится в облаке, и вторая полная копия в localStorage не
-   даёт ничего: pull вернёт историю при первой связи. Поэтому на диск идёт хвост из
-   JOURNAL_STORE_SOFT_CAP свежих записей на вид ПЛЮС ВСЕ НЕВЫГРУЖЕННЫЕ — те самые, что существуют
-   в одном экземпляре; их не трогаем никогда (общий помощник с аварийным урезанием).
+   И С ТЕХ ПОР НЕ ПРАВИЛОСЬ (подпись записи совпадает со снимком подписей), хранится в облаке, и
+   вторая полная копия в localStorage не даёт ничего: pull вернёт историю при первой связи. Поэтому
+   на диск идёт хвост из JOURNAL_STORE_SOFT_CAP свежих записей на вид ПЛЮС ВСЁ, ЧЕГО В ОБЛАКЕ НЕТ, —
+   и невыгруженные, и отредактированные после выгрузки (в облаке лежит их старая версия). Такие
+   записи существуют в одном экземпляре; их не трогаем никогда (общий помощник с аварийным урезанием).
    Локальная база без облака не урезается вовсе — там диск и есть единственная копия.
    ЧЕСТНОСТЬ. Урезанный снимок помечается journalsTrunc — он действительно неполон, и после
    перезагрузки приложение об этом знает (бэкап назовёт себя неполным, сверка «вниз» останется
-   запрещённой). В ПАМЯТИ не меняется ничего: ни state.journals, ни state.journalsTrunc, поэтому
-   экспорт — включая «Резервную копию всех баз», которая берёт активную базу из памяти, — отдаёт
-   полную историю. Ради этого потолок и снимали.
+   запрещённой). В ПАМЯТИ не меняется ничего: ни state.journals, ни state.journalsTrunc.
+   ЧЕГО ЭТО НЕ ДАЁТ — и раньше тут было написано неправду. «Полную историю отдаёт экспорт, потому
+   что берёт базу из памяти» верно ровно до первой перезагрузки: после неё в память читается тот же
+   урезанный снимок (замер: посев 3000 записей → после перезагрузки в памяти 500, «Резервная копия
+   всех баз» содержит 500). Молчаливой потери тут нет — journalsTrunc переживает перезагрузку, файл
+   называет себя неполным и тост об этом говорит, — но обещать полноту нельзя.
+   ЧТО В ФАЙЛЕ ЕСТЬ ВСЕГДА: всё, чего нет в облаке (см. выше). Недостающее — это ровно облачный
+   архив, и он возвращается сам при первой же синхронизации (cloudPull переписывает журнал целиком
+   и снимает journalsTrunc). То есть данные не теряются нигде: файл + облако = вся история.
    СОВМЕСТИМОСТЬ. Ключ тот же (STORE_KEY), поля те же, новых нет. Старая версия, поднятая из кэша,
    читает такой снимок как свой и ведёт себя ровно как раньше. */
 function _stateStorageJSON(){
@@ -544,7 +570,7 @@ function _stateStorageJSON(){
   let dropped = false;
   for(const k of JOURNAL_KEYS){
     const arr = state.journals?.[k] || [];
-    const cut = _trimJournalKeepPending(arr, JOURNAL_STORE_SOFT_CAP, uploaded);
+    const cut = _trimJournalKeepPending(arr, JOURNAL_STORE_SOFT_CAP, uploaded, k);
     if(cut.length < arr.length) dropped = true;
     j[k] = cut;
   }
@@ -741,16 +767,22 @@ async function addProfile(){
      • не-владельцу кнопка больше не притворяется. Прежний текст обещал «имя изменится только на
        этом телефоне», а первый же вход/возврат сети/обновление членства возвращали облачное имя:
        кнопка была пустышкой, которая ещё и врала. Теперь отказ звучит сразу, до ввода;
+     • «вы не владелец» говорим ТОЛЬКО когда это ЗНАЕМ. Права живут в облачном профиле, а на
+       холодном старте без связи он пуст — и владелец, открыв приложение на вахте, получал
+       «Имя общей базы меняет владелец»: приложение сообщало ему, что он не он. Ветка «нет связи,
+       повторите» при этом была недостижима ровно тогда, когда была нужна. Профиль не загружен —
+       это не отказ в правах, это отсутствие связи, так и говорим;
      • локальная (не привязанная) база — как была: имя устройства, меняется без облака. */
 async function renameProfile(id){
   const p = profiles.list.find(x=>x.id===id); if(!p) return;
   const linked = !!p.cloudId;
+  const roleKnown = !!cloud.profile;                                    // профиль облака загружен — права известны
   const isOwner = !!(cloud.profile && cloud.profile.is_admin);
   const hasTok  = !!(cloud.session && cloud.session.access_token);
   if(linked && !(isOwner && cloud.ready && hasTok)){
-    toast(isOwner
-      ? "Имя общей базы хранится в облаке — нет связи. Повторите при связи"
-      : "Имя общей базы меняет владелец. На этом телефоне оно подтягивается из облака");
+    toast(roleKnown && !isOwner
+      ? "Имя общей базы меняет владелец. На этом телефоне оно подтягивается из облака"
+      : "Имя общей базы хранится в облаке — нет связи. Повторите при связи");
     return;
   }
   const hint = linked
@@ -1681,6 +1713,21 @@ function openFilterSheet(){
   if(currentView==="tasks") openTaskFilterSheet();
   else if(currentView==="stock" && stockMode==="stock") openStockFilterSheet();
 }
+/* ЛИСТ ФИЛЬТРОВ ПОСЛЕ ВЫБОРА. Обработчик перерисовывает экран и открывает лист заново — иначе
+   галочка осталась бы на прежнем пункте, а счётчики («Просрочка (N)», числа по категориям) не
+   обновились бы. Но openSheet подставляет свежую разметку в свежий #sheetBody (клон нужен, чтобы
+   сбросить старые слушатели), и прокрутка обнулялась: замер — 622 → 0 при двенадцати категориях.
+   На базе с десятком категорий человек после каждого тапа листал список заново; в v219, где
+   обработчик только переключал классы на ленте чипов, прокрутка не трогалась вовсе.
+   Возвращаем положение: содержимое листа то же самое, меняются только галочка и числа. Если
+   разметка стала короче, браузер сам подрежет scrollTop до максимума. */
+function reopenFilterSheet(open){
+  const prev = document.getElementById("sheetBody");
+  const top = prev ? prev.scrollTop : 0;
+  open();
+  const now = document.getElementById("sheetBody");
+  if(now && top) now.scrollTop = top;
+}
 // строка выбора в листе фильтров: 44px под палец, галочка — явная отметка текущего выбора
 const _fLine = (active, label, attrs) =>
   `<button class="btn ${active?"btn-primary":"btn-ghost"} w-full text-left" style="min-height:44px;min-width:0" ${attrs}>${active?"✓ ":""}${label}</button>`;
@@ -1727,12 +1774,41 @@ function openStockFilterSheet(){
     </div>` : ""}
     <button class="btn btn-ghost w-full mt-4" data-close>Готово</button>`);
 }
+/* ПРИВЕТСТВИЕ И ДАТА В ШАПКЕ — ПО ЗАМЕРУ, А НЕ ПО ШИРИНЕ ЭКРАНА.
+   Место в шапке отнимает не ширина телефона, а кнопка фильтра (только «Склад» и «Задачи») и длина
+   имени базы, поэтому любой порог в media-запросе врал: на 390/412 он прятал приветствие и дату там,
+   где до появления кнопки фильтра они помещались целиком, а на 430 возвращал их вместе с обрубком
+   «Доб…». Показываем ровно то, что влезает ЦЕЛИКОМ, и по ступеням — вместо «всё или ничего»:
+     • приветствие: «Добрый день 👋» → «Добрый день» (машущая рука — чистое украшение) → убрать;
+     • дата: «пятница, 31 июля» → «31 июля» → убрать.
+   Дата важнее приветствия: приветствие ничего не сообщает, дата сообщает. Поэтому судьба у них
+   раздельная — на 430 «Складе» остаётся «31 июля», хотя приветствие уже не влезает. Прежнее
+   обоснование «дата и так на дашборде» неверно: текущей даты на дашборде нет.
+   Ширина колонки приветствия от её содержимого не зависит (flex:1 1 0% — она получает ОСТАТОК),
+   поэтому ступени можно мерить по очереди, не пересчитывая соседей; один принудительный layout
+   на перерисовку шапки. */
+function headerTexts(){
+  const now = new Date(), h = now.getHours();
+  return {
+    greet: h<5?"Доброй ночи":(h<12?"Доброе утро":(h<18?"Добрый день":"Добрый вечер")),
+    dateFull: now.toLocaleDateString("ru-RU",{weekday:"long",day:"numeric",month:"long"}),
+    dateShort: now.toLocaleDateString("ru-RU",{day:"numeric",month:"long"})
+  };
+}
+function fitHeaderGreeting(){
+  const box = document.getElementById("hdrGreet");
+  const g = document.getElementById("greeting"), d = document.getElementById("dateStr");
+  if(!box || !g || !d) return;
+  const t = headerTexts();
+  box.style.display = ""; g.style.display = ""; d.style.display = "";   // меряем в показанном виде
+  const fits = el => el.scrollWidth <= el.clientWidth + 1;              // .truncate: не влезло → scrollWidth больше
+  g.textContent = t.greet + " 👋";
+  if(!fits(g)){ g.textContent = t.greet; if(!fits(g)) g.style.display = "none"; }
+  d.textContent = t.dateFull;
+  if(!fits(d)){ d.textContent = t.dateShort; if(!fits(d)) d.style.display = "none"; }
+  if(g.style.display==="none" && d.style.display==="none") box.style.display = "none";
+}
 function renderHeader(){
-  const now = new Date();
-  const h = now.getHours();
-  const g = h<5?"Доброй ночи":(h<12?"Доброе утро":(h<18?"Добрый день":"Добрый вечер"));
-  document.getElementById("greeting").textContent = g + " 👋";
-  document.getElementById("dateStr").textContent = now.toLocaleDateString("ru-RU",{weekday:"long",day:"numeric",month:"long"});
   const bc = document.getElementById("baseChip");
   if(bc){
     // показываем чип только когда баз больше одной и роль позволяет переключение (начальник/роль-неизвестна — скрыт)
@@ -1745,7 +1821,12 @@ function renderHeader(){
     const sc=document.getElementById("syncChip"), sb=document.getElementById("syncBar");
     if(sc) sc.classList.add("hidden"); if(sb) sb.classList.add("hidden");
   }
+  // ПОСЛЕДНИМ: приветствие занимает остаток строки, поэтому мерить его можно только когда чип базы
+  // и кнопка фильтра уже приняли свой окончательный вид.
+  try{ fitHeaderGreeting(); }catch(_){}
 }
+// поворот экрана / изменение окна меняют остаток строки — перемеряем (render() тут звать не нужно)
+try{ window.addEventListener("resize", ()=>{ try{ fitHeaderGreeting(); }catch(_){} }); }catch(_){}
 
 /* ---------- Dashboard ---------- */
 function dismissOnboarding(){ try{ localStorage.setItem(NS+"vahtahoz_onboarded","1"); }catch(_){} render(); }
@@ -5255,7 +5336,8 @@ function exportAllProfiles(){
      историю, и «неполный» ставит ровно тот, кто реально что-то выбросил: аварийное сохранение при
      переполнении памяти или упор в JOURNAL_LOCAL_CAP. Ложных тревог на полном бэкапе больше нет,
      а настоящая неполнота по-прежнему названа вслух. */
-  const truncated = list.some(x => x.state && x.state.journalsTrunc === true);
+  const truncNames = list.filter(x => x.state && x.state.journalsTrunc === true).map(x => x.name);
+  const truncated = truncNames.length > 0;
   /* Задачи ОБЩИЕ для всех баз устройства (TASKS_KEY) и лежат ВНЕ слотов баз. Поэтому в файле им
      нужно отдельное поле: раньше они попадали в бэкап только «попутно», внутри state активной базы,
      а восстановление их не читало вовсе. version:2 — файл с полями cloudId и tasks; старые файлы
@@ -5264,13 +5346,16 @@ function exportAllProfiles(){
     profiles:list, tasks: (isRestrictedUser() ? [] : (Array.isArray(state.tasks) ? state.tasks : [])),
     journalsMayBeTruncated: truncated };
   triggerDownload(JSON.stringify(payload,null,2), `vahtahoz-ВСЕ-БАЗЫ-${todayStr()}.json`);
-  if(truncated) toast("Сохранено. Внимание: история движений в файле неполная — для полного журнала сделайте «Экспорт текущей базы» онлайн");
-  if(damaged.length){
-    console.warn("Повреждённые/пустые базы:", damaged);
-    toast(`Сохранено ${list.length}, но без данных: ${damaged.join(", ")}`);
-  } else {
-    toast(`Сохранены все базы (${list.length})`);
-  }
+  /* ОДНО сообщение, а не три подряд. #toast в приложении один, и toast() ЗАМЕЩАЕТ текст: прежние
+     три вызова гасили друг друга в том же кадре, и предупреждение о неполном журнале не видел никто —
+     на экране оставалось бодрое «Сохранены все базы». Здесь же названы КОНКРЕТНЫЕ базы: совет
+     «сделайте экспорт текущей базы онлайн» чинил одну из восьми, а какую именно — не говорил.
+     Обещания полноты не даём: в файле лежит всё, чего нет в облаке (см. _stateStorageJSON), а
+     недостающий облачный архив возвращается сам при первой синхронизации. */
+  const parts = [`Сохранены все базы (${list.length})`];
+  if(damaged.length){ console.warn("Повреждённые/пустые базы:", damaged); parts.push(`без данных: ${damaged.join(", ")}`); }
+  if(truncated) parts.push(`журнал на диске неполный (${truncNames.join(", ")}) — в файле есть всё, чего нет в облаке, а облачный архив вернётся при первой связи`);
+  toast(parts.join(". "));
 }
 /* ОБЩИЙ КАТАЛОГ: добавить во ВСЕ базы устройства те наименования (тип+имя+ед.), которых там нет,
    с количеством 0. Существующие позиции, остатки, места, сроки, партии НЕ трогаются. */
@@ -5966,25 +6051,24 @@ document.getElementById("filterChip").addEventListener("click", ()=>openFilterSh
 document.addEventListener("click", e=>{
   const modeBtn = e.target.closest("[data-stockmode]");
   if(modeBtn){ stockMode = modeBtn.dataset.stockmode; stockLimit=100; render(); return; }
-  const tabBtn = e.target.closest("[data-stocktab]");
-  if(tabBtn){ stockTab = tabBtn.dataset.stocktab; stockCat=""; stockLimit=100; render(); return; }
-  const expBtn = e.target.closest("[data-expfilter]");
-  if(expBtn){ stockExpiryFilter = expBtn.dataset.expfilter; stockLimit=100; render(); return; }
+  /* [data-stocktab] и [data-expfilter] жили тут со времён лент чипов на полотне. Ленты уехали в лист
+     фильтров (data-ftab / data-fexp ниже), элементов с этими атрибутами в разметке не осталось —
+     обработчики убраны, чтобы делегирование не выглядело живым кодом. */
   const jrMonthBtn = e.target.closest("[data-jrmonth]");
   if(jrMonthBtn){ journalMonth = jrMonthBtn.dataset.jrmonth; render(); return; }
   /* Выбор в ЛИСТЕ фильтров. Через data-атрибуты, а не inline-onclick: имена категорий приходят от
      пользователя и содержат апострофы. После выбора перерисовываем и экран, и сам лист — иначе
      галочка осталась бы на прежнем пункте. */
   const fTab = e.target.closest("[data-ftab]");
-  if(fTab){ stockTab = fTab.dataset.ftab; stockCat=""; stockLimit=100; render(); openStockFilterSheet(); return; }
+  if(fTab){ stockTab = fTab.dataset.ftab; stockCat=""; stockLimit=100; render(); reopenFilterSheet(openStockFilterSheet); return; }
   const fExp = e.target.closest("[data-fexp]");
-  if(fExp){ stockExpiryFilter = fExp.dataset.fexp; stockLimit=100; render(); openStockFilterSheet(); return; }
+  if(fExp){ stockExpiryFilter = fExp.dataset.fexp; stockLimit=100; render(); reopenFilterSheet(openStockFilterSheet); return; }
   const fCat = e.target.closest("[data-fcat]");
-  if(fCat){ stockCat = fCat.dataset.fcat; stockLimit=100; render(); openStockFilterSheet(); return; }
+  if(fCat){ stockCat = fCat.dataset.fcat; stockLimit=100; render(); reopenFilterSheet(openStockFilterSheet); return; }
   const fTaskCat = e.target.closest("[data-ftaskcat]");
-  if(fTaskCat){ taskFilter.cat = fTaskCat.dataset.ftaskcat; render(); openTaskFilterSheet(); return; }
+  if(fTaskCat){ taskFilter.cat = fTaskCat.dataset.ftaskcat; render(); reopenFilterSheet(openTaskFilterSheet); return; }
   const fTaskDone = e.target.closest("[data-ftaskdone]");
-  if(fTaskDone){ taskFilter.showDone = !taskFilter.showDone; render(); openTaskFilterSheet(); return; }
+  if(fTaskDone){ taskFilter.showDone = !taskFilter.showDone; render(); reopenFilterSheet(openTaskFilterSheet); return; }
   const catAct = e.target.closest("[data-cat-action]");
   if(catAct){
     const a = catAct.dataset;
