@@ -5212,7 +5212,8 @@ async function sendBroadcast(){
 /* Замеры экрана для разбора жалобы «нижняя панель стоит выше низа экрана». Правка по догадке
    (v225) на устройстве владельца ничего не изменила, а значит вьюпорт сообщает не то, что я
    предполагал. Числа снимаем на самом телефоне: сравниваем, где по мнению страницы низ окна,
-   низ видимой области и низ панели. Блок закрыт в <details> — обычному работнику он не мешает. */
+   низ видимой области и низ панели. Показываем ТОЛЬКО владельцу (is_admin) и свёрнутым: работнику
+   на вахте эти числа не нужны и в списке «О программе» выглядели бы поломкой. */
 function screenDiag(){
   const nb=document.getElementById("navbar"), r=nb?nb.getBoundingClientRect():null;
   const vv=window.visualViewport;
@@ -5245,9 +5246,9 @@ function openAboutSheet(){ openSheet(`
     <div class="opacity-70">Сборка ${APP_BUILD} · оффлайн PWA</div>
     <div class="opacity-70">Правообладатель: ООО «Разведчик».</div>
     <div class="opacity-70">Сайт и поддержка: <a href="https://vahta.razvedchick.ru" style="color:var(--accent)">vahta.razvedchick.ru</a></div>
-    <details class="mt-2"><summary class="opacity-70">Замеры экрана</summary>
+    ${(cloud.profile && cloud.profile.is_admin) ? `<details class="mt-2"><summary class="opacity-70">Замеры экрана</summary>
       <div class="mt-2" style="font-family:ui-monospace,monospace;font-size:12px;line-height:1.6">${screenDiag()}</div>
-    </details>
+    </details>` : ""}
   </div>`); }
 function openFaqSheet(){ const q=(t,a)=>`<details class="border-b border-white/5"><summary class="font-semibold">${t}</summary><div class="text-sm opacity-80 pb-2" style="line-height:1.5">${a}</div></details>`;
   openSheet(`<div class="font-bold text-xl mb-3">Помощь и частые вопросы</div>
