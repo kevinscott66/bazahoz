@@ -337,7 +337,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v220";
+const APP_BUILD = "v221";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -8149,6 +8149,34 @@ function qtyFromCloudBatches(cleaned, cloudQty){
   if(!cleaned || !cleaned.length) return cloudQty;
   return roundQty(cleaned.reduce((a,b)=>a+roundQty(b.qty||0), 0));
 }
+/* ПОСЛЕ ПОДМЕНЫ ПАРТИЙ/КОЛИЧЕСТВА ОБЛАЧНЫМИ — ПЕРЕСЧЁТ АГРЕГАТОВ КАРТОЧКИ.
+   qty/срок/место позиции С ПАРТИЯМИ — производные (см. модель партий). Слияние перед выгрузкой
+   писало it.qty и it.batches, а expiry/location оставляло прежними: карточка жила со сроком и местом
+   ИСЧЕЗНУВШЕЙ партии. А когда у облачной строки колонки batches нет вовсе (cr.batches === null,
+   строка старого клиента), количество бралось облачное и переставало равняться сумме локальных
+   партий. Обе поломки видны глазами: карточка склада считается агрегаторами и показывает
+   «4 кг, до 02.08», а форма правки ТОЙ ЖЕ позиции — «6, до 04.08». И это не косметика:
+   рассогласованные значения уезжали в облако вместе с upsert-строкой (stockToRow берёт их как есть).
+   Восстанавливаем инвариант «qty/срок/место = функция от партий» и приводим upsert-строку к тому же
+   виду. Если партий не осталось совсем (облако прислало пустой список) — срок и место были
+   производными от них и уходят вместе с ними. Звать ДО _sigOf(r), иначе подпись разойдётся с тем,
+   что реально уедет в облако. */
+function applyCloudBatchAggregates(r, it, cleaned){
+  if(it && hasBatches(it)) syncItemFromBatches(it);
+  else if(it && Array.isArray(cleaned) && !cleaned.length && (it.expiry || it.location)){
+    it.expiry=""; it.location=""; it.updatedAt=new Date().toISOString();
+  }
+  if(!r) return;
+  if(it){
+    r.qty = roundQty(it.qty||0); r.expiry = it.expiry||""; r.location = it.location||"";
+    r.batches = Array.isArray(it.batches) ? it.batches : [];
+  } else if(Array.isArray(cleaned) && cleaned.length){
+    r.expiry = nearestExpiryOf({ batches: cleaned }) || "";
+    const locs = locationsOf({ batches: cleaned });
+    r.location = locs.length===1 ? locs[0] : "";   // несколько мест → карточное поле пустое (как в syncItemFromBatches)
+    r.qty = qtyFromCloudBatches(cleaned, r.qty);
+  }
+}
 async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
   try{
     const ids = upsert.map(r=>r.id); if(!ids.length) return;
@@ -8175,9 +8203,10 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
           const _cb=cloudBatchesOnce(cr); const _cq=qtyFromCloudBatches(_cb, cloudQty);
           r.qty = _cq;
           if(_cb) r.batches = _cb;
-          curSig[r.id]=_sigOf(r);
           const it=state.stock.find(s=>s.id===r.id);
           if(it){ it.qty=_cq; if(_cb) it.batches=_cb.map(b=>({...b})); localChanged=true; }
+          applyCloudBatchAggregates(r, it, _cb);   // qty/срок/место — производные от партий; ДО подписи
+          curSig[r.id]=_sigOf(r);
         } else if(cloudQty !== (Number(r.qty)||0)){
           r.qty = cloudQty; curSig[r.id]=_sigOf(r);
           const it=state.stock.find(s=>s.id===r.id); if(it && Number(it.qty)!==cloudQty){ it.qty=cloudQty; localChanged=true; }
@@ -8195,12 +8224,10 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
         const _cb=cloudBatchesOnce(cr); const _cq=qtyFromCloudBatches(_cb, cloudQty);
         r.qty = _cq;
         if(_cb) r.batches = _cb;
-        curSig[r.id]=_sigOf(r);
         const it=state.stock.find(s=>s.id===r.id);
-        if(it){
-          if(Number(it.qty)!==_cq){ it.qty=_cq; localChanged=true; }
-          if(_cb){ it.batches = _cb.map(b=>({...b})); localChanged=true; }
-        }
+        if(it){ it.qty=_cq; if(_cb) it.batches = _cb.map(b=>({...b})); localChanged=true; }
+        applyCloudBatchAggregates(r, it, _cb);   // qty/срок/место — производные от партий; ДО подписи
+        curSig[r.id]=_sigOf(r);
         continue;
       }
       const merged = Math.max(0, roundQty((Number(r.qty)||0) + cloudQty - snapQty));   // 3-way CRDT-счётчик
@@ -8229,12 +8256,14 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
         const _cq = qtyFromCloudBatches(_useCb ? _cb : null, cloudQty);
         r.qty = _cq;
         if(_useCb) r.batches = _cb;
-        curSig[r.id]=_sigOf(r);
         const it=state.stock.find(s=>s.id===r.id);
         if(it){
-          if(Number(it.qty)!==_cq){ it.qty=_cq; localChanged=true; }
-          if(_cb && (((Array.isArray(it.batches)&&it.batches.length) || _cb.length) > 0)){ it.batches=_cb.map(b=>({...b})); localChanged=true; }
+          it.qty=_cq;
+          if(_cb && (((Array.isArray(it.batches)&&it.batches.length) || _cb.length) > 0)) it.batches=_cb.map(b=>({...b}));
+          localChanged=true;
         }
+        applyCloudBatchAggregates(r, it, _useCb ? _cb : null);   // qty/срок/место — производные от партий; ДО подписи
+        curSig[r.id]=_sigOf(r);
       }
       if(localChanged){ const _w=cloud.applying; cloud.applying=true; try{ saveState(); }finally{ cloud.applying=_w; } }
       try{ toast("Слияние остатков сбой — взяты количества из облака, проверьте вручную"); }catch(_){}
