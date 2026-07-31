@@ -2031,6 +2031,7 @@ async function exportJournalsMonth(ym){
     }catch(e){ console.warn("export month cloud → фолбэк на локальное", e); byKind=null; }
   }
   const wb=XLSX.utils.book_new();
+  let total=0;   // сколько записей реально попало в книгу — пустой файл не сохраняем
   for(const k of JOURNAL_KEYS){
     const meta=JOURNAL_META[k];
     const src = byKind ? byKind[k] : (state.journals[k]||[]);
@@ -2041,10 +2042,12 @@ async function exportJournalsMonth(ym){
       if(k==="order") row["Статус"]=op.status==="received"?"Принят":"Ожидает";
       row["Примечание"]=op.note||""; return row;
     });
+    total += rows.length;
     const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Дата":"","Наименование":""}]));
     ws["!cols"]=[{wch:16},{wch:34},{wch:11},{wch:9},{wch:16},{wch:12},{wch:10},{wch:24}];
     XLSX.utils.book_append_sheet(wb, ws, meta.label.slice(0,28));
   }
+  if(!total){ toast(`За ${monthLabel(ym)||ym} записей нет — сохранять нечего`); return; }
   saveXlsx(wb, `vahtahoz-журналы-${ym}-${_fileSafe(activeProfileName())}.xlsx`);
 }
 function renderJournal(kind){
@@ -4489,11 +4492,39 @@ function xlsxGuard(ws){
   }
   return ws;
 }
+/* Флаг «экспорт уже идёт». ensureXlsx() тянет модуль по сети, и повторный тап по кнопке во время
+   загрузки запускал ВТОРОЙ экспорт: оба вызова ждали общий промис _xlsxLoading, оба доходили до
+   сохранения — получалось два одинаковых файла (а при сбое загрузки — два одинаковых CSV).
+   Снимается ТОЛЬКО в finally: иначе одна ошибка залипла бы флагом навсегда и экспорт умер бы до
+   перезагрузки страницы. */
+let _exportBusy = false;
 async function exportXlsx(){
+  if(_exportBusy){ toast("Экспорт уже готовится…"); return; }
+  _exportBusy = true;
+  try{ await _exportXlsxRun(); }
+  finally{ _exportBusy = false; }
+}
+async function _exportXlsxRun(){
+  // пустая книга никому не нужна: раньше при пустой базе сохранялся файл из одних шапок листов
+  if(!sortedStock(state.stock).length
+     && !JOURNAL_KEYS.some(k=>(state.journals[k]||[]).length)
+     && !(state.tasks||[]).length){
+    toast("Нечего выгружать — склад, журналы и задачи пусты"); return;
+  }
   toast("Подготовка файла…");
   let XLSX;
   try{ XLSX = await ensureXlsx(); }
-  catch(e){ toast("Не удалось сделать Excel — сохраняем в простом формате"); exportCsv(); return; }
+  catch(e){
+    /* Раньше тут был МОЛЧАЛИВЫЙ откат на CSV. Предупреждение не доходило: exportCsv в том же
+       синхронном тике вызывает toast("CSV сохранён"), а toast — один элемент с textContent,
+       поэтому пользователь видел только «CSV сохранён» и не понимал, почему вместо .xlsx
+       пришёл текстовый .csv. Формат меняем только с явного согласия. */
+    const go = await confirmSheet(
+      "Excel недоступен — нужна сеть при первом использовании. Сохранить в простом формате CSV?",
+      { title:"Excel недоступен", yes:"Сохранить CSV", no:"Отмена" });
+    if(go) exportCsv();
+    return;
+  }
   const wb = XLSX.utils.book_new();
   const stockRows = sortedStock(state.stock).map(s=>({
     "Тип": typeMeta(s.type).addLabel,
@@ -4577,6 +4608,9 @@ async function exportXlsx(){
   toast("Excel сохранён");
 }
 function exportCsv(){
+  // без позиций получался файл из одной шапки (~165 байт) — сохранять его незачем
+  const list = sortedStock(state.stock);
+  if(!list.length){ toast("Склад пуст — сохранять нечего"); return; }
   const header = ["Тип","Категория","Наименование","Количество","Ед. изм.","Мин. запас","Срок годности","Место","Примечание"];
   const rows = [header];
   /* Десятичный разделитель — ЗАПЯТАЯ: файл открывают в русском Excel, где точка означает дату,
@@ -4584,7 +4618,7 @@ function exportCsv(){
      Разделитель полей у нас «;», поэтому запятая внутри числа ничего не ломает, а исключение
      анти-инъекции ниже уже допускает и точку, и запятую. XLSX этой проблемы не имеет. */
   const dec = (v) => String(v??"").replace(".", ",");
-  sortedStock(state.stock).forEach(s=>rows.push([
+  list.forEach(s=>rows.push([
     typeMeta(s.type).addLabel,
     s.category||"", s.name, dec(fmtQty(totalQtyOf(s))), s.unit||"",
     dec(s.minStock??""), s.expiry||"", locationsOf(s).join("; "), s.note||""
@@ -6257,7 +6291,8 @@ async function exportAllBasesXlsx(){
     const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}])); ws["!cols"]=_ACCT_COLS;
     XLSX.utils.book_append_sheet(wb, ws, _sheetName(b.name, used));   // лист на базу
   });
-  if(!wb.SheetNames.length){ XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Нет данных"]]), "Пусто"); }
+  // ни одной доступной базы — файл с единственной ячейкой «Нет данных» только путал: не сохраняем
+  if(!wb.SheetNames.length){ toast("Нет доступных баз — сохранять нечего"); return; }
   saveXlsx(wb, `vahtahoz-по-базам-${todayStr()}.xlsx`);
 }
 async function exportOneBaseXlsx(baseId){
