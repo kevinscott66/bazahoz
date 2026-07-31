@@ -529,6 +529,10 @@ const cloud = {
      (myRank/isAccountant/canEditStock), и чужие строки в нём исказили бы их. Нужен ровно для одного:
      чтобы предупреждение «база останется без управляющего» не срабатывало впустую (_orgManagesBase). */
   orgManagers:[],
+  /* Полон ли срез выше. org_roles_select отдаёт ЧУЖИЕ строки только владельцу (is_admin), поэтому
+     «загружено» ещё не значит «видно всё»: см. _orgManagersKnown(). Флаг нужен, чтобы точный отказ
+     давался ровно там, где клиент знает правду, а не «на всякий случай». */
+  orgManagersLoaded:false,
   channel:null, subscribedBase:null,
   pushTimer:null, pullTimer:null, applying:false, ready:false, busy:false,
   pushPending:false, retryTimer:null, pullRetryT:null, baseMembers:[], basesLoaded:false, membersLoaded:false,
@@ -5548,9 +5552,24 @@ async function wipeAll(){
     // в облаке у всех участников (в т.ч. у начальника). «Сброс» здесь = заменить ЛОКАЛЬНУЮ копию
     // свежими данными из облака. Облако не трогаем.
     if(!await confirmSheet(`База «${activeProfileName()}» — облачная. Обновить локальную копию из облака? Несохранённые локальные правки заменятся облачными. Данные в облаке НЕ удаляются.`,{danger:true,yes:"Обновить из облака"})) return;
+    /* Брат-близнец уже исправленного места в разборе подозрительного обнуления, и болезнь та же:
+       метка несинхронизированного снималась БЕЗУСЛОВНО, потом шла загрузка, потом печатался
+       БЕЗУСЛОВНЫЙ тост «Обновлено из облака». cloudPull возвращает true только когда облачные
+       данные действительно применены — все ранние выходы (оффлайн, снят со смены, гонка с чужой
+       правкой, есть своё несинхронизированное) дают undefined и НЕ бросают. Значит человек мог
+       увидеть «Обновлено», не получив ничего, и при этом уже лишиться метки своих правок:
+       они не выгрузились бы никогда. Теперь метку возвращаем на место, а ответ соответствует факту. */
+    const _hadDirty = !!localStorage.getItem(cloudDirtyKey(cid));
     try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(_){}   // отбрасываем несинхронизированное локальное (но НЕ снимок — иначе ложный конфликт при сбое)
     setSyncStatus("syncing","Обновление из облака…");
-    try{ await cloudPull(cid); toast("Обновлено из облака"); }catch(e){ toast("Не удалось обновить — проверьте интернет и нажмите значок синхронизации вверху справа"); }
+    let _ok = false;
+    try{ _ok = (await cloudPull(cid)) === true; }
+    catch(e){ console.warn("wipeAll pull", e); }
+    if(_ok){ toast("Обновлено из облака"); }
+    else{
+      if(_hadDirty){ try{ markDirty(cid); }catch(_){} }   // загрузки не было — свои правки НЕ выбрасываем
+      toast("Не удалось обновить из облака — данные на телефоне не тронуты. Проверьте связь и нажмите значок синхронизации вверху справа");
+    }
     nav("dashboard");
     return;
   }
@@ -5900,7 +5919,7 @@ async function cloudRefresh(refresh_token){
 // постоянный сбой рефреша → чистый выход на экран входа (аккаунт удалён/токен отозван/сменили пароль)
 async function cloudSessionExpired(reason){
   if(!cloud.session && !cloud.ready) return;   // уже разлогинены — не дублируем
-  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.orgManagers=[]; cloud.ready=false; cloud.basesLoaded=false; cloud.membersLoaded=false;
+  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.orgManagers=[]; cloud.orgManagersLoaded=false; cloud.ready=false; cloud.basesLoaded=false; cloud.membersLoaded=false;
   cloud.bases={}; clearAllBasesCache();        // имена баз и снимок остатков протухшей сессии не должны висеть в UI/памяти
   cloud._basesLoading=false; cloud.busy=false; cloud.pushPending=false; cloud.applying=false;   // иначе повторный вход залипнет (cloudOnLogin рано выходит при _basesLoading)
   cloud._conflictAsked={};                      // иначе после входа ДРУГИМ юзером на этом устройстве диалог «какие данные главные» молча пропустится → тихий pull без сохранения копии
@@ -6152,6 +6171,15 @@ function _findBM(uid){ return (cloud.baseMembers||[]).find(x=>x.user_id===uid); 
 // (глобальный владелец-админ исключение — он восстановит права в любом случае).
 function _wouldOrphan(uid, change){
   if(cloud.profile && cloud.profile.is_admin) return false;
+  /* Базой управляют из ОРГСТРУКТУРЫ (начальник партии/директор с can_manage, покрывающий базу) —
+     сервер такую операцию пропустит: без активного can_manage в base_members база сиротой не
+     становится. Раньше этой ветки не было, и запрет срабатывал у не-владельца там, где сервер
+     разрешает: начальник партии не мог ни снять со смены, ни убрать последнего начальника участка.
+     Проверка видит только те орг-роли, которые клиенту отдал сервер (свои, а владельцу — все),
+     то есть ошибиться может лишь в сторону ЗАПРЕТА, а не разрешения; полностью слепые случаи
+     остаются под запретом сознательно — там ниже по коду серверный гард на self-shift совпадает
+     с нашим, и ложного «нельзя» не возникает. */
+  if(_orgManagesBase(activeCloudId())) return false;
   const after = (cloud.baseMembers||[]).filter(m=>{
     let manage=!!m.can_manage, active=(m.active!==false);
     if(m.user_id===uid){
@@ -6226,6 +6254,14 @@ function canRotateMember(m){
    в понятный текст), клиент же лишь предупреждает в подтверждении.
    Владельцу (is_admin) политика org_roles_select отдаёт и чужие строки — для него в cloud.orgManagers
    лежит полный срез управляющих орг-ролей, поэтому его предупреждение точное. */
+/* ЗНАЕТ ЛИ КЛИЕНТ ПРАВДУ об управляющих орг-ролях этой базы. Политика org_roles_select отдаёт
+   не-владельцу ТОЛЬКО его собственные строки, поэтому полный срез есть лишь у владельца (is_admin)
+   и только если он реально загрузился. Это и есть граница между «сказать точно» и «предупредить»:
+   там, где срез полон, отказ сервера известен заранее и человек получает одну понятную строку
+   СРАЗУ, а не после выбора кандидата, подтверждения и ожидания сети. */
+function _orgManagersKnown(){
+  return !!(cloud.profile && cloud.profile.is_admin && cloud.orgManagersLoaded);
+}
 function _orgManagesBase(cid){
   /* Признак владельца (is_admin) управляющим ЗДЕСЬ не считается: строки в org_roles у владельца нет,
      и серверная проверка «сироты» его не исключает. */
@@ -6279,6 +6315,15 @@ function openHandover(fromUid){
   const others=handoverCandidates(fromUid);
   // единственный отказ, который клиент знает точно: передавать НЕКОМУ (в базе больше никого нет)
   if(!others.length){ toast("Нет заступающего. Сначала добавьте работника кнопкой «＋ Добавить»"); return; }
+  /* ...и второй, когда срез орг-управляющих ПОЛОН (владелец): если ни один кандидат не удержит базу
+     с управляющим, сервер откажет по 'orphan' — говорим это сразу, до выбора и подтверждения.
+     На типовой базе «один начальник участка плюс хозрабочие» орг-ролей нет вовсе, и раньше человек
+     проходил весь путь ради того же отказа. Где срез неполон (не-владелец) — по-прежнему только
+     предупреждение в подтверждении: решает сервер, он знает правду. */
+  if(_orgManagersKnown() && others.every(o=>_handoverMayOrphan(fromUid, o.user_id))){
+    toast("После передачи база останется без «Начальника участка». Сначала назначьте кого-то начальником участка");
+    return;
+  }
   openSheet(`<div class="font-bold text-xl mb-3">Передать смену</div>
     <div class="text-sm opacity-70 mb-2">От «${esc(from.username)}» — кому передать смену и задачи?</div>
     <div class="space-y-2">
@@ -6295,7 +6340,14 @@ async function doHandover(fromUid, toUid){
      запрет отнимал у людей единственный способ передать смену вместе с задачами там, где сервер
      операцию разрешает. Откажет — сервер, и его причина уже переведена в человеческий текст. */
   if(!canRotateMember(from)){ toast("Нельзя снять со смены того, кто равен вам или выше по должности"); return; }
-  const orphanWarn = _handoverMayOrphan(fromUid, toUid)
+  const mayOrphan = _handoverMayOrphan(fromUid, toUid);
+  // срез управляющих полон → это не «похоже», а известный отказ сервера: не гоняем человека
+  // через подтверждение и ожидание сети ради 'orphan'
+  if(mayOrphan && _orgManagersKnown()){
+    toast(`После передачи база останется без «Начальника участка»: назначьте «${to.username}» начальником участка или выберите другого заступающего`);
+    return;
+  }
+  const orphanWarn = mayOrphan
     ? `\n\n⚠️ Похоже, после передачи на базе не останется «Начальника участка». Если базой управляют из оргструктуры (начальник партии, директор) — передача пройдёт. Если нет — сервер откажет, тогда сначала назначьте управляющего.`
     : "";
   if(!await confirmSheet(`Передать смену от «${from.username}» к «${to.username}»?\nВсе задачи «${from.username}» перейдут к «${to.username}». «${from.username}» уйдёт со смены и потеряет доступ к базе, «${to.username}» заступит и получит доступ.${orphanWarn}`,{ yes:"Передать смену", title:"Передать смену" })) return;
@@ -7166,6 +7218,7 @@ async function cloudOnLogin(session, attempt){
     cloud.members = Array.isArray(mem) ? mem : [];
     cloud.orgRoles = Array.isArray(orgs) ? orgs : [];
     cloud.orgManagers = Array.isArray(orgMgrs) ? orgMgrs : [];
+    cloud.orgManagersLoaded = Array.isArray(orgMgrs);
     cloud.bases = {}; cloud._baseParty = {}; (Array.isArray(bs)?bs:[]).forEach(b=>{ cloud.bases[b.id]=b.name; cloud._baseParty[b.id]=b.party_id||null; });
     cloud.ready = true; cloud.basesLoaded = true;
     cloud.membersLoaded = true;   // сервер ОТВЕТИЛ: членство известно (в т.ч. «членства нет» = [])
@@ -7257,7 +7310,7 @@ async function cloudLogout(){
   clearTimeout(cloud.pushTimer); clearTimeout(cloud.retryTimer); clearTimeout(cloud.pullTimer); clearTimeout(cloud.pullRetryT);   // отложенные склад-операции не должны срабатывать после выхода
   // задачи привязаны к аккаунту (owner) — при выходе НЕ оставляем их локально, иначе следующий юзер их увидит/выгрузит
   state.tasks=[]; try{ localStorage.removeItem(TASKS_KEY); localStorage.removeItem(TASKS_DIRTY); }catch(e){}
-  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.orgManagers=[]; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
+  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.orgManagers=[]; cloud.orgManagersLoaded=false; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
   cloud.tasksChannel=null; cloud.tasksSubUid=null; cloud.tasksBusy=false; cloud.basesLoaded=false; cloud.membersLoaded=false;   // сброс задач: иначе после входа другим юзером realtime молчит
   cloud._conflictAsked={};   // сброс «спрашивали ли про конфликт данных» — для следующего входа на этом устройстве
   clearAllBasesCache();   // снимок остатков всех баз не должен пережить выход (утечка на общем устройстве)
@@ -8233,6 +8286,7 @@ function cloudDrainRemoteMissed(){
   if(!cloud._remoteMissed) return;
   clearTimeout(cloud.pullTimer);
   cloud.pullTimer = setTimeout(()=>{
+    cloud.pullTimer = null;   // окно израсходовано — иначе «есть ли запланированный pull» не отличить от «был когда-то»
     const c = activeCloudId();
     if(!(c && cloud.ready && cloud.session && !cloud.busy && !cloud.pushPending && !cloud.applying &&
          !localStorage.getItem(cloudDirtyKey(c)))) return;   // ещё занято / есть свои правки — флаг НЕ гасим, событие живо
@@ -8241,23 +8295,57 @@ function cloudDrainRemoteMissed(){
   }, 800);
 }
 /* Подписи строк, которые ТОЛЬКО ЧТО выгрузили мы сами, — чтобы отличить эхо своей записи от чужой
-   правки в realtime. Живёт минуту: эхо приходит за секунды, а держать дольше незачем — просроченная
-   запись просто перестаёт совпадать, и событие идёт обычным путём (лишний pull, но не потеря). */
-const _echoSent = { at:0, sig:new Map() };
+   правки в realtime.
+
+   ЧТО БЫЛО СЛОМАНО (две вещи, обе приводили к молчаливой потере чужой правки):
+   1) Срок жизни был у ВСЕЙ КАРТЫ, а не у записи: `_echoSent.at` хранило время ПОСЛЕДНЕГО
+      запоминания, и карта очищалась только если между двумя выгрузками прошло больше минуты
+      ЦЕЛИКОМ. На смене выгрузки идут чаще минуты — значит карта не очищалась никогда, и подпись,
+      выгруженная десять минут назад, всё ещё считалась «нашей».
+   2) Подпись НЕ снималась после срабатывания. Отсюда самое дорогое: напарник поставил 4 —
+      подтянулось; напарник вернул 10 — а десятку когда-то выгружали мы, значит «эхо», загрузки
+      нет. В облаке 10, на экране 4, и следующая наша выгрузка затирала облако четвёркой.
+      «Верни как было» — рядовая операция смены, а не редкость.
+
+   КАК СДЕЛАНО СЕЙЧАС: у каждой записи собственная отметка времени и собственный срок (ECHO_TTL),
+   а сработавшая подпись СРАЗУ удаляется — эхо на один upsert приходит ровно одно, всё последующее
+   с тем же значением это уже чужая правка. Повторная выгрузка той же строки (retry) заново
+   взводит подпись, так что законное эхо по-прежнему не тянет полную загрузку. Цена ошибки в
+   «другую» сторону — один лишний pull, а не потеря данных. */
+const ECHO_TTL = 60000;
+const _echoSent = { sig:new Map() };   // "table|id" → { sig, at }
 function _rememberEcho(table, pairs){
   const now = Date.now();
-  if(now - _echoSent.at > 60000) _echoSent.sig.clear();
-  _echoSent.at = now;
-  for(const [id, sg] of pairs){ if(id && sg) _echoSent.sig.set(table+"|"+id, sg); }
-  if(_echoSent.sig.size > 5000) _echoSent.sig.clear();   // разовая массовая выгрузка не должна держать память
+  for(const [id, sg] of pairs){ if(id && sg) _echoSent.sig.set(table+"|"+id, { sig:sg, at:now }); }
+  // чистка по САМИМ записям, а не «всей картой раз в минуту» — иначе на активной смене не чистится никогда
+  if(_echoSent.sig.size > 200){
+    for(const [k, v] of _echoSent.sig){ if(!v || now - v.at > ECHO_TTL) _echoSent.sig.delete(k); }
+    if(_echoSent.sig.size > 5000) _echoSent.sig.clear();   // разовая массовая выгрузка не должна держать память
+  }
+}
+/* Забыть подпись строки. Нужна ровно там, где облачное значение УШЛО от запомненного нами:
+   пришла чужая правка этой же строки (или её удаление). Держать после этого свою подпись нельзя —
+   на ней и ломался «верни как было»: напарник ставит 4 (подпись не совпала, загрузка прошла), потом
+   возвращает 10 — а десятку когда-то выгружали мы, подпись всё ещё лежала в карте, возврат считался
+   эхом и НЕ загружался. В облаке 10, на экране 4, а следующая наша выгрузка затирала облако
+   четвёркой. Одного лишь срока жизни и одноразовости мало: своё эхо в этом сценарии не приходило
+   вовсе, снимать подпись было некому. */
+function _forgetEcho(payload){
+  try{
+    const tbl = payload && payload.table;
+    const id = (payload && payload.new && payload.new.id) || (payload && payload.old && payload.old.id);
+    if(tbl && id) _echoSent.sig.delete(tbl+"|"+id);
+  }catch(_){}
 }
 function _isOwnEcho(payload){
   try{
     const rec = payload && payload.new, tbl = payload && payload.table;
     if(!rec || !rec.id || !tbl) return false;                       // DELETE и прочее без строки — не эхо
-    if(Date.now() - _echoSent.at > 60000) return false;
-    const sg = _echoSent.sig.get(tbl+"|"+rec.id);
-    if(!sg) return false;
+    const key = tbl+"|"+rec.id;
+    const ent = _echoSent.sig.get(key);
+    if(!ent) return false;
+    if(Date.now() - ent.at > ECHO_TTL){ _echoSent.sig.delete(key); return false; }   // своя протухшая подпись
+    const sg = ent.sig;
     // проекция облачной строки на НАШИ колонки — подпись считалась ровно по ним (stockToRow / {kind,data})
     const proj = tbl==="stock_items"
       ? { id:rec.id, base_id:rec.base_id, type:rec.type, name:rec.name, category:rec.category||"",
@@ -8266,20 +8354,44 @@ function _isOwnEcho(payload){
           batches:Array.isArray(rec.batches)?rec.batches:[] }
       : tbl==="journal_entries" ? { kind:rec.kind, data:rec.data }
       : null;
-    return !!proj && _sigOf(proj)===sg;
+    if(!proj || _sigOf(proj)!==sg) return false;
+    _echoSent.sig.delete(key);   // ОДНОРАЗОВО: эхо на один upsert приходит один раз, дальше это уже чужая правка (в т.ч. «верни как было»)
+    return true;
   }catch(_){ return false; }
 }
 function cloudOnRemote(payload){
-  clearTimeout(cloud.pullTimer);               // всегда гасим прежний отложенный pull, иначе он сработает после dirty и затрёт правки
   /* ЭХО СОБСТВЕННОЙ ВЫГРУЗКИ. Наш же upsert возвращается по realtime как «изменение в облаке».
      На канале задач эхо отбрасывается явно (cloud.tasksBusy), а здесь не отбрасывалось: событие
      помечалось _remoteMissed и превращалось в ПОЛНУЮ загрузку базы после каждого push — на вахтовом
      интернете это лишний трафик на каждое сохранение остатка (в v216 эхо просто отбрасывалось).
      Отбрасываем ТОЛЬКО строку, содержимое которой ПОБАЙТОВО совпадает с тем, что мы сами выгрузили
      (сверка по подписи, см. _isOwnEcho): чужая правка, даже пришедшая в это же окно, подписи не
-     совпадёт и пойдёт обычным путём — ради неё _remoteMissed и вводили. Ложное совпадение возможно
-     лишь когда чужое устройство записало РОВНО ТО ЖЕ значение, и тогда тянуть действительно нечего. */
-  if(_isOwnEcho(payload)) return;
+     совпадёт и пойдёт обычным путём — ради неё _remoteMissed и вводили.
+
+     ПОРЯДОК ЗДЕСЬ — ЭТО ПОТЕРЯ ДАННЫХ, А НЕ СТИЛЬ. Раньше первой строкой стоял clearTimeout, и
+     только потом проверялось эхо. Значит наше собственное эхо СНИМАЛО загрузку, назначенную
+     предыдущим — ЧУЖИМ — событием, и взамен не планировало ничего. Это не редкий угол: одно
+     списание пишет и строку склада, и строку журнала, то есть по каналу приходит минимум два эха,
+     и второе гарантированно попадало в чужое окно 400 мс. Напарник списал последний мешок муки —
+     на вашем экране мешок оставался, до следующего события, своей выгрузки или перезапуска.
+     Теперь эхо не трогает чужой таймер вовсе: оно выходит РАНЬШЕ clearTimeout.
+     Ради чего clearTimeout ставили — схлопывание пачки чужих событий в один pull — сохранено:
+     он остался на пути НЕэха, ровно перед планированием нового окна. Опасение «сработает после
+     dirty и затрёт правки» закрыто вторым рубежом: cloudPull при dirty сам не тянет, а уходит
+     в push (см. его начало). */
+  if(_isOwnEcho(payload)){
+    /* И ещё одно следствие прежнего порядка: если чужая правка успела поднять _remoteMissed
+       (пришла во время push/pull), а её отложенную загрузку убило эхо, перепланировать флаг было
+       некому — слив зовут только завершения выгрузки и загрузки, а они уже прошли. Флаг висел
+       истиной, экран — устаревшим. Дотягиваем сами, но только когда никто не занят и своего
+       окна загрузки нет: иначе отобрали бы у чужого события уже назначенный pull. */
+    if(cloud._remoteMissed && !cloud.busy && !cloud.pushPending && !cloud.applying && !cloud.pullTimer){
+      cloudDrainRemoteMissed();
+    }
+    return;
+  }
+  _forgetEcho(payload);   // не наше значение → наша подпись по этой строке протухла (см. _forgetEcho)
+  clearTimeout(cloud.pullTimer); cloud.pullTimer = null;   // своё же прежнее окно: пачка чужих событий схлопывается в ОДИН pull
   // push/pull в полёте — второй pull не стартуем. НО событие нельзя просто выбросить: чужая правка,
   // прилетевшая во время нашей загрузки, не попадала в этот pull (он уже читал облако ДО неё) и не
   // планировала следующий — экран висел устаревшим до случайного следующего триггера (своя правка,
@@ -8288,7 +8400,7 @@ function cloudOnRemote(payload){
   // есть несинхронизированные локальные правки → не тянем (затёрли бы своё); сначала выгрузим их
   const cid0 = activeCloudId();
   if(cid0 && localStorage.getItem(cloudDirtyKey(cid0))){ cloudMaybePush(); return; }
-  cloud.pullTimer = setTimeout(()=>{ const cid=activeCloudId(); if(cid) cloudPull(cid); }, 400);
+  cloud.pullTimer = setTimeout(()=>{ cloud.pullTimer=null; const cid=activeCloudId(); if(cid) cloudPull(cid); }, 400);
 }
 /* UI: вход */
 function cloudLoginPrompt(){
@@ -8334,14 +8446,20 @@ async function cloudRefreshMyMembership(){
     if(!tok || !uid) return;
     // тянем членства + территориальные роли + карту база→партия одним заходом (иначе canManageBase/myRank
     // рассинхронятся: партийный управляющий мог бы «потерять» доступ к базе, отсутствующей в _baseParty).
-    const [mem, orgs, bs] = await Promise.all([
+    const [mem, orgs, bs, orgMgrs] = await Promise.all([
       cloudRest(`base_members?select=*&user_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:20000}),
       cloudRest(`org_roles?select=*&user_id=eq.${encodeURIComponent(uid)}`, tok, {timeout:20000}).catch(()=>null),
       cloudRest(`bases?select=id,name,party_id`, tok, {timeout:20000}).catch(()=>null),
+      /* СРЕЗ УПРАВЛЯЮЩИХ ОРГ-РОЛЕЙ — тот же запрос, что при входе. Его тут не было вовсе: после
+         выдачи орг-роли (или её снятия) без перезахода cloud.orgManagers оставался прежним, и
+         предупреждение «база останется без управляющего» врало в обе стороны — молчало там, где
+         управляющего не осталось, и пугало там, где он появился. */
+      cloudRest(`org_roles?select=party_id,role,active,can_manage&active=is.true&can_manage=is.true`, tok, {timeout:20000}).catch(()=>null),
     ]);
     // сервер ответил → членство известно, даже если холодный старт уходил в catch (basesLoaded=false)
     if(Array.isArray(mem)){ cloud.members=mem; cloud.membersLoaded=true; }
     if(Array.isArray(orgs)) cloud.orgRoles=orgs;
+    if(Array.isArray(orgMgrs)){ cloud.orgManagers=orgMgrs; cloud.orgManagersLoaded=true; }
     if(Array.isArray(bs)){ cloud.bases={}; cloud._baseParty={}; bs.forEach(b=>{ cloud.bases[b.id]=b.name; cloud._baseParty[b.id]=b.party_id||null; }); }
     // если появились новые видимые базы (выдали орг-роль/добавили в базу пока сидел в приложении) — привяжем их,
     // иначе пользователь не увидит новые базы до перезахода (org_roles/base_members без реалтайма).
