@@ -362,7 +362,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v224";
+const APP_BUILD = "v225";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -1691,7 +1691,50 @@ function render(){
   if(currentView==="stock") renderStock();
   if(currentView==="kitchen") renderKitchen();
   if(currentView==="more") renderMore();
+  syncNavbarBottom();   // высота полотна поменялась → могло поменяться и место нижней панели
 }
+
+/* НИЖНЯЯ ПАНЕЛЬ НЕ НА НИЗУ ЭКРАНА (жалоба владельца, Android, установленное приложение).
+   На «Задачах» без задач панель стояла на ~130px выше настоящего низа, а на «Складе» с длинным
+   списком — вплотную. Само не исправлялось: ни прокруткой, ни уходом в другой раздел и обратно.
+   position:fixed привязан к малому вьюпорту, и на экране, который нечего прокручивать, панель
+   так и парковалась по его нижнему краю.
+
+   Почему не правкой CSS: `min-height:100svh` у body стоит осознанно — на iOS `100vh` создавал
+   лишнюю прокрутку, Safari дёргал свою панель и навигация на миг вставала посреди экрана
+   (см. комментарий у правила). Менять высоту вьюпорта ради Android значит вернуть ту болячку.
+
+   Поэтому меряем факт: где низ панели и где низ видимой области. Разницу гасим сдвигом. Способ
+   не зависит от причины (малый вьюпорт, полоса жестов, панель браузера) и сам себя исправляет —
+   смещение накапливается относительно текущего, а не пересчитывается от нуля. Где разницы нет
+   (iOS, десктоп) сдвиг остаётся нулевым и поведение прежнее. */
+let _navShift = 0;
+function syncNavbarBottom(){
+  const nb = document.getElementById("navbar"); if(!nb) return;
+  const vv = window.visualViewport;
+  // клавиатура: вьюпорт временно короче окна — панель трогать нельзя, иначе она прыгнет на клавиатуру
+  if(vv && (window.innerHeight - vv.height) > 150) return;
+  const visBottom = vv ? (vv.offsetTop + vv.height) : window.innerHeight;
+  const d = visBottom - nb.getBoundingClientRect().bottom;
+  if(Math.abs(d) < 1) return;
+  const next = Math.max(-300, Math.min(300, _navShift + d));   // предохранитель от разгона при странных вьюпортах
+  if(Math.round(next) === Math.round(_navShift)) return;
+  _navShift = next;
+  nb.style.transform = `translateY(${_navShift.toFixed(1)}px) translateZ(0)`;
+}
+(function wireNavbarBottom(){
+  const run = ()=>{ try{ syncNavbarBottom(); }catch(_){} };
+  const vv = window.visualViewport;
+  if(vv){ vv.addEventListener("resize", run); }
+  addEventListener("resize", run);
+  addEventListener("orientationchange", ()=>setTimeout(run, 250));
+  /* прокрутку слушаем с задержкой и только по её окончании: на iOS панель во время инерции двигает
+     сам движок, и правка на каждом кадре — это ровно те рывки, из-за которых панель вынесена на
+     отдельный слой композитора. */
+  let t = null;
+  addEventListener("scroll", ()=>{ clearTimeout(t); t = setTimeout(run, 200); }, {passive:true});
+  addEventListener("load", ()=>setTimeout(run, 60));
+})();
 
 // Короткая надпись базы ТОЛЬКО для кнопки переключения в шапке (полное имя — в шите выбора базы).
 // Регион без «отряд/РоГРП/РуГРП» и без скобок: «1 отряд РоГРП «Западная»»→«1 Западная»,
