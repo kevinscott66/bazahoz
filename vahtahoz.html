@@ -362,7 +362,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v226";
+const APP_BUILD = "v227";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -5212,8 +5212,9 @@ async function sendBroadcast(){
 /* Замеры экрана для разбора жалобы «нижняя панель стоит выше низа экрана». Правка по догадке
    (v225) на устройстве владельца ничего не изменила, а значит вьюпорт сообщает не то, что я
    предполагал. Числа снимаем на самом телефоне: сравниваем, где по мнению страницы низ окна,
-   низ видимой области и низ панели. Показываем ТОЛЬКО владельцу (is_admin) и свёрнутым: работнику
-   на вахте эти числа не нужны и в списке «О программе» выглядели бы поломкой. */
+   низ видимой области и низ панели. Показываем ТОЛЬКО владельцу (is_admin): работнику на вахте эти
+   числа не нужны и в списке «О программе» выглядели бы поломкой. Без <details> — на телефоне
+   владельца блок так и остался нераскрытым (в шторке тап по summary не сработал). */
 function screenDiag(){
   const nb=document.getElementById("navbar"), r=nb?nb.getBoundingClientRect():null;
   const vv=window.visualViewport;
@@ -5246,9 +5247,8 @@ function openAboutSheet(){ openSheet(`
     <div class="opacity-70">Сборка ${APP_BUILD} · оффлайн PWA</div>
     <div class="opacity-70">Правообладатель: ООО «Разведчик».</div>
     <div class="opacity-70">Сайт и поддержка: <a href="https://vahta.razvedchick.ru" style="color:var(--accent)">vahta.razvedchick.ru</a></div>
-    ${(cloud.profile && cloud.profile.is_admin) ? `<details class="mt-2"><summary class="opacity-70">Замеры экрана</summary>
-      <div class="mt-2" style="font-family:ui-monospace,monospace;font-size:12px;line-height:1.6">${screenDiag()}</div>
-    </details>` : ""}
+    ${(cloud.profile && cloud.profile.is_admin) ? `<div class="mt-2 opacity-70">Замеры экрана</div>
+      <div style="font-family:ui-monospace,monospace;font-size:12px;line-height:1.6">${screenDiag()}</div>` : ""}
   </div>`); }
 function openFaqSheet(){ const q=(t,a)=>`<details class="border-b border-white/5"><summary class="font-semibold">${t}</summary><div class="text-sm opacity-80 pb-2" style="line-height:1.5">${a}</div></details>`;
   openSheet(`<div class="font-bold text-xl mb-3">Помощь и частые вопросы</div>
