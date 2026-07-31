@@ -223,7 +223,7 @@
       <a role="button" tabindex="0" onclick="openTermsSheet()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTermsSheet()}" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a role="button" tabindex="0" onclick="openPrivacySheet()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openPrivacySheet()}" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
     <!-- текст подставляется из APP_BUILD_LABEL при старте (единый источник версии) -->
-    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v213 · БЕТА</div>
+    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v214 · БЕТА</div>
   </div>
 </div>
 
@@ -271,7 +271,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v213";
+const APP_BUILD = "v214";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -816,6 +816,10 @@ function sanitizeIds(arr){
 /* --- per-field валидаторы импорта (структура + нормализация); поведение идентично исходному validateImport --- */
 function validateArrayField(obj, field){
   if(obj[field]!==undefined && !Array.isArray(obj[field])) throw new Error(`поле ${field} не массив`);
+  // Не-объекты внутри массива ("stock":[null] / ["Мука"]) выбрасываем СРАЗУ: иначе битое
+  // состояние успевает записаться в localStorage, а renderDashboard падает на старте —
+  // приложение не открывается и само не восстанавливается.
+  if(Array.isArray(obj[field])) obj[field] = obj[field].filter(x=>x && typeof x==="object" && !Array.isArray(x));
 }
 function validateJournalsField(obj){
   if(obj.journals!==undefined){
@@ -823,6 +827,7 @@ function validateJournalsField(obj){
     for(const k of JOURNAL_KEYS){
       if(obj.journals[k]!==undefined && !Array.isArray(obj.journals[k])) throw new Error(`journals.${k} не массив`);
       if(obj.journals[k]===undefined) obj.journals[k] = [];
+      obj.journals[k] = obj.journals[k].filter(x=>x && typeof x==="object" && !Array.isArray(x));
     }
   }
 }
@@ -1863,6 +1868,17 @@ function renderStock(){
     clearTimeout(stockSearchT);
     stockSearchT = setTimeout(()=>{
       stockSearch = inp.value;
+      // Начал искать — фильтр сроков снимаем: он выставляется шитом «Сроки» и жил всю сессию,
+      // из-за чего позиция В НАЛИЧИИ «пропадала» из поиска (искали по всему складу, а фильтр
+      // молча показывал только просрочку). Ищут всегда по всему складу.
+      if(stockExpiryFilter!=="all" && inp.value.trim()){
+        stockExpiryFilter = "all";
+        renderStock();   // чипы сроков тоже перерисовать, иначе подсветка чипа врёт
+        // renderStock пересоздал input — вернуть фокус и каретку, чтобы набор не прервался
+        const ni = document.getElementById("stockSearchInp");
+        if(ni){ ni.focus(); try{ ni.setSelectionRange(ni.value.length, ni.value.length); }catch(_){} }
+        return;
+      }
       stockLimit = 100;
       renderStockList();
     }, 150);
@@ -1901,9 +1917,16 @@ function renderStockList(){
   const shown = list.slice(0, stockLimit);
   if(!total){
     const noFilters = !stockSearch.trim() && !stockCat && stockExpiryFilter==="all";
+    // Пустой список обязан НАЗВАТЬ активные фильтры: «Ничего не найдено» при включённой
+    // «Просрочке» читалось как «товары пропали», хотя они просто отфильтрованы.
+    const parts = [];
+    if(stockExpiryFilter==="expired") parts.push("фильтр «⛔ Просрочка»");
+    if(stockExpiryFilter==="soon") parts.push("фильтр «⏰ Скоро»");
+    if(stockCat) parts.push(`категория «${esc(stockCat)}»`);
+    const hint = parts.length ? `<div class="text-xs opacity-60 mt-1">Активен ${parts.join(" и ")} — снимите, чтобы увидеть весь склад</div>` : "";
     box.innerHTML = `<div class="card text-center opacity-70">${noFilters
       ? "Склад пуст. Нажмите «＋» вверху, чтобы добавить первую позицию."
-      : "Ничего не найдено"}</div>`;
+      : "Ничего не найдено"+hint}</div>`;
     return;
   }
   const more = total > shown.length
@@ -4997,6 +5020,17 @@ function importData(ev){
         ]
       );
       if(!mode) return;
+      /* ОБЛАЧНАЯ база + «Заменить всё» = правка ОБЩИХ данных бригады: следующий push удалит из
+         облака все позиции, которых нет в файле, У ВСЕХ участников. Приходы, внесённые другими
+         после даты бэкапа, исчезнут. suspectWipe здесь молчит (ловит лишь усыхание >90%).
+         Поэтому подтверждение с прямым текстом — по образцу wipeAll, где стирание облачной
+         базы локально прямо запрещено. */
+      if(mode==="replace" && activeCloudId()){
+        const ok2 = await confirmSheet(
+          "База ОБЛАЧНАЯ — замена уйдёт всей бригаде.\n\nВсе позиции, которых нет в файле, будут УДАЛЕНЫ из общей базы у всех участников — включая приходы, внесённые после даты этого файла.\n\nДля добавления недостающего без удалений используйте «Объединить».",
+          { danger:true, yes:"Заменить у всей бригады", no:"Отмена", title:"⚠️ Замена общих данных" });
+        if(!ok2) return;
+      }
       const base = mode==="replace" ? structuredClone(defaultState) : state;
       const merged = mode==="replace" ? { ...base, ...obj } : structuredClone(state);
       // категории
@@ -5243,6 +5277,9 @@ function openExpiredView(){
   stockMode = "stock";
   stockTab = "all";
   stockCat = "";
+  // Старый поиск обязан сброситься: он пережил бы переход и мог показать ПУСТОЙ список
+  // просрочки («ничего не найдено» при реальных просроченных позициях).
+  stockSearch = "";
   stockExpiryFilter = "expired";
   stockLimit = 100;
   nav("stock");
@@ -7868,11 +7905,14 @@ if("serviceWorker" in navigator && location.protocol!=="file:"){
 // устройства, импорт). Стартовый блок нормализации выполняется один раз и при переприсвоении не повторяется,
 // из-за чего битая/старая схема могла уронить render. Дублирует ключевые shape-гарды + чистку позиций (всё идемпотентно).
 function normalizeState(){
-  if(!Array.isArray(state.stock)) state.stock = [];
-  if(!Array.isArray(state.tasks)) state.tasks = [];
-  if(!Array.isArray(state.log))   state.log   = [];
+  // Второй рубеж после validateImport: не-объект в массиве (null/строка из битого файла или
+  // storage-события) валит renderDashboard на старте — приложение не открывается.
+  const objOnly = (a)=> Array.isArray(a) ? a.filter(x=>x && typeof x==="object" && !Array.isArray(x)) : [];
+  state.stock = objOnly(state.stock);
+  state.tasks = objOnly(state.tasks);
+  state.log   = objOnly(state.log);
   if(!state.journals || typeof state.journals!=="object" || Array.isArray(state.journals)) state.journals = emptyJournals();
-  for(const k of JOURNAL_KEYS) if(!Array.isArray(state.journals[k])) state.journals[k] = [];
+  for(const k of JOURNAL_KEYS) state.journals[k] = objOnly(state.journals[k]);
   if(!state.categories || typeof state.categories!=="object" || Array.isArray(state.categories)) state.categories = { product:[], household:[], tool:[] };
   for(const k of STOCK_TYPE_KEYS) if(!Array.isArray(state.categories[k])) state.categories[k] = (DEFAULT_CATEGORIES[k]||[]).slice();
   if(!state.locations || typeof state.locations!=="object" || Array.isArray(state.locations)){ state.locations={}; for(const k of STOCK_TYPE_KEYS) state.locations[k]=DEFAULT_LOCATIONS[k].slice(); }
