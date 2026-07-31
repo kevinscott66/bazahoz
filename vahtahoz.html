@@ -337,7 +337,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v221";
+const APP_BUILD = "v222";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -599,7 +599,12 @@ let state = loadState();
 /* ---------- Облако (Supabase): состояние объявлено рано, до первых saveState ----------
    Реализация функций — единым блоком ниже (hoisted). Без входа всё работает офлайн. */
 const CLOUD_CFG = {
-  url:  "https://jzxajxwtcemrztfwbdkm.supabase.co",
+  // Свой домен, а не *.supabase.co: с части российских сетей supabase.co не открывается
+  // без VPN — сайт грузится мгновенно, а первый запрос к базе висит до таймаута, и человек
+  // видит «ошибка интернета» при живом интернете. За адресом стоит воркер-прокси
+  // (infra/cloudflare/sb-proxy). Разлогина смена адреса не вызывает: storageKey ниже
+  // задан явно и от адреса не зависит.
+  url:  "https://sb.razvedchick.ru",
   anon: "sb_publishable_UxWs9yx1r4fbo4KJJZqYLA_ndNyVgT0",
 };
 // суффикс логина = домен почты. При переезде на свой домен (razvedchick.online/.ru) меняется ТУТ + миграция email аккаунтов.
