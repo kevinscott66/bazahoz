@@ -19,6 +19,8 @@ enforce as (
 enforce_ver as (
   select case
     when not exists (select 1 from enforce) then 'НЕТ ФУНКЦИИ'
+    -- маркер версии org_guard — уникальный комментарий из 2026-07-31_org_roles_preset_guard.sql
+    when (select src from enforce) like '%тот же класс бага%' then 'org_guard (последняя)'
     when (select src from enforce) like
          $m$%TG_OP = 'UPDATE' and NEW.role is distinct from OLD.role%$m$ then 'audit_round3'
     when (select src from enforce) like
@@ -148,6 +150,21 @@ checks(ord, migration, object, state) as (
       where n.nspname = 'public' and p.proname = 'auth_rate_prune'
     ) then 'есть' else 'НЕТ' end
 
+  -- ── 2026-07-31_org_roles_preset_guard.sql ───────────────────────────────────
+  union all select 47, 'org_roles_guard', 'триггер org_roles_guard на org_roles',
+    case when exists (
+      select 1 from pg_trigger t
+      where t.tgname = 'org_roles_guard'
+        and t.tgrelid = to_regclass('public.org_roles')
+        and not t.tgisinternal
+    ) then 'есть' else 'НЕТ — org-роль можно завести с пустыми флагами (начальник не увидит склад)' end
+  union all select 48, 'org_roles_guard', 'enforce_base_member_write: legacy custom не блокирует пересменку',
+    case
+      when not exists (select 1 from enforce) then 'НЕТ ФУНКЦИИ'
+      when (select src from enforce) like '%тот же класс бага%' then 'есть'
+      else 'НЕТ — деактивация строки с неизвестной ролью падает (пересменка)'
+    end
+
   -- ── 2026-07-30_auth_rate_per_ip.sql ─────────────────────────────────────────
   union all select 50, 'auth_rate_per_ip', 'таблица public.auth_rate',
     case when to_regclass('public.auth_rate') is null then 'НЕТ' else 'есть' end
@@ -189,7 +206,8 @@ checks(ord, migration, object, state) as (
       when 'audit_round3' then
         case when to_regclass('public.stock_history') is null
           then 'применить 2026-07-30_stock_history_guard.sql, затем _guard_fix.sql, затем повторно audit_round3'
-          else 'порядок соблюдён — смотрите строки выше на «НЕТ»' end
+          else 'применить 2026-07-31_org_roles_preset_guard.sql (пресеты org-ролей + фикс пересменки по legacy custom)' end
+      when 'org_guard (последняя)' then 'порядок соблюдён — смотрите строки выше на «НЕТ»'
       when 'НЕТ ФУНКЦИИ' then 'триггерной функции нет — база сильно отстала, применяйте миграции с самой ранней'
       else 'применить по порядку: preset_all_roles → stock_history_guard → _guard_fix → audit_round3'
     end

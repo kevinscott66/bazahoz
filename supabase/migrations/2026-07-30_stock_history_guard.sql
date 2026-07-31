@@ -127,6 +127,10 @@ grant execute on function public.stock_history_prune(int) to service_role;
 
 -- ── 5. Детект инцидента: что ушло из «>0» в «0» за окно ──────────────────────────
 -- Возвращает позиции, у которых в истории есть переход qty>0 → текущий 0.
+-- drop нужен для ПОВТОРНОГО прогона: поздние миграции меняют ТИП ВОЗВРАТА при той же
+-- сигнатуре, а `create or replace` менять его не умеет («cannot change return type») —
+-- без дропа повторный прогон пакета падал бы здесь и откатывал всю транзакцию файла.
+drop function if exists public.stock_zeroing_report(uuid, int);
 create or replace function public.stock_zeroing_report(p_base uuid, p_hours int default 48)
 returns table (
   item_id     text,
