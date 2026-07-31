@@ -116,6 +116,22 @@
   .sheet-x{ position:absolute; top:6px; right:6px; width:44px; height:44px; display:flex; align-items:center; justify-content:center; font-size:26px; line-height:1; border-radius:14px; background:transparent; color:inherit; opacity:.6; cursor:pointer; z-index:2; }
   .sheet-x:hover{ opacity:1; background:rgba(255,255,255,.08); }
   .light .sheet-x:hover{ background:rgba(0,0,0,.06); }
+  /* ШАПКА ЛИСТА ФИЛЬТРОВ. Обычный .sheet-x — position:absolute внутри ПРОКРУЧИВАЕМОГО .sheet-body,
+     то есть он уезжает вверх вместе с содержимым: на базе с десятком категорий крестика на экране
+     уже нет, и закрыть лист можно только тапом по фону (неочевидно) или прокруткой до «Готово».
+     Здесь шапка липкая. top = -20px гасит верхний padding .sheet-body, иначе между шапкой и краем
+     листа при прокрутке видна полоска содержимого. Отрицательные поля — чтобы фон шапки доходил
+     до краёв листа, а не оставлял просветы по 20px. */
+  .sheet-head{ position:sticky; top:-20px; z-index:3; margin:-20px -20px 12px; padding:16px 16px 12px; background:#0b1220; border-radius:24px 24px 0 0; display:flex; align-items:center; gap:8px; }
+  .light .sheet-head{ background:#fff; }
+  .sheet-head .sh-t{ flex:1; min-width:0; font-weight:700; font-size:19px; }
+  .sheet-head .sh-x{ width:44px; height:44px; flex:none; display:flex; align-items:center; justify-content:center; font-size:24px; line-height:1; border-radius:14px; opacity:.6; cursor:pointer; }
+  .sheet-head .sh-x:hover{ opacity:1; background:rgba(255,255,255,.08); }
+  .light .sheet-head .sh-x:hover{ background:rgba(0,0,0,.06); }
+  /* Счётчик на кнопке фильтра: текста на ней больше нет (одна воронка), поэтому число — единственный
+     способ показать, сколько условий включено, не открывая лист. */
+  .chip-badge{ position:absolute; top:-4px; right:-4px; min-width:18px; height:18px; padding:0 4px; border-radius:9px; font-size:11px; font-weight:700; line-height:18px; text-align:center; background:#6b7280; color:#fff; }
+  .chip-badge.red{ background:#dc2626; }
   .tap{ cursor:pointer; }
   .list-box{ border:1px solid rgba(255,255,255,.1); border-radius:12px; padding:4px; }
   .scroll-x{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
@@ -214,15 +230,20 @@
     </div>
     <div class="flex items-center gap-2" style="min-width:0">
       <button id="syncChip" class="btn btn-ghost text-xs hidden" style="padding:6px 10px;flex:0 0 auto" title="Синхронизация с облаком" aria-label="Синхронизация с облаком"></button>
-      <!-- чип базы ужимается ПЕРВЫМ: имя базы читаемо и в обрезанном виде («2 отряд РоГРП…»),
-           а кнопка фильтра при сжатии перестала бы попадать под палец (44×44 — нижняя граница) -->
-      <!-- max-width был 38vw — и на 320/360 резал даже КОРОТКОЕ имя («🏠 2 Западная», 131px → 122px),
-           хотя рядом место было: кнопка фильтра и чип вместе укладывались в строку. Потолок поднят
-           до 48vw (на 320px это 154px — короткое имя влезает целиком), а приоритет сжатия сохранён
-           явным flex-shrink:2: под давлением длинного имени первым ужимается чип базы, а не кнопка
-           фильтра, которой нужно оставаться под пальцем (44×44). -->
-      <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px;min-width:0;flex:1 2 auto;max-width:48vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Сменить базу" aria-label="Сменить базу"></button>
-      <button id="filterChip" class="btn btn-ghost text-xs" style="display:none;padding:6px 10px;min-width:44px;min-height:44px;max-width:52vw;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Фильтры" aria-label="Фильтры"></button>
+      <!-- ПОРЯДОК: кнопка фильтра, а ПРАВЕЕ неё — чип базы. Так просил владелец: смена базы есть не у
+           всех (только начальство), а фильтр — на «Складе» и в «Задачах» у каждого, и он должен
+           стоять на одном и том же месте независимо от того, видно чип базы или нет. Раньше чип
+           базы стоял слева и сдвигал кнопку фильтра, стоило появиться второй базе.
+           Кнопка фильтра — квадрат без текста (воронка): текст съедал место у имени базы и
+           у приветствия, а на 320px строка не вмещала ни того, ни другого. Что именно включено,
+           показывают заливка кнопки и счётчик-бейдж (см. renderFilterChip); словами — в title и
+           aria-label, поэтому для скринридера ничего не потерялось.
+           flex:0 0 auto — фильтр не ужимается никогда (52×52: высота задана .btn, ширину равняем
+           по ней, чтобы кнопка была квадратной, а не узкой полосой рядом с чипом базы);
+           весь дефицит ширины забирает чип базы, имя базы читаемо и в обрезанном виде
+           («2 отряд РоГРП…»). Потолок 52vw: без соседского текста места ему досталось больше. -->
+      <button id="filterChip" class="btn btn-ghost" style="display:none;padding:0;width:52px;min-width:52px;flex:0 0 auto;align-items:center;justify-content:center;position:relative;overflow:visible" title="Фильтры" aria-label="Фильтры"></button>
+      <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px;min-width:0;flex:1 1 auto;max-width:52vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Сменить базу" aria-label="Сменить базу"></button>
     </div>
   </header>
   <!-- тонкий статус-бар синхронизации (под шапкой).
@@ -337,7 +358,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v222";
+const APP_BUILD = "v223";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -1694,9 +1715,8 @@ function stockExpScope(){
 }
 function filterChipState(){
   if(currentView==="tasks"){
-    const on = taskFilter.cat!=="Все" || taskFilter.showDone;
-    const lbl = taskFilter.cat!=="Все" ? taskFilter.cat : "Фильтр";
-    return { on, html:`☰ ${esc(lbl)}${taskFilter.showDone?" ✓":""}`,
+    const n = (taskFilter.cat!=="Все"?1:0) + (taskFilter.showDone?1:0);
+    return { on:n>0, n,
              aria:`Фильтр задач: ${taskFilter.cat}${taskFilter.showDone?", показывать выполненные":""}` };
   }
   if(currentView==="stock" && stockMode==="stock"){
@@ -1711,23 +1731,36 @@ function filterChipState(){
       if(t && visibleStockTypes().length>1) parts.push(t.short);   // роль с одним типом — это не «фильтр»
     }
     if(stockCat) parts.push(stockCat);
-    const on = parts.length>0;
-    const lbl = on ? (parts[0] + (parts.length>1?` +${parts.length-1}`:"")) : "Фильтр";
-    return { on,
-      html:`☰ ${esc(lbl)}` + (c.expired?`<span class="badge badge-red" style="margin-left:4px">${c.expired}</span>`:""),
-      aria:`Фильтры склада${on?": "+parts.join(", "):""}${c.expired?`. Просрочено позиций: ${c.expired}`:""}` };
+    return { on:parts.length>0, n:parts.length, red:c.expired,
+      aria:`Фильтры склада${parts.length?": "+parts.join(", "):""}${c.expired?`. Просрочено позиций: ${c.expired}`:""}` };
   }
   return null;   // дашборд/кухня/ещё и режимы журнала — фильтровать нечего
 }
+/* Воронка — общепринятый значок фильтра (тот же силуэт в Excel, 1С, Госуслугах). Обводка
+   currentColor, поэтому на залитой кнопке (btn-primary) значок сам становится контрастным. */
+const FUNNEL_SVG = '<svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8.2V20l-4 1.5v-8.3z"/></svg>';
 function renderFilterChip(){
   const fc = document.getElementById("filterChip");
   if(!fc) return;
   let st = null;
   try{ st = filterChipState(); }catch(e){ console.warn("filterChip", e); }
   if(!st){ fc.style.display = "none"; return; }
-  fc.style.display = "";
-  fc.innerHTML = st.html;
-  fc.className = "btn text-xs " + (st.on ? "btn-primary" : "btn-ghost");
+  fc.style.display = "flex";
+  /* Бейдж один, не два: на 44-пиксельной кнопке два кружка сливаются в кашу. Приоритет у красного
+     счётчика просрочки — он про товар, который уже нельзя выдавать, и он важнее того, сколько
+     условий выбрано. Когда просрочки нет, тот же угол занимает счётчик включённых фильтров;
+     сам факт «фильтр включён» дублируется заливкой кнопки, так что при просрочке он не теряется.
+     Значок вставляем разметкой (он константа в коде), число — только textContent. */
+  fc.replaceChildren();
+  fc.insertAdjacentHTML("afterbegin", FUNNEL_SVG);
+  const num = st.red || st.n || 0;
+  if(num){
+    const b = document.createElement("span");
+    b.className = "chip-badge" + (st.red ? " red" : "");
+    b.textContent = num>99 ? "99+" : String(num);
+    fc.appendChild(b);
+  }
+  fc.className = "btn " + (st.on ? "btn-primary" : "btn-ghost");
   fc.title = st.aria;
   fc.setAttribute("aria-label", st.aria);
 }
@@ -1750,17 +1783,45 @@ function reopenFilterSheet(open){
   const now = document.getElementById("sheetBody");
   if(now && top) now.scrollTop = top;
 }
-// строка выбора в листе фильтров: 44px под палец, галочка — явная отметка текущего выбора
-const _fLine = (active, label, attrs) =>
-  `<button class="btn ${active?"btn-primary":"btn-ghost"} w-full text-left" style="min-height:44px;min-width:0" ${attrs}>${active?"✓ ":""}${label}</button>`;
+/* ПУНКТ ВЫБОРА — ЧИП В СТРОКУ, А НЕ ПОЛОСА ВО ВСЮ ШИРИНУ.
+   Полоса на пункт давала лист высотой в экран: двенадцать категорий склада — это двенадцать
+   строк по 44px плюс типы и сроки, лист упирался в свои 92svh и закрывал собой ровно тот
+   список, ради которого его открыли. Чипы переносятся по строке: то же содержимое занимает
+   треть высоты, за листом виден склад, и видно, что фильтр делает с выдачей.
+   44px под палец сохранены (min-height), длинные названия категорий не режем — чип просто
+   переносится целиком. Галочку у выбранного оставляем: заливка на светлой теме и на цветных
+   чипах читается слабее, чем явный знак. */
+const _fChip = (active, label, attrs) =>
+  `<button class="btn ${active?"btn-primary":"btn-ghost"} text-sm" style="min-height:44px;padding:8px 12px;white-space:normal;text-align:left" ${attrs}>${active?"✓ ":""}${label}</button>`;
+const _fRow  = (html) => `<div class="flex flex-wrap gap-2">${html}</div>`;
+/* Шапка листа фильтров: заголовок, «Сбросить» (когда есть что сбрасывать) и крестик. Липкая —
+   см. .sheet-head: до неё не нужно прокручивать список обратно вверх. */
+/* Лист фильтров ниже прочих: 92svh — это весь экран, и человек выбирает фильтр вслепую, не видя,
+   что происходит со списком. 72svh оставляет сверху пару карточек — видно, что выборка изменилась,
+   и понятно, что список никуда не делся. Ставим стилем, а не классом: openSheet каждый раз меняет
+   #sheetBody на свежий клон, так что на остальные листы (правка позиции, экспорт) это не налипает. */
+function _fCompact(){
+  const sb = document.getElementById("sheetBody");
+  if(!sb) return;
+  sb.style.maxHeight = "72vh";     // запас для движков без svh
+  sb.style.maxHeight = "72svh";
+}
+const _fHead = (title, resetAttr) =>
+  `<div class="sheet-head">
+     <div class="sh-t">${title}</div>
+     ${resetAttr?`<button class="btn btn-ghost text-sm" style="min-height:44px;padding:8px 12px;flex:none" ${resetAttr}>Сбросить</button>`:""}
+     <div class="sh-x tap" data-close role="button" tabindex="0" aria-label="Закрыть фильтры">✕</div>
+   </div>`;
 function openTaskFilterSheet(){
+  const dirty = taskFilter.cat!=="Все" || taskFilter.showDone;
   openSheet(`
-    <div class="font-bold text-xl mb-3">Фильтр задач</div>
+    ${_fHead("Фильтр задач", dirty?`data-ftaskreset="1"`:"")}
     <div class="text-sm opacity-70 mb-2">Раздел</div>
-    <div class="space-y-2">${TASK_CATS.map(c=>_fLine(taskFilter.cat===c, esc(c), `data-ftaskcat="${esc(c)}"`)).join("")}</div>
+    ${_fRow(TASK_CATS.map(c=>_fChip(taskFilter.cat===c, esc(c), `data-ftaskcat="${esc(c)}"`)).join(""))}
     <div class="text-sm opacity-70 mt-4 mb-2">Показ</div>
-    ${_fLine(taskFilter.showDone, "Показывать выполненные", `data-ftaskdone="1"`)}
+    ${_fRow(_fChip(taskFilter.showDone, "Показывать выполненные", `data-ftaskdone="1"`))}
     <button class="btn btn-ghost w-full mt-4" data-close>Готово</button>`);
+  _fCompact();
 }
 function openStockFilterSheet(){
   const _vis = visibleStockTypes();
@@ -1776,25 +1837,27 @@ function openStockFilterSheet(){
      подсвечивались оба чипа), а нажатие на любой из них сужает выборку до него одного. */
   const expBad  = stockExpiryFilter==="expired" || stockExpiryFilter==="exp14";
   const expSoon = stockExpiryFilter==="soon"    || stockExpiryFilter==="exp14";
+  const dirty = stockTab!=="all" || stockExpiryFilter!=="all" || !!stockCat;
   openSheet(`
-    <div class="font-bold text-xl mb-3">Фильтры склада</div>
+    ${_fHead("Фильтры склада", dirty?`data-fstockreset="1"`:"")}
     ${_vis.length>1 ? `<div class="text-sm opacity-70 mb-2">Тип</div>
-      <div class="space-y-2">
-        ${_fLine(stockTab==="all", `Все (${state.stock.filter(s=>inStock(s)&&c.allowed.includes(s.type)).length})`, `data-ftab="all"`)}
-        ${_vis.map(t=>_fLine(stockTab===t.key, `${t.icon} ${esc(t.short)} (${state.stock.filter(s=>s.type===t.key&&inStock(s)).length})`, `data-ftab="${t.key}"`)).join("")}
-      </div>` : ""}
+      ${_fRow(
+        _fChip(stockTab==="all", `Все (${state.stock.filter(s=>inStock(s)&&c.allowed.includes(s.type)).length})`, `data-ftab="all"`)
+        + _vis.map(t=>_fChip(stockTab===t.key, `${t.icon} ${esc(t.short)} (${state.stock.filter(s=>s.type===t.key&&inStock(s)).length})`, `data-ftab="${t.key}"`)).join("")
+      )}` : ""}
     <div class="text-sm opacity-70 mt-4 mb-2">Сроки${stockExpiryFilter==="exp14"?' · выбрано «просрочка + скоро»':""}</div>
-    <div class="space-y-2">
-      ${_fLine(stockExpiryFilter==="all", "Все сроки", `data-fexp="all"`)}
-      ${_fLine(expBad,  `⛔ Просрочка (${c.expired})`, `data-fexp="expired"`)}
-      ${_fLine(expSoon, `⏰ Скоро, до 14 дней (${c.soon})`, `data-fexp="soon"`)}
-    </div>
+    ${_fRow(
+      _fChip(stockExpiryFilter==="all", "Все сроки", `data-fexp="all"`)
+      + _fChip(expBad,  `⛔ Просрочка (${c.expired})`, `data-fexp="expired"`)
+      + _fChip(expSoon, `⏰ Скоро, до 14 дней (${c.soon})`, `data-fexp="soon"`)
+    )}
     ${cats.length ? `<div class="text-sm opacity-70 mt-4 mb-2">Категория</div>
-    <div class="space-y-2">
-      ${_fLine(stockCat==="", "Все категории", `data-fcat=""`)}
-      ${cats.map(cc=>_fLine(stockCat===cc, `${esc(cc)}${countByCat[cc]?` (${countByCat[cc]})`:""}`, `data-fcat="${esc(cc)}"`)).join("")}
-    </div>` : ""}
+    ${_fRow(
+      _fChip(stockCat==="", "Все категории", `data-fcat=""`)
+      + cats.map(cc=>_fChip(stockCat===cc, `${esc(cc)}${countByCat[cc]?` (${countByCat[cc]})`:""}`, `data-fcat="${esc(cc)}"`)).join("")
+    )}` : ""}
     <button class="btn btn-ghost w-full mt-4" data-close>Готово</button>`);
+  _fCompact();
 }
 /* ПРИВЕТСТВИЕ И ДАТА В ШАПКЕ — ПО ЗАМЕРУ, А НЕ ПО ШИРИНЕ ЭКРАНА.
    Место в шапке отнимает не ширина телефона, а кнопка фильтра (только «Склад» и «Задачи») и длина
@@ -6135,6 +6198,16 @@ document.addEventListener("click", e=>{
   if(fTaskCat){ taskFilter.cat = fTaskCat.dataset.ftaskcat; render(); reopenFilterSheet(openTaskFilterSheet); return; }
   const fTaskDone = e.target.closest("[data-ftaskdone]");
   if(fTaskDone){ taskFilter.showDone = !taskFilter.showDone; render(); reopenFilterSheet(openTaskFilterSheet); return; }
+  /* «Сбросить» — один тап вместо возврата к «Все» в каждой группе по очереди. Лист не закрываем:
+     человек чаще всего сбрасывает, чтобы тут же выбрать другое. */
+  if(e.target.closest("[data-ftaskreset]")){
+    taskFilter.cat = "Все"; taskFilter.showDone = false;
+    render(); reopenFilterSheet(openTaskFilterSheet); return;
+  }
+  if(e.target.closest("[data-fstockreset]")){
+    stockTab = "all"; stockExpiryFilter = "all"; stockCat = ""; stockLimit = 100;
+    render(); reopenFilterSheet(openStockFilterSheet); return;
+  }
   const catAct = e.target.closest("[data-cat-action]");
   if(catAct){
     const a = catAct.dataset;
