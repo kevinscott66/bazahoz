@@ -27,6 +27,19 @@
   body{ font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif; padding-bottom:env(safe-area-inset-bottom); }
   .safe-top{ padding-top:env(safe-area-inset-top); }
   .safe-bot{ padding-bottom:calc(88px + env(safe-area-inset-bottom)); }
+  /* Динамический вьюпорт iOS. 100vh (класс .min-h-screen на <body>) — это БОЛЬШОЙ вьюпорт, как если бы
+     панель браузера была скрыта; когда она видна, 100vh НЕ уменьшается. Из-за этого даже короткий экран
+     оказывался на ~100px выше видимой области → появлялась лишняя прокрутка → Safari начинал прятать/
+     показывать свою панель и перепозиционировал fixed-элементы с задержкой: нижняя навигация на миг
+     вставала по низу «старого» вьюпорта, то есть ПОСЕРЕДИНЕ экрана (жалоба владельца), потом вставала
+     на место. 100svh — МАЛЕНЬКИЙ вьюпорт (панель видна): он не меняется при прокрутке, лишней прокрутки
+     не создаёт и сам не вызывает пересчёт. Первая строка — запас для движков без svh (они её и оставят).
+     Правило вне @layer, поэтому перебивает .min-h-screen из tailwind-слоя. */
+  body{ min-height:100vh; min-height:100svh; }
+  /* Нижняя панель — на отдельный слой композитора. Тогда при инерционной прокрутке и при показе/скрытии
+     панели браузера Safari двигает её вместе с вьюпортом на GPU, а не пересчитывает позицию рывками
+     (усугублялось backdrop-blur: размытие на fixed-элементе в WebKit перерисовывается с задержкой). */
+  #navbar{ transform:translateZ(0); will-change:transform; }
   .btn{ min-height:52px; border-radius:14px; font-weight:600; font-size:17px; display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:0 18px; transition:transform .06s ease, background .15s; user-select:none; }
   .btn:active{ transform:scale(.97); }
   .btn-primary{ background:var(--accent); color:var(--on-accent); }
@@ -205,8 +218,10 @@
     <button class="nav-btn active" data-nav="dashboard" aria-label="Дашборд"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5L12 3l9 7.5V20a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1v-9.5z"/></svg><span>Дашборд</span></button>
     <button class="nav-btn" data-nav="tasks" aria-label="Задачи"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg><span>Задачи</span></button>
     <button class="nav-btn" data-nav="stock" aria-label="Склад"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3.3 7.7L12 12l8.7-4.3M12 22V12"/></svg><span>Склад</span></button>
-    <button class="nav-btn" data-nav="kitchen" aria-label="Кухня"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2v7a6 6 0 0012 0V2"/><path d="M4 22h16"/><path d="M10 22v-4h4v4"/></svg><span>Кухня</span></button>
-    <button class="nav-btn" data-nav="more" aria-label="Ещё"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg><span>Ещё</span></button>
+    <!-- Кухня: вилка+нож. Была безымянная арка, не читавшаяся как кухня. Габарит 4..20 / 3..21 — как у соседей. -->
+    <button class="nav-btn" data-nav="kitchen" aria-label="Кухня"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3v5a3.5 3.5 0 007 0V3"/><path d="M7.5 3v5"/><path d="M7.5 11.5v9.5"/><path d="M20 12V3a5 5 0 00-4 4.9V12z"/><path d="M18 12v9"/></svg><span>Кухня</span></button>
+    <!-- Ещё: шестерёнка. Была иконка ЯРКОСТИ (солнце: круг + восемь лучей) — она про настройки экрана, а не про раздел настроек. -->
+    <button class="nav-btn" data-nav="more" aria-label="Ещё"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.37 3.39H14.63L14.81 6.25L15.58 6.69L18.14 5.42L20.77 9.98L18.38 11.55V12.45L20.77 14.02L18.14 18.58L15.58 17.31L14.81 17.75L14.63 20.61H9.37L9.19 17.75L8.42 17.31L5.86 18.58L3.23 14.02L5.62 12.45V11.55L3.23 9.98L5.86 5.42L8.42 6.69L9.19 6.25Z"/><circle cx="12" cy="12" r="3"/></svg><span>Ещё</span></button>
   </div>
 </nav>
 
