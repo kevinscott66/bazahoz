@@ -1,0 +1,6 @@
+name = "vahtahoz-sb-proxy"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+# Домен привязывается не здесь, а через Workers Custom Domain (см. README.md рядом):
+# так Cloudflare сам заводит DNS-запись и сертификат, и её не нужно чинить руками.
