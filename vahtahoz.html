@@ -53,7 +53,7 @@
   .nav-icon{ width:22px; height:22px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; }
   .nav-btn.active{ color:var(--accent); position:relative; }
   .light .nav-btn{ color:#6b7280; }
-  .badge{ font-size:11px; font-weight:700; padding:3px 8px; border-radius:999px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; }
+  .badge{ font-size:11px; font-weight:700; padding:3px 8px; border-radius:999px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; flex-shrink:0; }   /* flex-shrink:0 — как флекс-элемент бейдж сжимался и вместе с overflow:hidden резал надпись. Вертикаль НЕ фиксируем здесь (align-self сломал бы контейнеры с items-center) — её лечит items-start на самом контейнере. */
   .badge-red{ background:#dc2626; color:#fff; }
   .badge-yellow{ background:#92400e; color:#fff; }   /* было #b45309 (~4.0:1) → #92400e (~5.9:1) для AA на мелком тексте */
   .badge-green{ background:#16a34a; color:#fff; }
@@ -88,6 +88,12 @@
   .sheet-bg{ position:absolute; inset:0; background:rgba(0,0,0,.6); }
   .sheet-body{ position:relative; margin-top:auto; width:100%; max-width:560px; margin-left:auto; margin-right:auto; background:#0b1220; border-radius:24px 24px 0 0; padding:20px; max-height:92vh; overflow-y:auto; padding-bottom:calc(24px + env(safe-area-inset-bottom)); }
   .light .sheet-body{ background:#fff; }
+  /* «×» листа: та же роль, что и кнопка закрытия в конце длинного списка, но без прокрутки до низа.
+     44×44 — минимальная тап-цель (iOS HIG / Material). Лежит в потоке абсолютом, поэтому заголовку
+     нужен padding-right, иначе длинный заголовок уедет под крестик. */
+  .sheet-x{ position:absolute; top:6px; right:6px; width:44px; height:44px; display:flex; align-items:center; justify-content:center; font-size:26px; line-height:1; border-radius:14px; background:transparent; color:inherit; opacity:.6; cursor:pointer; z-index:2; }
+  .sheet-x:hover{ opacity:1; background:rgba(255,255,255,.08); }
+  .light .sheet-x:hover{ background:rgba(0,0,0,.06); }
   .tap{ cursor:pointer; }
   .list-box{ border:1px solid rgba(255,255,255,.1); border-radius:12px; padding:4px; }
   .scroll-x{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
@@ -223,7 +229,7 @@
       <a role="button" tabindex="0" onclick="openTermsSheet()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTermsSheet()}" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a role="button" tabindex="0" onclick="openPrivacySheet()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openPrivacySheet()}" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
     <!-- текст подставляется из APP_BUILD_LABEL при старте (единый источник версии) -->
-    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v215</div>
+    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v216</div>
   </div>
 </div>
 
@@ -271,7 +277,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v215";
+const APP_BUILD = "v216";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -697,7 +703,22 @@ const fmtDate = (s) => {
 const daysLeft = (s) => { if(!s) return null; const a=new Date(s+"T00:00:00"); const b=new Date(todayStr()+"T00:00:00"); if(isNaN(a)||isNaN(b)) return null; return Math.round((a-b)/86400000); };
 // сортировка партий «по ближайшему сроку»: пустой срок уходит в конец
 const byExpiry = (a,b)=>(a.expiry||"9999").localeCompare(b.expiry||"9999");
-// разбор числа: пробелы/nbsp тысяч; EU «1.000»/«1.000,5»; RU/US «1,000.5» / «1,5»
+/* Разбор числа. ЕДИНСТВЕННЫЙ разделитель — ВСЕГДА десятичный, даже если после него ровно три
+   цифры: «0,532» → 0.532, «1,250» → 1.25, «12,345» → 12.345. Прежняя эвристика считала одну
+   группу из трёх цифр тысячами: шаблон ^\d{1,3}(,\d{3})+$ совпадал с «0,532» (начало съедало
+   «0», группа — «,532») и давал 532. Выдача мяса 0,532 кг молча не проходила проверку «Не
+   хватает на складе» и не применялась вовсе, тогда как 0,53 кг применялась.
+   Группировку тысяч признаём только там, где она однозначна:
+     • пробел/nbsp — «1 234,5» → 1234.5 (разделитель снимается первой строкой функции);
+     • ДВЕ и более групп по три цифры — «1,234,567» / «1.234.567» → 1234567;
+     • оба разделителя сразу — «1.234,5» / «1,234.5» → 1234.5 (последний из них десятичный).
+   Целая часть у группировки не может начинаться с нуля ([1-9]), поэтому ведущий ноль перед
+   разделителем — всегда десятичная дробь.
+   КОМПРОМИСС: «1,000» теперь 1, а не 1000. Это осознанно: приложение — склад кухни, где ручной
+   ввод веса с тремя знаками (мясо, рыба, сыр) основной сценарий, а настоящая тысяча набирается
+   «1000» или «1 000». Разбор накладных не страдает: в xlsx числовые ячейки приходят ЧИСЛАМИ и
+   в эту ветку не заходят, а CSV читается с raw:true и здесь как раз нуждается в десятичной
+   запятой («Мясо;0,532;кг» → 0.532). */
 function parseNum(v){
   let s = String(v==null?"":v).replace(/[\s\u00A0]/g,"").trim();
   if(!s) return 0;
@@ -707,11 +728,10 @@ function parseNum(v){
     if(s.lastIndexOf(",") > s.lastIndexOf(".")) s = s.replace(/\./g,"").replace(",", ".");
     else s = s.replace(/,/g,"");
   } else if(hasComma){
-    // «1,5» или «1,000» (тысячи) — если ровно 3 цифры после единственной запятой и целая часть длиннее → тысячи
-    if(/^\d{1,3}(,\d{3})+$/.test(s)) s = s.replace(/,/g,"");
-    else s = s.replace(",", ".");
+    if(/^[1-9]\d{0,2}(,\d{3}){2,}$/.test(s)) s = s.replace(/,/g,""); // «1,234,567» → 1234567
+    else s = s.replace(",", ".");                                    // «0,532» → 0.532, «1,250» → 1.25
   } else if(hasDot){
-    if(/^\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g,""); // EU «1.000» → 1000
+    if(/^[1-9]\d{0,2}(\.\d{3}){2,}$/.test(s)) s = s.replace(/\./g,""); // EU «1.234.567» → 1234567
   }
   const n = Number(s);
   return Number.isFinite(n) ? n : 0;
@@ -1287,7 +1307,7 @@ function promptSheet(msg, def="", opts={}){
     openSheet(`
       <div class="font-bold text-lg mb-3">${esc(opts.title||"Ввод")}</div>
       <div class="mb-2 opacity-80 whitespace-pre-line">${esc(msg)}</div>
-      <input class="input mb-3" id="_promptInp" value="${esc(def)}" ${opts.numeric?'type="number" inputmode="decimal"':''} />
+      <input class="input mb-3" id="_promptInp" value="${esc(def)}" ${opts.numeric?'type="text" inputmode="decimal"':''} />
       <div class="flex gap-2">
         <button class="btn btn-ghost flex-1" id="_pNo">Отмена</button>
         <button class="btn btn-primary flex-1" id="_pYes">Ок</button>
@@ -2011,6 +2031,7 @@ async function exportJournalsMonth(ym){
     }catch(e){ console.warn("export month cloud → фолбэк на локальное", e); byKind=null; }
   }
   const wb=XLSX.utils.book_new();
+  let total=0;   // сколько записей реально попало в книгу — пустой файл не сохраняем
   for(const k of JOURNAL_KEYS){
     const meta=JOURNAL_META[k];
     const src = byKind ? byKind[k] : (state.journals[k]||[]);
@@ -2021,10 +2042,12 @@ async function exportJournalsMonth(ym){
       if(k==="order") row["Статус"]=op.status==="received"?"Принят":"Ожидает";
       row["Примечание"]=op.note||""; return row;
     });
+    total += rows.length;
     const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Дата":"","Наименование":""}]));
     ws["!cols"]=[{wch:16},{wch:34},{wch:11},{wch:9},{wch:16},{wch:12},{wch:10},{wch:24}];
     XLSX.utils.book_append_sheet(wb, ws, meta.label.slice(0,28));
   }
+  if(!total){ toast(`За ${monthLabel(ym)||ym} записей нет — сохранять нечего`); return; }
   saveXlsx(wb, `vahtahoz-журналы-${ym}-${_fileSafe(activeProfileName())}.xlsx`);
 }
 function renderJournal(kind){
@@ -2135,7 +2158,7 @@ function openOpEdit(kind){
       </div>
       <input class="input" id="opName" placeholder="Название вручную (если нет на складе)" />
       <div class="grid grid-cols-2 gap-2">
-        <input class="input" id="opQty" type="number" inputmode="decimal" placeholder="Количество" />
+        <input class="input" id="opQty" type="text" inputmode="decimal" placeholder="Количество" />
         <select class="input" id="opUnit">${UNITS.map(u=>`<option>${u}</option>`).join("")}</select>
       </div>
       <textarea class="input" id="opNote" rows="2" placeholder="${kind==='issue'?'Кому выдано':kind==='writeoff'?'Причина списания':kind==='order'?'Поставщик / комментарий':'Комментарий'}"></textarea>
@@ -3336,7 +3359,7 @@ function editOp(kind, opId){
       </div>
       <input class="input" id="eopName" placeholder="Название вручную (если нет на складе)" value="${esc(op.productName||"")}" />
       <div class="grid grid-cols-2 gap-2">
-        <input class="input" id="eopQty" type="number" inputmode="decimal" value="${esc(fmtQty(op.qty))}" />
+        <input class="input" id="eopQty" type="text" inputmode="decimal" value="${esc(fmtQty(op.qty))}" />
         <select class="input" id="eopUnit">${UNITS.map(u=>`<option ${u===op.unit?"selected":""}>${u}</option>`).join("")}</select>
       </div>
       <textarea class="input" id="eopNote" rows="2">${esc(op.note||"")}</textarea>
@@ -3678,12 +3701,12 @@ function openStockEdit(id, typeDefault){
     <div class="space-y-3">
       <input class="input" id="sn" placeholder="Название" value="${esc(it.name)}" autofocus />
       <div class="grid grid-cols-2 gap-2">
-        <input class="input" id="sq" type="number" inputmode="decimal" placeholder="Количество" value="${it.qty!==undefined&&it.qty!==""?fmtQty(it.qty):""}" />
+        <input class="input" id="sq" type="text" inputmode="decimal" placeholder="Количество" value="${it.qty!==undefined&&it.qty!==""?fmtQty(it.qty):""}" />
         <select class="input" id="su">
           ${UNITS.map(u=>`<option ${it.unit===u?"selected":""}>${u}</option>`).join("")}
         </select>
       </div>
-      <input class="input" id="sm" type="number" inputmode="decimal" placeholder="Мин. запас" value="${it.minStock??""}" />
+      <input class="input" id="sm" type="text" inputmode="decimal" placeholder="Мин. запас" value="${it.minStock??""}" />
 
       <div>
         <div class="text-sm opacity-70 mb-1">Категория</div>
@@ -3717,8 +3740,11 @@ function saveStock(id, type){
   if(!name){ toast("Название обязательно"); return; }
   const qty = Math.max(0, roundQty(parseNum(body.querySelector("#sq").value)));   // ручной ввод: отрицательное/мусор → 0 (нет смысла в минусовом остатке)
   const unit = body.querySelector("#su").value;
-  const _smRaw = body.querySelector("#sm").value, _smN = parseNum(_smRaw);
-  const minStock = (_smRaw===""||!Number.isFinite(_smN)) ? "" : _smN;   // мусор/NaN → "" (иначе сравнение «низкий запас» молча отключалось)
+  const _smRaw = body.querySelector("#sm").value.trim(), _smN = parseNum(_smRaw);
+  /* Поле стало type=text (у type=number desktop-Chrome вырезал запятую из «0,5»), и браузер больше НЕ
+     подчищает мусор сам — раньше «abc» превращалось в value="" и minStock становился "". Повторяем это
+     здесь явно: не-числовой ввод → "" (сравнение «низкий запас» выключено), а не 0. */
+  const minStock = (_smRaw===""||!/^[0-9 \u00A0.,]+$/.test(_smRaw)||!Number.isFinite(_smN)) ? "" : _smN;
   const expiry = body.querySelector("#se")?.value || "";
   const note = body.querySelector("#sno").value.trim();
   const category = body.querySelector(".chip.active[data-cat]")?.dataset.cat || "";
@@ -3772,7 +3798,7 @@ function openBatchAdd(id){
       <div class="text-sm opacity-70">«${esc(it.name)}» — партия со своим сроком и местом. Карточка одна, остатки и просрочка считаются по партии.</div>
       <div>
         <div class="text-sm opacity-70 mb-1">Количество (${esc(it.unit||"")})</div>
-        <input class="input" id="bq" type="number" inputmode="decimal" value="" autofocus />
+        <input class="input" id="bq" type="text" inputmode="decimal" value="" autofocus />
       </div>
       <div>
         <div class="text-sm opacity-70 mb-1">Срок годности${it.type==="product"?"":" (опц.)"}</div>
@@ -3915,7 +3941,7 @@ function openMove(itemId, batchId){
       <div class="text-sm opacity-70">«${esc(it.name)}»${srcExpiry?` · срок ${fmtDate(srcExpiry)}`:""}${srcLocation?` · из «${esc(srcLocation)}»`:" · место не указано"}. Доступно: ${q} ${esc(it.unit||"")}.</div>
       <div>
         <div class="text-sm opacity-70 mb-1">Сколько перенести (${esc(it.unit||"")})</div>
-        <input class="input" id="mvq" type="number" inputmode="decimal" value="${q}" />
+        <input class="input" id="mvq" type="text" inputmode="decimal" value="${q}" />
         <button class="btn btn-ghost w-full mt-1 text-sm" onclick="document.getElementById('mvq').value='${q}'">Перенести всё (${q})</button>
       </div>
       <div>
@@ -4466,11 +4492,39 @@ function xlsxGuard(ws){
   }
   return ws;
 }
+/* Флаг «экспорт уже идёт». ensureXlsx() тянет модуль по сети, и повторный тап по кнопке во время
+   загрузки запускал ВТОРОЙ экспорт: оба вызова ждали общий промис _xlsxLoading, оба доходили до
+   сохранения — получалось два одинаковых файла (а при сбое загрузки — два одинаковых CSV).
+   Снимается ТОЛЬКО в finally: иначе одна ошибка залипла бы флагом навсегда и экспорт умер бы до
+   перезагрузки страницы. */
+let _exportBusy = false;
 async function exportXlsx(){
+  if(_exportBusy){ toast("Экспорт уже готовится…"); return; }
+  _exportBusy = true;
+  try{ await _exportXlsxRun(); }
+  finally{ _exportBusy = false; }
+}
+async function _exportXlsxRun(){
+  // пустая книга никому не нужна: раньше при пустой базе сохранялся файл из одних шапок листов
+  if(!sortedStock(state.stock).length
+     && !JOURNAL_KEYS.some(k=>(state.journals[k]||[]).length)
+     && !(state.tasks||[]).length){
+    toast("Нечего выгружать — склад, журналы и задачи пусты"); return;
+  }
   toast("Подготовка файла…");
   let XLSX;
   try{ XLSX = await ensureXlsx(); }
-  catch(e){ toast("Не удалось сделать Excel — сохраняем в простом формате"); exportCsv(); return; }
+  catch(e){
+    /* Раньше тут был МОЛЧАЛИВЫЙ откат на CSV. Предупреждение не доходило: exportCsv в том же
+       синхронном тике вызывает toast("CSV сохранён"), а toast — один элемент с textContent,
+       поэтому пользователь видел только «CSV сохранён» и не понимал, почему вместо .xlsx
+       пришёл текстовый .csv. Формат меняем только с явного согласия. */
+    const go = await confirmSheet(
+      "Excel недоступен — нужна сеть при первом использовании. Сохранить в простом формате CSV?",
+      { title:"Excel недоступен", yes:"Сохранить CSV", no:"Отмена" });
+    if(go) exportCsv();
+    return;
+  }
   const wb = XLSX.utils.book_new();
   const stockRows = sortedStock(state.stock).map(s=>({
     "Тип": typeMeta(s.type).addLabel,
@@ -4554,6 +4608,9 @@ async function exportXlsx(){
   toast("Excel сохранён");
 }
 function exportCsv(){
+  // без позиций получался файл из одной шапки (~165 байт) — сохранять его незачем
+  const list = sortedStock(state.stock);
+  if(!list.length){ toast("Склад пуст — сохранять нечего"); return; }
   const header = ["Тип","Категория","Наименование","Количество","Ед. изм.","Мин. запас","Срок годности","Место","Примечание"];
   const rows = [header];
   /* Десятичный разделитель — ЗАПЯТАЯ: файл открывают в русском Excel, где точка означает дату,
@@ -4561,7 +4618,7 @@ function exportCsv(){
      Разделитель полей у нас «;», поэтому запятая внутри числа ничего не ломает, а исключение
      анти-инъекции ниже уже допускает и точку, и запятую. XLSX этой проблемы не имеет. */
   const dec = (v) => String(v??"").replace(".", ",");
-  sortedStock(state.stock).forEach(s=>rows.push([
+  list.forEach(s=>rows.push([
     typeMeta(s.type).addLabel,
     s.category||"", s.name, dec(fmtQty(totalQtyOf(s))), s.unit||"",
     dec(s.minStock??""), s.expiry||"", locationsOf(s).join("; "), s.note||""
@@ -4687,7 +4744,11 @@ async function saveBlob(blob, filename){
   try{
     const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
     if(mobileLike && navigator.canShare && navigator.canShare({ files:[file] })){
-      await navigator.share({ files:[file], title: filename });
+      // Делимся ТОЛЬКО файлом. Вместе с title принимающее приложение получает ДВА объекта —
+      // файл и текстовый элемент с заголовком, и «Сохранить в Файлы» кладёт оба: рядом с
+      // накладной появлялся второй файл, в русской локали именованный «текст». Имя несёт сам
+      // File, оно и так показывается в шите «Поделиться», так что ничего не теряем.
+      await navigator.share({ files:[file] });
       return true;   // пользователь сохранил/отправил (или закрыл шит) — второй раз НЕ качаем
     }
   }catch(e){
@@ -5253,14 +5314,15 @@ function expiryNoticeOnOpen(){
       return locs.length===1 ? locs[0] : (locs.length>1 ? `${locs.length} мест` : "");
     };
     const html = `
-      <div class="font-bold text-xl mb-3">⏰ Внимание! Сроки годности</div>
+      <button class="sheet-x" data-close aria-label="Закрыть напоминание о сроках годности">×</button>
+      <div class="font-bold text-xl mb-3" style="padding-right:48px">⏰ Внимание! Сроки годности</div>
       ${expired.length?`<div class="text-sm opacity-70 mb-1">Просрочено (${expired.length})</div>
       <div class="space-y-2 mb-3">
-        ${sortedStock(expired).map(s=>{const d=daysLeft(s.expiry);const q=qtyFor(s,dd=>dd<0);const loc=locFor(s,dd=>dd<0);return `<div class="card flex justify-between gap-2"><span class="flex-1">${esc(s.name)} <span class="opacity-70">(${fmtQty(q)} ${esc(s.unit||"")}${loc?` · 📍 ${esc(loc)}`:""})</span></span><span class="badge badge-red">Просрочено ${-d} дн.</span></div>`;}).join("")}
+        ${sortedStock(expired).map(s=>{const d=daysLeft(s.expiry);const q=qtyFor(s,dd=>dd<0);const loc=locFor(s,dd=>dd<0);return `<div class="card flex items-start justify-between gap-2"><span class="flex-1 min-w-0 break-words">${esc(s.name)} <span class="opacity-70">(${fmtQty(q)} ${esc(s.unit||"")}${loc?` · 📍 ${esc(loc)}`:""})</span></span><span class="badge badge-red">Просрочено ${-d} дн.</span></div>`;}).join("")}
       </div>`:""}
       ${soon.length?`<div class="text-sm opacity-70 mb-1">Истекает в ближайшие 3 дня (${soon.length})</div>
       <div class="space-y-2 mb-3">
-        ${sortedStock(soon).map(s=>{const d=daysLeft(s.expiry);const txt=d===0?"Сегодня":`${d} дн.`;const q=qtyFor(s,dd=>dd>=0&&dd<=3);const loc=locFor(s,dd=>dd>=0&&dd<=3);return `<div class="card flex justify-between gap-2"><span class="flex-1">${esc(s.name)} <span class="opacity-70">(${fmtQty(q)} ${esc(s.unit||"")}${loc?` · 📍 ${esc(loc)}`:""})</span></span><span class="badge badge-yellow">${txt}</span></div>`;}).join("")}
+        ${sortedStock(soon).map(s=>{const d=daysLeft(s.expiry);const txt=d===0?"Сегодня":`${d} дн.`;const q=qtyFor(s,dd=>dd>=0&&dd<=3);const loc=locFor(s,dd=>dd>=0&&dd<=3);return `<div class="card flex items-start justify-between gap-2"><span class="flex-1 min-w-0 break-words">${esc(s.name)} <span class="opacity-70">(${fmtQty(q)} ${esc(s.unit||"")}${loc?` · 📍 ${esc(loc)}`:""})</span></span><span class="badge badge-yellow">${txt}</span></div>`;}).join("")}
       </div>`:""}
       ${expired.length?`<button class="btn btn-danger w-full" onclick="writeoffExpired()">🗑 Списать всю просрочку (${expiredTargets})</button>`:""}
       <button class="btn btn-primary w-full mt-2" onclick="openExpiredView()">Перейти к складу</button>
@@ -6229,7 +6291,8 @@ async function exportAllBasesXlsx(){
     const ws=xlsxGuard(XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}])); ws["!cols"]=_ACCT_COLS;
     XLSX.utils.book_append_sheet(wb, ws, _sheetName(b.name, used));   // лист на базу
   });
-  if(!wb.SheetNames.length){ XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Нет данных"]]), "Пусто"); }
+  // ни одной доступной базы — файл с единственной ячейкой «Нет данных» только путал: не сохраняем
+  if(!wb.SheetNames.length){ toast("Нет доступных баз — сохранять нечего"); return; }
   saveXlsx(wb, `vahtahoz-по-базам-${todayStr()}.xlsx`);
 }
 async function exportOneBaseXlsx(baseId){
