@@ -4772,10 +4772,6 @@ async function runFilteredXlsx(){
   if(res !== "offered") closeSheet();
 }
 
-// Универсальное сохранение файла. В НАТИВНЫХ обёртках (Capacitor iOS/Android WKWebView/WebView) обычный
-// <a download>+Blob НЕ срабатывает (нет менеджера загрузок) → сначала пробуем Web Share API с файлом
-// («Поделиться» → «Сохранить в Файлы»/отправить), и только затем классическое скачивание (браузеры/десктоп).
-// ВАЖНО: вызывать синхронно из обработчика клика (без await до share) — иначе iOS снимет «жест» и share упадёт.
 /* Мобильное/тач-устройство. Ровно от этого зависит И выбор share-vs-download в saveBlob, И нужен ли
    отдельный экран «Сохранить файл» (offerFileSave*): экран существует только чтобы обновить transient
    user activation перед navigator.share. Там, где share не используется, <a download> работает и без
@@ -4783,6 +4779,10 @@ async function runFilteredXlsx(){
 function saveNeedsGesture(){
   return (navigator.maxTouchPoints||0) > 0 || /iphone|ipad|ipod|android/i.test(navigator.userAgent||"");
 }
+// Универсальное сохранение файла. В НАТИВНЫХ обёртках (Capacitor iOS/Android WKWebView/WebView) обычный
+// <a download>+Blob НЕ срабатывает (нет менеджера загрузок) → сначала пробуем Web Share API с файлом
+// («Поделиться» → «Сохранить в Файлы»/отправить), и только затем классическое скачивание (браузеры/десктоп).
+// ВАЖНО: вызывать синхронно из обработчика клика (без await до share) — иначе iOS снимет «жест» и share упадёт.
 async function saveBlob(blob, filename){
   // share нужен на МОБИЛЬНЫХ/тач (там download не работает в обёртках); на десктопе/Tauri оставляем обычное
   // скачивание (иначе десктоп-веб получал бы лишний «Поделиться» вместо прямого сохранения).
