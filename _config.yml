@@ -37,3 +37,4 @@ exclude:
   - native-desktop/
   - supabase/
   - README.md
+  - scripts/
