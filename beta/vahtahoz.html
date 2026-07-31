@@ -4857,6 +4857,9 @@ function offerFileSaveBlob(blob, filename, title, note){
     <div class="text-sm opacity-80 mb-4" style="line-height:1.5">${esc(note)}</div>
     <button class="btn btn-primary w-full" onclick="doPendingSaveBlob()">Сохранить файл</button>
     <button class="btn btn-ghost w-full mt-2" onclick="_pendingSaveBlob=null;closeSheet()">Отмена</button>`);
+  // лист мог не открыться (openSheet отказывает поверх экрана входа) — тогда кнопки нет и файл не
+  // появился бы ВООБЩЕ; сохраняем сразу, это всё равно лучше молчания
+  if(_sheetRefused){ const p=_pendingSaveBlob; _pendingSaveBlob=null; if(p) saveBlob(p.blob, p.filename); }
 }
 function doPendingSaveBlob(){
   const p = _pendingSaveBlob; _pendingSaveBlob = null;
