@@ -1,0 +1,90 @@
+apply plugin: 'com.android.application'
+
+// Версия сборки приходит из CI (см. .github/workflows/native-android.yml).
+// Локально без переменных окружения получается 1 / "1.0.0-local" — этого хватает для отладки.
+def vhVersionCode = (System.getenv("VH_VERSION_CODE") ?: "1") as Integer
+def vhVersionName = System.getenv("VH_VERSION_NAME") ?: "1.0.0-local"
+
+// Подпись релиза. Ключ НЕ лежит в репозитории: CI кладёт его во временный файл и передаёт путь
+// через VH_KEYSTORE_PATH. Если переменных нет (сборка на машине разработчика или в форке без
+// секретов) — signingConfig не назначается, и ./gradlew assembleRelease честно выдаёт
+// неподписанный APK, а не падает.
+def vhKeystorePath = System.getenv("VH_KEYSTORE_PATH")
+def vhKeystoreFile = vhKeystorePath ? file(vhKeystorePath) : null
+def vhHasKeystore = vhKeystoreFile != null && vhKeystoreFile.exists()
+
+android {
+    namespace "ru.razvedchick.vahta"
+    compileSdk rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "ru.razvedchick.vahta"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode vhVersionCode
+        versionName vhVersionName
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        if (vhHasKeystore) {
+            release {
+                storeFile vhKeystoreFile
+                storePassword System.getenv("VH_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("VH_KEY_ALIAS")
+                keyPassword System.getenv("VH_KEY_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            // R8/минификация выключены осознанно: приложение — это оболочка вокруг сайта,
+            // своего кода в ней ~700 строк, экономить нечего, а сломать рефлексию Capacitor
+            // (плагины ищутся по именам классов) — легко.
+            minifyEnabled false
+            shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            // debuggable в release и так false — фиксируем явно: с debuggable=true
+            // хранилище приложения (localStorage со складом) читается с компьютера через adb.
+            debuggable false
+            if (vhHasKeystore) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    // FileProvider / ContextCompat / ActivityCompat для сохранения файлов — берём явно,
+    // а не транзитивно из appcompat, чтобы сборка не зависела от чужого графа зависимостей.
+    implementation "androidx.core:core:$androidxCoreVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
