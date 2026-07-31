@@ -5249,7 +5249,7 @@ async function wipeAll(){
     if(!await confirmSheet(`База «${activeProfileName()}» — облачная. Обновить локальную копию из облака? Несохранённые локальные правки заменятся облачными. Данные в облаке НЕ удаляются.`,{danger:true,yes:"Обновить из облака"})) return;
     try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(_){}   // отбрасываем несинхронизированное локальное (но НЕ снимок — иначе ложный конфликт при сбое)
     setSyncStatus("syncing","Обновление из облака…");
-    try{ await cloudPull(cid); toast("Обновлено из облака"); }catch(e){ toast("Не удалось обновить — проверьте интернет и нажмите ↻ (обновить) вверху"); }
+    try{ await cloudPull(cid); toast("Обновлено из облака"); }catch(e){ toast("Не удалось обновить — проверьте интернет и нажмите значок синхронизации вверху справа"); }
     nav("dashboard");
     return;
   }
@@ -6359,14 +6359,16 @@ function setSyncStatus(kind, text){
   clearTimeout(_syncHideT);
   if(kind==="hidden" || !cloud.ready || !activeCloudId()){ bar.classList.add("hidden"); bar.classList.remove("busy"); chip.classList.add("hidden"); return; }
   const M = {
-    syncing:{ bg:"#0E7C86", icon:"↻", chip:"↻", txt:text||"Сохранение в облако…" },
-    offline:{ bg:"#92400e", icon:"🔴", chip:"⏳", txt:text||"Нет интернета — данные уйдут в облако, когда он появится" },   /* #b45309 (~4.0:1) → #92400e (~5.9:1): AA для мелкого (12px) текста syncBar, как у .badge-yellow */
-    synced: { bg:"#15803d", icon:"✓", chip:"✓", txt:text||"Сохранено в облаке" },
-    error:  { bg:"#b91c1c", icon:"⚠", chip:"⚠", txt:text||"Не удалось сохранить — пробуем снова" },
+    syncing:{ bg:"#0E7C86", icon:"↻", chip:"↻", txt:text||"Сохранение в облако…", lbl:"Идёт синхронизация с облаком" },
+    offline:{ bg:"#92400e", icon:"🔴", chip:"⏳", txt:text||"Нет интернета — данные уйдут в облако, когда он появится", lbl:"Нет интернета — нажмите, чтобы повторить синхронизацию" },   /* #b45309 (~4.0:1) → #92400e (~5.9:1): AA для мелкого (12px) текста syncBar, как у .badge-yellow */
+    synced: { bg:"#15803d", icon:"✓", chip:"✓", txt:text||"Сохранено в облаке", lbl:"Сохранено в облаке — нажмите, чтобы синхронизировать" },
+    error:  { bg:"#b91c1c", icon:"⚠", chip:"⚠", txt:text||"Не удалось сохранить — пробуем снова", lbl:"Ошибка синхронизации — нажмите, чтобы повторить" },
   };
   const m = M[kind] || M.syncing;
   bar.style.background = m.bg; bar.textContent = `${m.icon} ${m.txt}`;
   chip.textContent = m.chip; chip.classList.remove("hidden");
+  // подпись значка зависит от состояния: глиф меняется (↻/⏳/✓/⚠), а «нажмите, чтобы повторить» должно быть слышно всегда
+  chip.title = m.lbl || "Синхронизация с облаком"; chip.setAttribute("aria-label", m.lbl || "Синхронизация с облаком");
   bar.classList.remove("hidden");
   bar.classList.toggle("busy", kind==="syncing");   // анимированный прогресс-бар только при активной синхронизации
   if(kind==="synced"){
@@ -6808,7 +6810,7 @@ async function cloudOnLogin(session, attempt){
       cloud._basesRetryT = setTimeout(()=>{ cloudOnLogin(session, attempt+1).catch(()=>{}); }, delay);
     } else if(cloudOnline()){
       cloud._basesLoading = false;   // 8 попыток исчерпано — цикл закончен, ждём ручной повтор (↻) или online
-      setSyncStatus("error","Базы не загрузились. Нажмите ↻ вверху, чтобы повторить");
+      setSyncStatus("error","Базы не загрузились. Нажмите значок синхронизации вверху справа, чтобы повторить");
     } else {
       cloud._basesLoading = false;   // оффлайн — цикл закончен, перезапустится по событию online
       setSyncStatus("offline","Нет сети — базы загрузятся при подключении");
@@ -7185,7 +7187,7 @@ async function cloudPull(cid){
     setSyncStatus("synced","Загружено из облака");
   }catch(e){
     console.warn("cloudPull", e);
-    setSyncStatus("error", "Не удалось загрузить — проверьте интернет и нажмите ↻ (обновить) вверху");
+    setSyncStatus("error", "Не удалось загрузить — проверьте интернет и нажмите значок синхронизации вверху справа");
     // слабая сеть/таймаут → повторим (мягкий backoff), пока онлайн
     if(cloudOnline()){ clearTimeout(cloud.pullRetryT); cloud.pullRetryT=setTimeout(()=>{ if(cloud.ready && cloud.session && !cloud.busy && activeCloudId()===cid) cloudPull(cid).catch(()=>{}); }, 8000); }  // handle хранится → отменяется при выходе; не тянем после logout/смены профиля
   }
@@ -7591,7 +7593,7 @@ async function cloudPushNow(){
     // ЗАДАЧИ НЕ ВЫГРУЖАЕМ — они общие-локальные (одно расписание на все базы устройства).
     if(_suspectWipe){
       // склад выглядит повреждённым: НЕ снимаем dirty (чтобы при восстановлении не потерять маркер) и зовём обновить из облака
-      setSyncStatus("error","Склад выглядит повреждённым — нажмите ↻ (обновить) вверху, чтобы восстановить из облака");
+      setSyncStatus("error","Склад выглядит повреждённым — нажмите значок синхронизации вверху справа, чтобы восстановить из облака");
     } else if(_dirtyGen !== _genAtStart){
       // пока шла выгрузка, пользователь успел что-то изменить — эта правка НЕ в нашем снимке.
       // dirty НЕ снимаем (иначе при сбое следующей выгрузки retry не запустится, а pull затрёт
@@ -7847,7 +7849,7 @@ async function cloudSyncNow(){
   if(!cloud.basesLoaded && cloud.session){ toast("Загрузка баз…"); await cloudOnLogin(cloud.session, 0).catch(()=>{}); return; }
   await cloudRelinkIfNeeded();   // если база ещё не связана с облаком (после сбоя входа) — привяжем по имени
   const cid = activeCloudId();
-  if(!cid){ toast("База пока не в облаке. При хорошем интернете нажмите ↻ (обновить) вверху — она привяжется"); return; }
+  if(!cid){ toast("База пока не в облаке. При хорошем интернете нажмите значок синхронизации вверху справа — она привяжется"); return; }
   await cloudRefreshMyMembership();   // подхватить возврат/снятие со смены
   if(isOffShift(cid)){
     setSyncStatus(membershipUnknown()?"offline":"error", membershipUnknown()
