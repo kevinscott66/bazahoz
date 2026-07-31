@@ -141,7 +141,10 @@
   .grid-cols-3 > .btn{ padding:0 6px; font-size:15px; gap:4px; min-width:0; }
   @media (max-width:360px){ .grid-cols-3 > .btn{ font-size:13px; padding:0 4px; } }
   /* iPhone SE / очень узкие: подписи в 3-колоночной сетке (типы склада, выбор темы) переносим, а не обрезаем */
-  @media (max-width:340px){ .grid-cols-3 > .btn{ font-size:11px; padding:2px; line-height:1.15; white-space:normal; height:auto; min-height:40px; } }
+  /* min-height 44px, а не 40: height:auto тут снимает базовые 52px от .btn, и «＋ Продукт/Хозтовар/
+     Инструмент» на узком экране проваливались под минимальный тап-таргет (WCAG 44×44), которого
+     держится весь остальной интерфейс (.chip, summary, стрелки порядка). Перенос строк сохраняем. */
+  @media (max-width:340px){ .grid-cols-3 > .btn{ font-size:11px; padding:2px; line-height:1.15; white-space:normal; height:auto; min-height:44px; } }
   /* активная вкладка нижней навигации — подчёркивание для ясности (position:relative задан выше на .nav-btn.active) */
   .nav-btn.active::after{ content:""; position:absolute; top:0; left:50%; transform:translateX(-50%); width:22px; height:3px; border-radius:0 0 3px 3px; background:currentColor; }
   /* косметика: светлая тема — видимые границы/контраст; disabled-кнопки; тап-зона узких кнопок */
@@ -230,7 +233,10 @@
     <button class="nav-btn active" data-nav="dashboard" aria-label="Дашборд"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5L12 3l9 7.5V20a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1v-9.5z"/></svg><span>Дашборд</span></button>
     <button class="nav-btn" data-nav="tasks" aria-label="Задачи"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg><span>Задачи</span></button>
     <button class="nav-btn" data-nav="stock" aria-label="Склад"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3.3 7.7L12 12l8.7-4.3M12 22V12"/></svg><span>Склад</span></button>
-    <!-- Кухня: вилка+нож. Была безымянная арка, не читавшаяся как кухня. Габарит 4..20 / 3..21 — как у соседей. -->
+    <!-- Кухня: вилка+нож. Была безымянная арка, не читавшаяся как кухня. Габарит по getBBox: X 4..20, Y 3..21
+         (16×18). У соседей X 3..21 — то есть вилка с ножом на 1px уже с каждой стороны. Это НЕ «как у соседей»,
+         как утверждал прежний комментарий: силуэт узкий намеренно, растягивать его ради одного пикселя значит
+         терять узнаваемость приборов; ряд иконок при равной толщине обводки читается ровным. -->
     <button class="nav-btn" data-nav="kitchen" aria-label="Кухня"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3v5a3.5 3.5 0 007 0V3"/><path d="M7.5 3v5"/><path d="M7.5 11.5v9.5"/><path d="M20 12V3a5 5 0 00-4 4.9V12z"/><path d="M18 12v9"/></svg><span>Кухня</span></button>
     <!-- Ещё: шестерёнка. Была иконка ЯРКОСТИ (солнце: круг + восемь лучей) — она про настройки экрана, а не про раздел настроек. -->
     <button class="nav-btn" data-nav="more" aria-label="Ещё"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.37 3.39H14.63L14.81 6.25L15.58 6.69L18.14 5.42L20.77 9.98L18.38 11.55V12.45L20.77 14.02L18.14 18.58L15.58 17.31L14.81 17.75L14.63 20.61H9.37L9.19 17.75L8.42 17.31L5.86 18.58L3.23 14.02L5.62 12.45V11.55L3.23 9.98L5.86 5.42L8.42 6.69L9.19 6.25Z"/><circle cx="12" cy="12" r="3"/></svg><span>Ещё</span></button>
@@ -309,7 +315,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v217";
+const APP_BUILD = "v218";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -498,7 +504,12 @@ const LOGIN_DOMAIN = "@razvedchick.ru";        // домен логина = ко
 const LEGACY_LOGIN_DOMAIN = "@bazahoz.app";    // старый домен: вход толерантен к нему на время миграции auth.users
 const cloud = {
   sb:null, session:null, profile:null, members:[], bases:{},
-  orgRoles:[], _baseParty:{},   // территориальные/глобальные роли + карта база→партия (RBAC v2)
+  orgRoles:[], _baseParty:{},   // МОИ территориальные/глобальные роли + карта база→партия (RBAC v2)
+  /* Управляющие орг-роли, какие RLS согласилась показать: владельцу (is_admin) — все, остальным —
+     только свои. Отдельно от orgRoles, потому что orgRoles везде читается как «мои права»
+     (myRank/isAccountant/canEditStock), и чужие строки в нём исказили бы их. Нужен ровно для одного:
+     чтобы предупреждение «база останется без управляющего» не срабатывало впустую (_orgManagesBase). */
+  orgManagers:[],
   channel:null, subscribedBase:null,
   pushTimer:null, pullTimer:null, applying:false, ready:false, busy:false,
   pushPending:false, retryTimer:null, pullRetryT:null, baseMembers:[], basesLoaded:false, membersLoaded:false,
@@ -4572,10 +4583,16 @@ async function _exportXlsxRun(){
     "Тип": typeMeta(s.type).addLabel,
     "Категория": s.category||"",
     "Наименование": s.name,
-    "Количество": roundQty(s.qty||0),
+    /* Количество и срок — ЧЕРЕЗ АГРЕГАТОРЫ, как в exportCsv и runFilteredXlsx. Сырые s.qty/s.expiry
+       врали, пока агрегаты карточки не пересчитаны (устаревшие legacy-поля у партийной позиции —
+       например, сразу после слияния партий из облака, до полной перезагрузки страницы): позиция
+       с партией на 40 шт до 2027-03-03 уходила в лист «Остатки» как «1 шт, 2020-01-01», хотя экран,
+       CSV и «Склад (фильтр)» того же склада показывали 40 и 2027-03-03. Бухгалтер, сверяющий Excel
+       с экраном, видел 1 вместо 40. */
+    "Количество": totalQtyOf(s),
     "Ед. изм.": s.unit||"",
     "Мин. запас": _xlNum(s.minStock),   // NaN в числовой ячейке = «файл повреждён» в Excel
-    "Срок годности": s.expiry||"",
+    "Срок годности": nearestExpiryOf(s)||"",
     "Место": locationsOf(s).join("; "),
     "Примечание": s.note||"",
   }));
@@ -5180,6 +5197,14 @@ function importData(ev){
           looseAdd(`${it.type}|${norm(it.name)}|${uk}`, it);
         });
         let added=0, updated=0;
+        /* Снимок карточки для ответа «а изменилось ли хоть что-нибудь». Нужен из-за правила
+           «берём НАИБОЛЬШЕЕ количество» (см. ниже): попытка скорректировать остаток ВНИЗ стала
+           пустой операцией, но всё равно попадала в счётчик — «Объединить» рапортовал
+           «+0, обновлено: 1», не изменив ровным счётом ничего, и человек шёл искать несуществующую
+           правку. Заодно не переписываем updatedAt впустую: неизменная позиция иначе выглядела
+           тронутой и уезжала в облако при каждом импорте одного и того же файла. */
+        const _mSnap = it => JSON.stringify([it.qty, it.expiry||"", it.location||"", it.unit||"",
+          it.category||"", it.note||"", (it.batches||[]).map(b=>[b.id,b.qty,b.expiry||"",b.location||"",b.note||""])]);
         (obj.stock||[]).forEach(src=>{
           const t = src.type||"product";
           const uk = unitKey(src.unit);
@@ -5191,6 +5216,7 @@ function importData(ev){
             found = cands.find(c=> !norm(c.category)) || (norm(src.category) ? null : cands[0]) || null;
           }
           if(found){
+            const _mBefore = _mSnap(found);
             // Слияние batches: если у src есть партии — добавляем их к found с новыми id
             // (если у found ещё нет batches, но был qty>0 — конвертируем его в первую партию)
             if(Array.isArray(src.batches) && src.batches.length){
@@ -5274,10 +5300,9 @@ function importData(ev){
             const catChanged = !found.category && src.category;
             if(catChanged) found.category = src.category;
             if(!found.note && src.note) found.note = src.note;
-            found.updatedAt = new Date().toISOString();
             // переиндексация strict, если категорию только что заполнили
             if(catChanged) strict.set(`${found.type}|${norm(found.category)}|${norm(found.name)}|${unitKey(found.unit)}`, found);
-            updated++;
+            if(_mSnap(found) !== _mBefore){ found.updatedAt = new Date().toISOString(); updated++; }
           } else {
             merged.stock.push({...src, id: src.id || uid()});
             const added_it = merged.stock[merged.stock.length-1];
@@ -5306,16 +5331,25 @@ function importData(ev){
         merged.tasks = mergeById(merged.tasks||[], obj.tasks||[]);
         merged.log   = mergeById(merged.log||[],   obj.log||[]);
         if(obj.journals){
+          ensureTomb();
+          /* Надгробия ЯВНО удалённых записей (state.delJr) тут игнорировались: запись, которую вахта
+             удалила, возвращалась из старого бэкапа по id, и push делал ей re-upsert в облако —
+             удаление отменялось у всех, а ledger снова считал списание/приход. Отсекаем ДО mergeById. */
+          const _delJ = new Set(Array.isArray(state.delJr) ? state.delJr : []);
           merged.journals = merged.journals || emptyJournals();
           JOURNAL_KEYS.forEach(k=>{
-            merged.journals[k] = mergeById(merged.journals[k]||[], obj.journals[k]||[]);
+            merged.journals[k] = mergeById(merged.journals[k]||[], (obj.journals[k]||[]).filter(x=> x && !_delJ.has(x.id)));
           });
         }
         // объединяем пользовательские места хранения (validateImport уже очистил строки)
         if(obj.locations){
+          ensureTomb();
           merged.locations = merged.locations || {};
           for(const k of STOCK_TYPE_KEYS){
-            merged.locations[k] = [...new Set([...(merged.locations[k]||[]), ...(obj.locations[k]||[])])];
+            // union со старым бэкапом возвращает удалённое место, и оно ушло бы в облако как revive;
+            // normalizeState ниже вычитает надгробия вторым рубежом, но полагаться на него как на
+            // единственный фильтр нельзя: он про форму состояния, а не про семантику импорта
+            merged.locations[k] = applyTomb([...new Set([...(merged.locations[k]||[]), ...(obj.locations[k]||[])])], (state.delLoc&&state.delLoc[k])||[]);
           }
         }
       }
@@ -5330,6 +5364,15 @@ function importData(ev){
       console.error("Import error:", e);
       toast("Не удалось прочитать файл — проверьте формат");
     }
+  };
+  /* Сбой чтения самого файла (файл удалён/переименован после выбора, нет прав, iCloud-файл не
+     скачался, ошибка носителя) не вызывает onload вообще: раньше не было ни тоста, ни очистки
+     input — экран просто не реагировал на «Импорт», и повторный выбор ТОГО ЖЕ файла тоже молчал
+     (значение input не сброшено → событие change не срабатывает). */
+  r.onerror = () => {
+    inputEl.value = "";
+    console.error("importData: FileReader", r.error);
+    toast("Не удалось прочитать файл с устройства — скопируйте его в память телефона и повторите");
   };
   r.readAsText(f);
 }
@@ -5697,7 +5740,7 @@ async function cloudRefresh(refresh_token){
 // постоянный сбой рефреша → чистый выход на экран входа (аккаунт удалён/токен отозван/сменили пароль)
 async function cloudSessionExpired(reason){
   if(!cloud.session && !cloud.ready) return;   // уже разлогинены — не дублируем
-  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.ready=false; cloud.basesLoaded=false; cloud.membersLoaded=false;
+  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.orgManagers=[]; cloud.ready=false; cloud.basesLoaded=false; cloud.membersLoaded=false;
   cloud.bases={}; clearAllBasesCache();        // имена баз и снимок остатков протухшей сессии не должны висеть в UI/памяти
   cloud._basesLoading=false; cloud.busy=false; cloud.pushPending=false; cloud.applying=false;   // иначе повторный вход залипнет (cloudOnLogin рано выходит при _basesLoading)
   cloud._conflictAsked={};                      // иначе после входа ДРУГИМ юзером на этом устройстве диалог «какие данные главные» молча пропустится → тихий pull без сохранения копии
@@ -6010,20 +6053,32 @@ function canRotateMember(m){
   if(!mine) return true;   // права ещё не загрузились — не мешаем, решит сервер (прежнее поведение)
   return rankOf(m.role) < mine;
 }
-/* (2) «Сирота». handover_shift (миграция 2026-08-01_handover_consistency.sql) проверяет остаток
-   управляющих ТОЛЬКО если уходящий сам держал can_manage, и считает управляющим также активную
-   орг-роль, покрывающую базу. Клиент видит лишь СВОИ орг-роли — чужие учитывает сервер, поэтому
-   наша проверка заведомо не строже серверной и ложных отказов не добавляет. */
+/* (2) «Сирота» — ПРЕДУПРЕЖДЕНИЕ, а не запрет, и вот почему.
+   handover_shift (миграция 2026-08-01_handover_consistency.sql) проверяет остаток управляющих
+   ТОЛЬКО если уходящий сам держал can_manage, и считает управляющим ЛЮБУЮ активную орг-роль
+   с can_manage, покрывающую базу, — ЧЬЮ УГОДНО. Клиент столько не видит: org_roles грузятся
+   запросом с фильтром user_id=<я>, то есть только СВОИ роли. Значит для не-владельца проверка
+   физически слепа к чужому начальнику партии и видит МЕНЬШЕ управляющих, чем сервер, — она НЕ
+   «заведомо не строже серверной», как утверждал прежний комментарий, а строже, и ложные отказы
+   даёт. Именно так у владельца пропала кнопка «Передать смену» на базе, которой управляют из
+   оргструктуры: оставалось только «Снять со смены», а оно не передаёт задачи заступающему.
+   Поэтому решение принимает сервер (он знает правду, а Edge Function переводит его 'orphan'
+   в понятный текст), клиент же лишь предупреждает в подтверждении.
+   Владельцу (is_admin) политика org_roles_select отдаёт и чужие строки — для него в cloud.orgManagers
+   лежит полный срез управляющих орг-ролей, поэтому его предупреждение точное. */
 function _orgManagesBase(cid){
   /* Признак владельца (is_admin) управляющим ЗДЕСЬ не считается: строки в org_roles у владельца нет,
-     и серверная проверка «сироты» его не исключает. Ровно на этом клиент и сервер расходились —
-     предупреждения не было, а отказ был. */
+     и серверная проверка «сироты» его не исключает. */
   const party = (cloud._baseParty||{})[cid] || null;
-  return (cloud.orgRoles||[]).some(o=> o && o.active!==false
+  const hit = o => o && o.active!==false
       && (o.can_manage===true || ["party_chief","director","general_director"].includes(o.role))
-      && (!o.party_id || o.party_id===party));
+      && (!o.party_id || o.party_id===party);
+  return (cloud.orgRoles||[]).some(hit) || (cloud.orgManagers||[]).some(hit);
 }
-function _handoverWouldOrphan(fromUid, toUid){
+/* Может ли передача оставить базу без управляющего — ПО ТОМУ, ЧТО ВИДНО КЛИЕНТУ. Возможны только
+   ложные «да» (чужие орг-роли не видны), ложных «нет» быть не может, поэтому годится на
+   предупреждение и не годится на запрет. */
+function _handoverMayOrphan(fromUid, toUid){
   const from=_findBM(fromUid);
   if(!from || !from.can_manage) return false;            // уходящий не управлял — число управляющих не меняется
   if(_orgManagesBase(activeCloudId())) return false;     // базой управляют из оргструктуры
@@ -6034,9 +6089,9 @@ function _handoverWouldOrphan(fromUid, toUid){
     return manage && active;
   }).length===0;
 }
-// кандидаты в заступающие: все участники базы, кроме уходящего, у которых передача НЕ оставит базу без управляющего
+// кандидаты в заступающие: все участники базы, кроме уходящего (кого пустить — решает сервер)
 function handoverCandidates(fromUid){
-  return (cloud.baseMembers||[]).filter(o=> o.user_id!==fromUid && !_handoverWouldOrphan(fromUid, o.user_id));
+  return (cloud.baseMembers||[]).filter(o=> o.user_id!==fromUid);
 }
 // меню «Смена»: снять/вернуть, либо передать смену заступающему (с задачами)
 function openShift(uid){
@@ -6057,17 +6112,13 @@ function openShift(uid){
 }
 function openHandover(fromUid){
   const from=_findBM(fromUid); if(!from) return;
-  // те же три отказа, что даёт сервер, — до выбора кандидата, а не после подтверждения
+  // отказы, которые клиент знает ТОЧНО, — до выбора кандидата, а не после подтверждения
+  // (проверка «останется ли управляющий» сюда не входит: она приблизительная, см. _handoverMayOrphan)
   if(!canRotateMember(from)){ toast("Нельзя снять со смены того, кто равен вам или выше по должности"); return; }
   if(from.active===false){ toast(`«${from.username}» уже не на смене — обновите список`); return; }
-  const all=(cloud.baseMembers||[]).filter(x=>x.user_id!==fromUid);
   const others=handoverCandidates(fromUid);
-  if(!others.length){
-    toast(all.length
-      ? "Некому передать: база останется без управляющего. Сначала назначьте другого «Начальника участка»"
-      : "Нет заступающего. Сначала добавьте работника кнопкой «＋ Добавить»");
-    return;
-  }
+  // единственный отказ, который клиент знает точно: передавать НЕКОМУ (в базе больше никого нет)
+  if(!others.length){ toast("Нет заступающего. Сначала добавьте работника кнопкой «＋ Добавить»"); return; }
   openSheet(`<div class="font-bold text-xl mb-3">Передать смену</div>
     <div class="text-sm opacity-70 mb-2">От «${esc(from.username)}» — кому передать смену и задачи?</div>
     <div class="space-y-2">
@@ -6078,15 +6129,16 @@ function openHandover(fromUid){
 async function doHandover(fromUid, toUid){
   const from=_findBM(fromUid), to=_findBM(toUid);
   if(!from || !to){ toast("Список устарел. Закройте и откройте заново"); return; }
-  /* Те же проверки, что и на сервере (см. canRotateMember/_handoverWouldOrphan). Раньше здесь
-     ВЛАДЕЛЕЦ проходил мимо проверки «останется ли управляющий», а SQL владельца не исключал:
-     предупреждения не было, а отказ был — владелец жал и получал непонятную ошибку. Теперь
-     исключения нет, зато проверка (как и в БД после 2026-08-01) запускается только если уходящий
-     сам держал управление, и учитывает орг-роли — иначе она мешала бы законной пересменке
-     хозрабочего на базе, которой управляют из оргструктуры. */
+  /* Ранг проверяем сами (таблицы клиента и сервера сверены — ложных отказов не даёт), а вот
+     «останется ли управляющий» клиент знает лишь приблизительно: чужие орг-роли ему не видны
+     (см. _handoverMayOrphan). Поэтому здесь ПРЕДУПРЕЖДЕНИЕ в тексте подтверждения, а не отказ:
+     запрет отнимал у людей единственный способ передать смену вместе с задачами там, где сервер
+     операцию разрешает. Откажет — сервер, и его причина уже переведена в человеческий текст. */
   if(!canRotateMember(from)){ toast("Нельзя снять со смены того, кто равен вам или выше по должности"); return; }
-  if(_handoverWouldOrphan(fromUid, toUid)){ toast("База останется без управляющего. Сначала назначьте другого «Начальника участка»"); return; }
-  if(!await confirmSheet(`Передать смену от «${from.username}» к «${to.username}»?\nВсе задачи «${from.username}» перейдут к «${to.username}». «${from.username}» уйдёт со смены и потеряет доступ к базе, «${to.username}» заступит и получит доступ.`,{ yes:"Передать смену", title:"Передать смену" })) return;
+  const orphanWarn = _handoverMayOrphan(fromUid, toUid)
+    ? `\n\n⚠️ Похоже, после передачи на базе не останется «Начальника участка». Если базой управляют из оргструктуры (начальник партии, директор) — передача пройдёт. Если нет — сервер откажет, тогда сначала назначьте управляющего.`
+    : "";
+  if(!await confirmSheet(`Передать смену от «${from.username}» к «${to.username}»?\nВсе задачи «${from.username}» перейдут к «${to.username}». «${from.username}» уйдёт со смены и потеряет доступ к базе, «${to.username}» заступит и получит доступ.${orphanWarn}`,{ yes:"Передать смену", title:"Передать смену" })) return;
   if(cloud._handoverBusy) return; cloud._handoverBusy=true;
   try{
     const d=await cloudCallFn("handover", { base_id:activeCloudId(), from_user:fromUid, to_user:toUid });
@@ -6146,17 +6198,24 @@ function openAddMember(){
    нельзя: через ЭТОТ ЖЕ ящик идёт восстановление пароля, то есть сломан и запасной путь. Поле
    приходит на create_member / create_org_member / reset_password, но ни один клиент его не читал —
    предупреждение не доходило до человека вообще. Тоста тут мало: он одной строкой и на 1,8 с. */
+/* Возвращает промис, который разрешается ПОСЛЕ закрытия предупреждения. Иначе оно ставилось в тот же
+   единственный лист, что и только что открытый список участников, и подменяло его собой: владелец
+   видел «Понятно», закрывал — и оказывался вообще без списка. Теперь порядок обратный: сначала
+   предупреждение, после «Понятно» — обновлённый список (см. вызовы). */
 function warnMailUnsynced(d, username){
-  if(!d || d.mail_synced !== false) return;
+  if(!d || d.mail_synced !== false) return Promise.resolve();
   const box = esc(String(username || d.username || "").trim().toLowerCase() + LOGIN_DOMAIN);
-  openSheet(`<div class="font-bold text-xl mb-2">⚠️ Почтовый ящик не обновлён</div>
-    <div class="text-sm opacity-80 mb-4" style="line-height:1.5">Пароль приложения задан и работает.
-      А вот пароль почтового ящика <b>${box}</b> остался прежним — почтовый сервер не ответил.<br><br>
-      Значит через этот ящик НЕ сработает и восстановление пароля. Повторите смену пароля при
-      устойчивой связи; если не поможет — сообщите владельцу, нужно проверить почтовый сервер.</div>
-    <button class="btn btn-primary w-full" data-close>Понятно</button>`);
-  // лист мог не открыться (виден экран входа) — тогда хотя бы строкой
-  if(_sheetRefused) toast("Пароль почтового ящика не обновлён — восстановление по почте не сработает");
+  return new Promise(resolve=>{
+    openSheet(`<div class="font-bold text-xl mb-2">⚠️ Почтовый ящик не обновлён</div>
+      <div class="text-sm opacity-80 mb-4" style="line-height:1.5">Пароль приложения задан и работает.
+        А вот пароль почтового ящика <b>${box}</b> остался прежним — почтовый сервер не ответил.<br><br>
+        Значит через этот ящик НЕ сработает и восстановление пароля. Повторите смену пароля при
+        устойчивой связи; если не поможет — сообщите владельцу, нужно проверить почтовый сервер.</div>
+      <button class="btn btn-primary w-full" data-close>Понятно</button>`);
+    // лист мог не открыться (виден экран входа) — тогда хотя бы строкой, и ждать нечего
+    if(_sheetRefused){ toast("Пароль почтового ящика не обновлён — восстановление по почте не сработает"); resolve(); return; }
+    _sheetOnClose = ()=>resolve();
+  });
 }
 async function doAddMember(){
   const cid=activeCloudId();
@@ -6169,7 +6228,7 @@ async function doAddMember(){
   const btn=document.getElementById("amGo"); btn.disabled=true; btn.textContent="Создание…";
   try{
     const d=await cloudCallFn("create_member", { base_id:cid, username, password, role });
-    toast("Работник создан: "+d.username); await openMembersSheet(); warnMailUnsynced(d, username);
+    toast("Работник создан: "+d.username); await warnMailUnsynced(d, username); await openMembersSheet();
   }catch(e){ toast("Не удалось. "+(e.message||"Проверьте интернет и повторите")); if(document.getElementById("amGo")){ btn.disabled=false; btn.textContent="Создать"; } }
 }
 function openResetPwd(uid){
@@ -6185,7 +6244,7 @@ function openResetPwd(uid){
     const pwd=document.getElementById("rpp").value||"";
     if(pwd.length<8){ toast("Пароль не короче 8 символов"); return; }
     const btn=document.getElementById("rpGo"); btn.disabled=true; btn.textContent="Смена…";
-    try{ const d=await cloudCallFn("reset_password", { base_id:activeCloudId(), user_id:uid, password:pwd }); toast("Пароль изменён"); await openMembersSheet(); warnMailUnsynced(d, m.username); }
+    try{ const d=await cloudCallFn("reset_password", { base_id:activeCloudId(), user_id:uid, password:pwd }); toast("Пароль изменён"); await warnMailUnsynced(d, m.username); await openMembersSheet(); }
     catch(e){ toast("Не удалось. "+(e.message||"Проверьте интернет и повторите")); if(document.getElementById("rpGo")){ btn.disabled=false; btn.textContent="Сменить"; } }
   };
 }
@@ -6336,7 +6395,7 @@ async function doAddOrgMember(){
   const btn=document.getElementById("omGo"); btn.disabled=true; btn.textContent="Создание…";
   try{
     const d=await cloudCallFn("create_org_member", { base_id:activeCloudId()||"00000000-0000-0000-0000-000000000000", username, password, role, party_id });
-    toast("Назначен: "+(d.username||username)); await openOrgRolesSheet(); warnMailUnsynced(d, username);
+    toast("Назначен: "+(d.username||username)); await warnMailUnsynced(d, username); await openOrgRolesSheet();
   }catch(e){ toast("Не удалось. "+(e.message||"Проверьте интернет и повторите")); if(document.getElementById("omGo")){ btn.disabled=false; btn.textContent="Создать"; } }
 }
 // назначить территориальную/глобальную роль УЖЕ СУЩЕСТВУЮЩЕМУ работнику (по логину)
@@ -6930,18 +6989,23 @@ async function cloudOnLogin(session, attempt){
     // 3 независимых запроса — ПАРАЛЛЕЛЬНО (последовательно было бы ~3× дольше на медленной сети).
     // Общий таймаут 25с: зависший PostgREST-запрос не должен оставлять загрузку висеть вечно.
     const tok = session.access_token;
-    const [prof, mem, bs, orgs] = await Promise.race([
+    const [prof, mem, bs, orgs, orgMgrs] = await Promise.race([
       Promise.all([
         cloudRest(`profiles?select=id,username,display_name,is_admin&id=eq.${encodeURIComponent(uidv)}`, tok),   // явные колонки: SELECT на recovery_* отозван, select=* упал бы с 403
         cloudRest(`base_members?select=*&user_id=eq.${encodeURIComponent(uidv)}`, tok),   // ТОЛЬКО мои членства: RLS теперь даёт менеджеру видеть и чужие строки, но cloud.members = «мои права»
         cloudRest(`bases?select=id,name,party_id`, tok),
         cloudRest(`org_roles?select=*&user_id=eq.${encodeURIComponent(uidv)}`, tok).catch(()=>[]),   // территориальные/глобальные роли (может отсутствовать на старом бэке → [] )
+        // БЕЗ фильтра по user_id: политика org_roles_select отдаёт владельцу все строки, остальным — только свои.
+        // Тем же запросом получаем и точный ответ «управляют ли базой из оргструктуры» (владельцу), и безопасный
+        // подмножественный (всем прочим). Не блокирует вход: параллельно с остальными, ошибка → [].
+        cloudRest(`org_roles?select=party_id,role,active,can_manage&active=is.true&can_manage=is.true`, tok).catch(()=>[]),
       ]),
       new Promise((_,rej)=>setTimeout(()=>rej(new Error("превышено время ожидания облака")),25000))   // запас под слабый канал/дальний маршрут
     ]);
     cloud.profile = (Array.isArray(prof) && prof[0]) || { id:uidv, username:session.user.email };
     cloud.members = Array.isArray(mem) ? mem : [];
     cloud.orgRoles = Array.isArray(orgs) ? orgs : [];
+    cloud.orgManagers = Array.isArray(orgMgrs) ? orgMgrs : [];
     cloud.bases = {}; cloud._baseParty = {}; (Array.isArray(bs)?bs:[]).forEach(b=>{ cloud.bases[b.id]=b.name; cloud._baseParty[b.id]=b.party_id||null; });
     cloud.ready = true; cloud.basesLoaded = true;
     cloud.membersLoaded = true;   // сервер ОТВЕТИЛ: членство известно (в т.ч. «членства нет» = [])
@@ -7033,7 +7097,7 @@ async function cloudLogout(){
   clearTimeout(cloud.pushTimer); clearTimeout(cloud.retryTimer); clearTimeout(cloud.pullTimer); clearTimeout(cloud.pullRetryT);   // отложенные склад-операции не должны срабатывать после выхода
   // задачи привязаны к аккаунту (owner) — при выходе НЕ оставляем их локально, иначе следующий юзер их увидит/выгрузит
   state.tasks=[]; try{ localStorage.removeItem(TASKS_KEY); localStorage.removeItem(TASKS_DIRTY); }catch(e){}
-  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
+  cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.orgManagers=[]; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
   cloud.tasksChannel=null; cloud.tasksSubUid=null; cloud.tasksBusy=false; cloud.basesLoaded=false; cloud.membersLoaded=false;   // сброс задач: иначе после входа другим юзером realtime молчит
   cloud._conflictAsked={};   // сброс «спрашивали ли про конфликт данных» — для следующего входа на этом устройстве
   clearAllBasesCache();   // снимок остатков всех баз не должен пережить выход (утечка на общем устройстве)
@@ -7227,6 +7291,10 @@ function _backupLocalBeforePull(cid){
   try{ toast("Данные с телефона сохранены копией"); }catch(_){}
   return true;
 }
+/* Возвращает true ТОЛЬКО если облачные данные реально применены. Все ранние выходы (оффлайн,
+   снят со смены, есть несинхронизированное локальное) и любая ошибка дают undefined: вызывающий
+   обязан отличать «загрузили» от «не стали/не смогли» — см. cloudResolveWipe. Ошибку наружу не
+   бросаем (её обрабатывает catch ниже), поэтому признак успеха и нужен возвращаемым значением. */
 async function cloudPull(cid){
   if(!cid || !cloudOnline()) return;
   if(isOffShift(cid)) return;   // снят со смены: RLS вернёт пусто — НЕ затираем локальные данные пустотой
@@ -7357,6 +7425,7 @@ async function cloudPull(cid){
     // исправления сверки (только у редакторов) — помечаем к выгрузке, чтобы облако тоже обновилось
     if(_reconChanged){ markDirty(cid); }
     setSyncStatus("synced","Загружено из облака");
+    return true;   // единственная точка успеха: облако применено к state и сохранено
   }catch(e){
     console.warn("cloudPull", e);
     setSyncStatus("error", "Не удалось загрузить — проверьте интернет и нажмите значок синхронизации вверху справа");
@@ -7688,6 +7757,7 @@ async function cloudPushNow(){
         if(del.length) await cloudRestDelete("stock_items", del, tok);
         if(STOCK_MERGE && upsert.length) await mergeStockQtyBeforePush(cid, tok, upsert, curSig);   // 3-way слияние qty (конкурентные списания с 2 устройств)
         if(upsert.length) await cloudRestUpsert("stock_items", upsert, tok, (d,t)=>{ if(t>20) setSyncStatus("syncing",`Выгрузка ${d}/${t}`); });
+        if(upsert.length) _rememberEcho("stock_items", upsert.map(r=>[r.id, curSig[r.id]]));   // эхо своей записи не должно тянуть полную загрузку
         // type-restricted: merge подписи — не выкидывать скрытые типы из prevSig (иначе следующий цикл «забывает» их)
         const mergedSig = _typeRestricted ? { ...prevSig } : {};
         Object.keys(curSig).forEach(id=>{ mergedSig[id]=curSig[id]; });
@@ -7751,7 +7821,7 @@ async function cloudPushNow(){
       });
       if(!(jrows.length===0 && Object.keys(prevJSig).length>0)){
         const jup = jrows.filter(r=> curJSig[r.id]!==prevJSig[r.id]);
-        if(jup.length) await cloudRestUpsert("journal_entries", jup, tok);
+        if(jup.length){ await cloudRestUpsert("journal_entries", jup, tok); _rememberEcho("journal_entries", jup.map(r=>[r.id, curJSig[r.id]])); }
         if(jrToDel.length){ await cloudRestDelete("journal_entries", jrToDel, tok); dropDeliveredTombstones(jrToDel); }
         // merge: скрытые ops остаются в подписи (не считаются «удалёнными» при следующем push)
         const mergedJ = _typeRestricted ? { ...prevJSig } : {};
@@ -7970,20 +8040,64 @@ function cloudSubscribeTasks(){
 }
 /* Догоняющий pull после ЛЮБОЙ занятости. cloudOnRemote при busy/pushPending/applying только ставит
    флаг — снять его обязан тот, кто был занят: и загрузка, и ВЫГРУЗКА (busy/pushPending чаще всего
-   означает именно её). Флаг снимаем ДО планирования: повтор возможен только от НОВОГО события —
-   цикла «pull → pull» не будет. */
+   означает именно её), поэтому вызов стоит в finally обоих проходов.
+   Флаг гасим ВНУТРИ таймера и только когда загрузка действительно стартует. Раньше он снимался
+   сразу, до планирования, и событие пропадало НАСОВСЕМ, если через 800 мс условия не сошлись —
+   типично при своих несохранённых правках: pull пропускается, перепланировать некому, чужая правка
+   на экране так и не появляется. Теперь флаг доживает до следующего drain (его сделает push,
+   который эти правки и выгружает). Цикла «pull → pull» по-прежнему нет: к моменту, когда cloudPull
+   из своего finally позовёт drain, флаг уже погашен здесь. */
 function cloudDrainRemoteMissed(){
   if(!cloud._remoteMissed) return;
-  cloud._remoteMissed = false;
   clearTimeout(cloud.pullTimer);
   cloud.pullTimer = setTimeout(()=>{
     const c = activeCloudId();
-    if(c && cloud.ready && cloud.session && !cloud.busy && !cloud.pushPending && !cloud.applying &&
-       !localStorage.getItem(cloudDirtyKey(c))) cloudPull(c).catch(()=>{});
+    if(!(c && cloud.ready && cloud.session && !cloud.busy && !cloud.pushPending && !cloud.applying &&
+         !localStorage.getItem(cloudDirtyKey(c)))) return;   // ещё занято / есть свои правки — флаг НЕ гасим, событие живо
+    cloud._remoteMissed = false;
+    cloudPull(c).catch(()=>{});
   }, 800);
 }
-function cloudOnRemote(){
+/* Подписи строк, которые ТОЛЬКО ЧТО выгрузили мы сами, — чтобы отличить эхо своей записи от чужой
+   правки в realtime. Живёт минуту: эхо приходит за секунды, а держать дольше незачем — просроченная
+   запись просто перестаёт совпадать, и событие идёт обычным путём (лишний pull, но не потеря). */
+const _echoSent = { at:0, sig:new Map() };
+function _rememberEcho(table, pairs){
+  const now = Date.now();
+  if(now - _echoSent.at > 60000) _echoSent.sig.clear();
+  _echoSent.at = now;
+  for(const [id, sg] of pairs){ if(id && sg) _echoSent.sig.set(table+"|"+id, sg); }
+  if(_echoSent.sig.size > 5000) _echoSent.sig.clear();   // разовая массовая выгрузка не должна держать память
+}
+function _isOwnEcho(payload){
+  try{
+    const rec = payload && payload.new, tbl = payload && payload.table;
+    if(!rec || !rec.id || !tbl) return false;                       // DELETE и прочее без строки — не эхо
+    if(Date.now() - _echoSent.at > 60000) return false;
+    const sg = _echoSent.sig.get(tbl+"|"+rec.id);
+    if(!sg) return false;
+    // проекция облачной строки на НАШИ колонки — подпись считалась ровно по ним (stockToRow / {kind,data})
+    const proj = tbl==="stock_items"
+      ? { id:rec.id, base_id:rec.base_id, type:rec.type, name:rec.name, category:rec.category||"",
+          unit:rec.unit||"шт", min_stock:(rec.min_stock==null?null:Number(rec.min_stock)), note:rec.note||"",
+          qty:roundQty(rec.qty||0), expiry:rec.expiry||"", location:rec.location||"",
+          batches:Array.isArray(rec.batches)?rec.batches:[] }
+      : tbl==="journal_entries" ? { kind:rec.kind, data:rec.data }
+      : null;
+    return !!proj && _sigOf(proj)===sg;
+  }catch(_){ return false; }
+}
+function cloudOnRemote(payload){
   clearTimeout(cloud.pullTimer);               // всегда гасим прежний отложенный pull, иначе он сработает после dirty и затрёт правки
+  /* ЭХО СОБСТВЕННОЙ ВЫГРУЗКИ. Наш же upsert возвращается по realtime как «изменение в облаке».
+     На канале задач эхо отбрасывается явно (cloud.tasksBusy), а здесь не отбрасывалось: событие
+     помечалось _remoteMissed и превращалось в ПОЛНУЮ загрузку базы после каждого push — на вахтовом
+     интернете это лишний трафик на каждое сохранение остатка (в v216 эхо просто отбрасывалось).
+     Отбрасываем ТОЛЬКО строку, содержимое которой ПОБАЙТОВО совпадает с тем, что мы сами выгрузили
+     (сверка по подписи, см. _isOwnEcho): чужая правка, даже пришедшая в это же окно, подписи не
+     совпадёт и пойдёт обычным путём — ради неё _remoteMissed и вводили. Ложное совпадение возможно
+     лишь когда чужое устройство записало РОВНО ТО ЖЕ значение, и тогда тянуть действительно нечего. */
+  if(_isOwnEcho(payload)) return;
   // push/pull в полёте — второй pull не стартуем. НО событие нельзя просто выбросить: чужая правка,
   // прилетевшая во время нашей загрузки, не попадала в этот pull (он уже читал облако ДО неё) и не
   // планировала следующий — экран висел устаревшим до случайного следующего триггера (своя правка,
@@ -8067,14 +8181,32 @@ async function cloudResolveWipe(cid){
     [ { label:"Данные пропали — восстановить из облака", value:"pull", color:"btn-primary" },
       { label:"Это я удалил намеренно — отправить в облако", value:"push", color:"btn-danger" } ]);
   if(choice==="pull"){
-    // Отбрасываем несинхронизированное локальное — иначе cloudPull снова свернёт в push (см. его первую проверку).
-    // Снимок НЕ трогаем: он нужен как ориентир при следующей сверке.
-    cloud._wipePending = null; cloud._wipeOverride = null;
+    /* Отметку «есть несинхронизированное» снимаем только НА ВРЕМЯ загрузки: пока она висит,
+       cloudPull первым делом сворачивает в push (см. его проверку выше) и облако бы не пришло.
+       Но если загрузка не удалась — а этот диалог всплывает ровно там, где связь и рвётся, —
+       всё возвращаем на место. Раньше флаги гасились БЕЗУСЛОВНО и до вызова, и после неудачи
+       получалось худшее из возможного: на экране усохший склад, приложение считает его
+       синхронизированным, повторный тап по значку синхронизации диалог уже НЕ открывает (уходит
+       в обычную активацию), а тост зовёт «повторите» — повторять нечем. Плюс законные локальные
+       правки, попавшие под «отбрасываем несинхронизированное», оказывались помечены выгруженными
+       и молча затирались следующей загрузкой.
+       Снимок подписей НЕ трогаем: он нужен как ориентир при следующей сверке. */
+    let dirtyWas = null;
+    try{ dirtyWas = localStorage.getItem(cloudDirtyKey(cid)); }catch(_){}
+    cloud._wipeOverride = null;
     clearTimeout(cloud.pushTimer); clearTimeout(cloud.retryTimer); cloud.pushPending = false;
     try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(_){}
     setSyncStatus("syncing","Восстановление из облака…");
-    try{ await cloudPull(cid); toast("Восстановлено из облака"); }
-    catch(e){ toast("Не удалось восстановить — проверьте интернет и повторите"); }
+    let pulled = false;
+    try{ pulled = (await cloudPull(cid)) === true; }catch(e){ pulled = false; }
+    if(pulled){
+      cloud._wipePending = null;                     // защита снимается ТОЛЬКО после реальной загрузки
+      toast("Восстановлено из облака");
+    }else{
+      cloud._wipePending = cid;                      // диалог по ↻ остаётся доступным — «повторите» исполнимо
+      if(dirtyWas!=null){ try{ localStorage.setItem(cloudDirtyKey(cid), dirtyWas); }catch(_){} }
+      toast("Не удалось восстановить — проверьте интернет и повторите");
+    }
     render();
     return;
   }
