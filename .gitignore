@@ -10,6 +10,9 @@ node_modules/
 # всё генерируемое: build/, .gradle/, local.properties, assets/public, capacitor-cordova-android-plugins.
 native/ios/
 native-desktop/src-tauri/target/
+# gen/ Tauri пересоздаёт при каждой сборке из tauri.conf.json и capabilities/ —
+# в репозитории он только шумит в диффе и конфликтует между сборщиками.
+native-desktop/src-tauri/gen/
 
 # личные данные: экспорты/бэкапы склада не коммитим в публичный репозиторий.
 # Инцидент уже был: vahtahoz-feb2026.json и vahtahoz-spisok.json ~3 месяца лежали в корне

@@ -89,8 +89,11 @@ public class FileDownloadBridge {
     private final Map<String, Job> jobs = new ConcurrentHashMap<>();
     private final AtomicInteger seq = new AtomicInteger();
 
-    /** Готовый файл, ждущий разрешения на запись в общие «Загрузки» (только Android 9 и старше). */
-    private Job awaitingPermission;
+    /**
+     * Готовый файл, ждущий разрешения на запись в общие «Загрузки» (только Android 9 и старше).
+     * Пишется из потока JS-моста, читается из UI-потока → volatile.
+     */
+    private volatile Job awaitingPermission;
 
     private static class Job {
         final String id;
