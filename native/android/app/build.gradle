@@ -13,6 +13,26 @@ def vhKeystorePath = System.getenv("VH_KEYSTORE_PATH")
 def vhKeystoreFile = vhKeystorePath ? file(vhKeystorePath) : null
 def vhHasKeystore = vhKeystoreFile != null && vhKeystoreFile.exists()
 
+// CI выставляет VH_REQUIRE_SIGNING=1, когда собирает РАБОЧУЮ сборку. Без этого сторожа
+// решения расходились: CI выбирал ветку «релиз» по наличию секрета, а gradle подписывал по
+// наличию ФАЙЛА ключа. Стоило файлу не доехать (пустой секрет, сбой base64, переименование
+// переменной) — assembleRelease молча выдавал бы неподписанный APK, и он уехал бы владельцу
+// под рабочим именем. Теперь такое расхождение — падение сборки на самом раннем шаге.
+def vhRequireSigning = System.getenv("VH_REQUIRE_SIGNING") == "1"
+if (vhRequireSigning && !vhHasKeystore) {
+    throw new GradleException(
+        "Требуется подписанная сборка (VH_REQUIRE_SIGNING=1), но ключа нет: " +
+        "VH_KEYSTORE_PATH=" + (vhKeystorePath ?: "<не задан>")
+    )
+}
+if (vhRequireSigning) {
+    ["VH_KEYSTORE_PASSWORD", "VH_KEY_ALIAS", "VH_KEY_PASSWORD"].each { name ->
+        if (!System.getenv(name)) {
+            throw new GradleException("Требуется подписанная сборка, но переменная $name пуста")
+        }
+    }
+}
+
 android {
     namespace "ru.razvedchick.vahta"
     compileSdk rootProject.ext.compileSdkVersion
@@ -40,6 +60,20 @@ android {
         }
     }
     buildTypes {
+        debug {
+            // Отладочная сборка обязана отличаться от рабочей НА ЭКРАНЕ ТЕЛЕФОНА, а не только
+            // именем файла: к моменту установки имя файла уже потеряно. Раньше это были одно
+            // и то же приложение с одной иконкой, одной надписью и одной версией — но с разными
+            // ключами подписи, поэтому рабочая поверх отладочной не вставала и наоборот,
+            // а владелец, раздающий сборки руками, узнавал об этом только на месте.
+            //
+            // Другой applicationId → ставятся РЯДОМ, друг другу не мешают.
+            // Суффикс версии виден в «О приложении» и в самой оболочке.
+            // Отдельные ресурсы в src/debug/res меняют надпись под иконкой и цвет подложки
+            // иконки — их видно на рабочем столе, не заходя никуда.
+            applicationIdSuffix ".debug"
+            versionNameSuffix "-DEBUG"
+        }
         release {
             // R8/минификация выключены осознанно: приложение — это оболочка вокруг сайта,
             // своего кода в ней ~700 строк, экономить нечего, а сломать рефлексию Capacitor

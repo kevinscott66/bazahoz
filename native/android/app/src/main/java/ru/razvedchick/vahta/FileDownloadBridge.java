@@ -8,6 +8,7 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
@@ -37,13 +38,18 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -63,13 +69,18 @@ import java.util.concurrent.atomic.AtomicInteger;
  *  2) WebView.setDownloadListener — штатный механизм. Срабатывает, если шим почему-то не
  *     внедрился (ошибка JS, другая страница). Тогда имя берём из Content-Disposition/URLUtil.
  *
- * Содержимое blob читается в самой странице (fetch → FileReader.readAsDataURL) и передаётся
- * сюда кусками по 256 КБ, чтобы не упереться в лимит одной строки JS-моста и не держать
- * весь файл в памяти. Куски декодируются на лету во временный файл в кэше.
+ * ЧЕСТНО о памяти. Нативная сторона действительно пишет потоком: куски по 256 КБ декодируются
+ * во временный файл в кэше и оттуда копируются в «Загрузки». А вот СТРАНИЦА поток не умеет:
+ * FileReader.readAsDataURL строит целиком строку base64 (≈1,4 от размера файла) поверх самого
+ * blob'а. Поэтому предел MAX_BYTES выставлен по тому, что переживёт отрисовщик бюджетного
+ * телефона, а не по тому, что переживёт файловая система: настоящие выгрузки — сотни килобайт,
+ * запас тридцатикратный. Вторую полную копию строки (срез после запятой) мы убрали — куски
+ * читаются из исходной строки по смещению, — и размер проверяется в странице ДО чтения,
+ * пока это ещё дёшево.
  *
  * Пишем в общую папку «Загрузки»: MediaStore.Downloads на Android 10+ (разрешения не нужны),
  * Environment.DIRECTORY_DOWNLOADS на Android 9 и старше (нужен WRITE_EXTERNAL_STORAGE).
- * После записи показываем диалог с именем файла и кнопками «Открыть»/«Поделиться» —
+ * После записи показываем диалог с ФАКТИЧЕСКИМ именем файла и кнопками «Открыть»/«Поделиться» —
  * иначе человек не понимает, куда делся файл.
  */
 public class FileDownloadBridge {
@@ -80,31 +91,110 @@ public class FileDownloadBridge {
 
     private static final String TAG = "VahtaDownload";
     private static final int CHUNK_CHARS = 262144; // кратно 4 → каждый кусок base64 декодируется отдельно
-    private static final long MAX_BYTES = 128L * 1024 * 1024;
+
+    /**
+     * Предел размера выгрузки. Раньше стояло 128 МБ, и это было обещание, которое некому
+     * выполнить: страница сначала построила бы ~175 МБ строки base64, а до правки — ещё и
+     * её копию, итого около 350 МБ в отрисовщике. Такой отрисовщик система убьёт задолго до
+     * нашего предела, то есть предел был недостижим и только вводил в заблуждение.
+     * 24 МБ — это ~34 МБ строки в странице: переживает даже слабый телефон, а самая большая
+     * реальная выгрузка (XLSX всего склада) — сотни килобайт.
+     */
+    private static final long MAX_BYTES = 24L * 1024 * 1024;
+
+    /** Сколько незавершённых чтений держим одновременно. Реально нужно одно; четыре — с запасом. */
+    private static final int MAX_ACTIVE_JOBS = 4;
+
+    /**
+     * Сколько ждём от страницы следующего куска, прежде чем считать задание брошенным.
+     * Отсчёт идёт от ПОСЛЕДНЕЙ активности, а не от начала: медленная, но живая передача
+     * сторожа не разбудит.
+     */
+    private static final long JOB_IDLE_TIMEOUT_MS = 60_000L;
+
+    /**
+     * Задержка, после которой смена документа считается поводом добить старое задание.
+     * Ноль ставить нельзя: onPageFinished может прийти повторно для того же документа
+     * (редирект, восстановление истории), и живую передачу мы бы убили сами.
+     */
+    private static final long PAGE_CHANGE_GRACE_MS = 3_000L;
+
+    private static final String TMP_PREFIX = "vh-download-";
+    private static final String TMP_SUFFIX = ".part";
+    /** Возраст, после которого .part-файл в кэше точно ничей (процесс убили посреди чтения). */
+    private static final long TMP_MAX_AGE_MS = 60L * 60L * 1000L;
+
+    /**
+     * Пределы длины имени. Считаем в БАЙТАХ UTF-8, а не в символах: на ext4/FAT ограничение
+     * в 255 байт, и 120 кириллических символов — это уже 240 байт плюс расширение.
+     */
+    private static final int MAX_NAME_BYTES = 200;
+    /** Длиннее этого «расширением» точку в конце имени не считаем — это просто точка в тексте. */
+    private static final int MAX_EXT_BYTES = 16;
 
     private final Activity activity;
     private final WebView webView;
     private final Set<String> allowedHosts;
     private final Handler ui = new Handler(Looper.getMainLooper());
-    private final Map<String, Job> jobs = new ConcurrentHashMap<>();
-    private final AtomicInteger seq = new AtomicInteger();
 
     /**
-     * Готовый файл, ждущий разрешения на запись в общие «Загрузки» (только Android 9 и старше).
-     * Пишется из потока JS-моста, читается из UI-потока → volatile.
+     * Активные чтения. Ключ — разовый непредсказуемый пропуск (см. newJobId): страница получает
+     * его только вместе с заданием, поэтому назвать чужой пропуск нельзя.
      */
-    private volatile Job awaitingPermission;
+    private final Map<String, Job> jobs = new ConcurrentHashMap<>();
+
+    private final SecureRandom random = new SecureRandom();
+
+    /**
+     * Поколение документа: растёт на каждой загрузке страницы. Задание помнит, в каком поколении
+     * родилось, — по этому признаку sweepJobs находит чтения, за которыми уже некому прийти
+     * (переход, перезагрузка, уход в другой раздел).
+     */
+    private final AtomicInteger pageEpoch = new AtomicInteger();
+
+    /**
+     * Наш ли сейчас главный фрейм. Считается ТОЛЬКО в UI-потоке (webView.getUrl() из другого
+     * потока вызывать нельзя), а обратные вызовы моста — они приходят в потоке JS-моста —
+     * читают уже готовое значение.
+     */
+    private volatile boolean pageTrusted;
+
+    /**
+     * Готовые файлы, ждущие разрешения на запись в общие «Загрузки» (только Android 9 и старше).
+     *
+     * ОЧЕРЕДЬ, а не одна ячейка: два экспорта подряд до выдачи разрешения затирали друг друга,
+     * и первый файл пропадал молча — ни сообщения, ни диалога, ни файла.
+     *
+     * И СТАТИЧЕСКАЯ, а не поле экземпляра: пока висит системный диалог разрешения, наша Activity
+     * может быть пересоздана, и ответ придёт уже в НОВЫЙ экземпляр FileDownloadBridge —
+     * у него поле экземпляра было бы пустым, обработчик вышел бы впустую, и файл потерялся бы
+     * молча. Поворот экрана сюда, кстати, не относится: он перечислен в android:configChanges
+     * манифеста и пересоздания не вызывает. А вот смена размера шрифта или плотности экрана,
+     * «Не сохранять действия» в меню разработчика и вытеснение фоновой Activity из памяти —
+     * вызывают. Процесс при этом остаётся тем же, поэтому статика доживает.
+     * Job не держит ссылок на Activity — утечки контекста здесь нет.
+     */
+    private static final Queue<Job> pendingPermission = new ConcurrentLinkedQueue<>();
+
+    /** Системный диалог разрешения уже показан. Второй requestPermissions поверх него бесполезен. */
+    private static final AtomicBoolean permissionAsked = new AtomicBoolean(false);
 
     private static class Job {
         final String id;
+        final int epoch;
         String name;
         String mime;
         File tmp;
         OutputStream out;
         long size;
+        /** Момент последней активности, монотонный (nanoTime не прыгает при переводе часов). */
+        volatile long touchedNanos = System.nanoTime();
+        /** Сторож незавершённого чтения; снимается, как только задание закрыто. */
+        volatile Runnable watchdog;
 
-        Job(String id, String name) {
+        Job(String id, int epoch, String name) {
             this.id = id;
+            this.epoch = epoch;
             this.name = name;
         }
     }
@@ -117,6 +207,11 @@ public class FileDownloadBridge {
 
     /** Вызывается один раз из MainActivity.onCreate. */
     public void attach() {
+        // Интерфейс достаётся ВСЕМ фреймам документа — ограничить его главным фреймом
+        // штатный WebView не умеет (для этого нужен WebViewCompat.addWebMessageListener
+        // с allowedOriginRules из androidx.webkit, это другая архитектура моста).
+        // Поэтому настоящая защита здесь — непредсказуемый пропуск задания, а не адрес страницы:
+        // webView.getUrl() возвращает адрес только ГЛАВНОГО фрейма и чужой фрейм им прикрылся бы.
         webView.addJavascriptInterface(this, JS_INTERFACE_NAME);
         webView.setDownloadListener(
             new DownloadListener() {
@@ -124,7 +219,7 @@ public class FileDownloadBridge {
                 public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimeType, long contentLength) {
                     // onDownloadStart всегда приходит в UI-потоке
                     if (url == null) return;
-                    if (!isTrustedPage()) {
+                    if (!refreshPageTrust()) {
                         Log.w(TAG, "Загрузка с недоверенной страницы отклонена");
                         return;
                     }
@@ -137,11 +232,24 @@ public class FileDownloadBridge {
                 }
             }
         );
+        // Новый экземпляр Activity — значит, прошлый системный диалог разрешения (если он был)
+        // нас уже не касается: ответ на него либо придёт сюда сам, либо не придёт никогда.
+        // Флаг сбрасываем, иначе он мог бы остаться поднятым навсегда, и следующий экспорт
+        // на Android 9 встал бы в очередь, за которой никто не придёт.
+        permissionAsked.set(false);
+        sweepOrphanTempFiles();
     }
 
     /** Внедрить JS-шим. Зовётся из MainActivity на каждое завершение загрузки страницы. */
     public void injectShim() {
-        if (!isTrustedPage()) return;
+        // Документ сменился: перехватчик клика в старом больше не существует, а вместе с ним
+        // исчезли и его незавершённые чтения — обработчик успеха уже не позовут никогда.
+        // Раньше такое задание оставалось в карте навсегда вместе с открытым потоком записи
+        // и временным файлом; повторные «Экспорт» с уходом со страницы копили и то, и другое.
+        int epoch = pageEpoch.incrementAndGet();
+        boolean trusted = refreshPageTrust();
+        sweepJobs(epoch, PAGE_CHANGE_GRACE_MS);
+        if (!trusted) return;
         try {
             webView.evaluateJavascript(SHIM_JS, null);
         } catch (Exception e) {
@@ -168,7 +276,7 @@ public class FileDownloadBridge {
             new Runnable() {
                 @Override
                 public void run() {
-                    if (!isTrustedPage()) {
+                    if (!refreshPageTrust()) {
                         Log.w(TAG, "startDownload с недоверенной страницы отклонён");
                         return;
                     }
@@ -182,7 +290,7 @@ public class FileDownloadBridge {
     /** head — заголовок data-URL вида "data:application/json;base64". */
     @JavascriptInterface
     public boolean blobStart(String id, String head) {
-        Job job = jobs.get(id);
+        Job job = liveJob(id);
         if (job == null) return false;
         try {
             String mime = null;
@@ -195,7 +303,7 @@ public class FileDownloadBridge {
             if (TextUtils.isEmpty(mime)) mime = "application/octet-stream";
             job.mime = mime;
             job.name = sanitizeName(job.name, mime);
-            job.tmp = new File(activity.getCacheDir(), "vh-download-" + id + ".part");
+            job.tmp = new File(activity.getCacheDir(), TMP_PREFIX + id + TMP_SUFFIX);
             if (job.tmp.exists() && !job.tmp.delete()) {
                 Log.w(TAG, "Не удалось удалить старый временный файл");
             }
@@ -209,7 +317,7 @@ public class FileDownloadBridge {
 
     @JavascriptInterface
     public boolean blobChunk(String id, String base64) {
-        Job job = jobs.get(id);
+        Job job = liveJob(id);
         if (job == null || job.out == null) return false;
         try {
             byte[] data = Base64.decode(base64, Base64.DEFAULT);
@@ -228,7 +336,17 @@ public class FileDownloadBridge {
 
     @JavascriptInterface
     public void blobEnd(String id) {
-        final Job job = jobs.remove(id);
+        // Доверие проверяем и здесь, а не только на входе: между blobStart и blobEnd страница
+        // могла уйти на чужой адрес, и записывать в «Загрузки» её результат мы не обязаны.
+        if (!pageTrusted) {
+            Job stray = takeJob(id);
+            if (stray != null) {
+                Log.w(TAG, "blobEnd с недоверенной страницы — результат выброшен");
+                cleanup(stray);
+            }
+            return;
+        }
+        final Job job = takeJob(id);
         if (job == null) return;
         try {
             if (job.out != null) {
@@ -245,25 +363,180 @@ public class FileDownloadBridge {
 
     @JavascriptInterface
     public void blobFailed(String id, String reason) {
-        Job job = jobs.remove(id);
+        // Сообщение о неудаче принимаем в любом случае: хуже прибраться, чем оставить мусор.
+        Job job = takeJob(id);
+        if (job == null) return;
         Log.w(TAG, "Не удалось прочитать blob: " + reason);
         cleanup(job);
         toast("Не удалось сохранить файл: " + reason);
     }
 
+    // ------------------------------------------------------------------ учёт заданий
+
+    /**
+     * Проверка, общая для КАЖДОГО обратного вызова из страницы, а не только для входа.
+     * Два условия, и оба обязательны:
+     *   1) пропуск известен — то есть зовёт тот, кому мы его сами выдали;
+     *   2) главный фрейм по-прежнему наш.
+     */
+    private Job liveJob(String id) {
+        if (id == null) return null;
+        if (!pageTrusted) {
+            Log.w(TAG, "Обратный вызов с недоверенной страницы отклонён");
+            return null;
+        }
+        Job job = jobs.get(id);
+        if (job == null) return null;
+        job.touchedNanos = System.nanoTime();
+        return job;
+    }
+
+    /**
+     * Снять задание с учёта. Возвращает его ровно одному вызывающему: remove у
+     * ConcurrentHashMap атомарен, поэтому двойное завершение (blobEnd и сторож разом)
+     * невозможно.
+     */
+    private Job takeJob(String id) {
+        if (id == null) return null;
+        Job job = jobs.remove(id);
+        if (job != null) cancelWatchdog(job);
+        return job;
+    }
+
+    private void cancelWatchdog(Job job) {
+        Runnable watchdog = job.watchdog;
+        job.watchdog = null;
+        if (watchdog != null) ui.removeCallbacks(watchdog);
+    }
+
+    /**
+     * Сторож незавершённого чтения. Нужен потому, что о смерти страницы натив не узнаёт
+     * ниоткуда: гибель отрисовщика, закрытие окна, зависший JS — обработчик успеха просто
+     * не приходит. Без сторожа задание, поток записи и временный файл жили бы до конца процесса.
+     */
+    private void armWatchdog(final Job job) {
+        Runnable watchdog = new Runnable() {
+            @Override
+            public void run() {
+                long idleMs = (System.nanoTime() - job.touchedNanos) / 1_000_000L;
+                if (idleMs < JOB_IDLE_TIMEOUT_MS && jobs.containsKey(job.id)) {
+                    // куски всё ещё идут, просто медленно — досыпаем остаток
+                    Runnable self = job.watchdog;
+                    if (self != null) ui.postDelayed(self, JOB_IDLE_TIMEOUT_MS - idleMs);
+                    return;
+                }
+                abandonJob(job, "страница не ответила");
+            }
+        };
+        job.watchdog = watchdog;
+        ui.postDelayed(watchdog, JOB_IDLE_TIMEOUT_MS);
+    }
+
+    /**
+     * Добить одно задание. Вызывается из UI-потока (сторож): закрытие потока и удаление
+     * файла в кэше — это один close и один unlink, на UI-потоке это доли миллисекунды.
+     */
+    private void abandonJob(Job job, String reason) {
+        if (jobs.remove(job.id) == null) return; // успело закрыться само
+        cancelWatchdog(job);
+        Log.w(TAG, "Задание " + job.id + " брошено: " + reason);
+        cleanup(job);
+        toast("Не удалось сохранить файл: " + reason);
+    }
+
+    /**
+     * Подмести чтения, за которыми некому прийти.
+     *
+     * @param beforeEpoch убирать только задания старше этого поколения документа (0 — любые)
+     * @param idleMs      и только те, от которых давно не было ни куска: повторный
+     *                    onPageFinished для того же документа не должен рвать живую передачу
+     */
+    private void sweepJobs(int beforeEpoch, long idleMs) {
+        long now = System.nanoTime();
+        for (Job job : jobs.values()) {
+            if (beforeEpoch > 0 && job.epoch >= beforeEpoch) continue;
+            if ((now - job.touchedNanos) / 1_000_000L < idleMs) continue;
+            if (jobs.remove(job.id) == null) continue;
+            cancelWatchdog(job);
+            Log.w(TAG, "Брошенное задание убрано: " + job.id);
+            cleanup(job);
+        }
+    }
+
+    /**
+     * Мусор от прошлого запуска. Если процесс убили между blobStart и blobEnd, .part-файл
+     * остаётся в кэше и сам не исчезает. Чистим в фоне при старте — но только по-настоящему
+     * старые: во время пересоздания Activity этот же метод зовётся заново, а в очереди
+     * pendingPermission может лежать свежий файл, который трогать нельзя.
+     */
+    private void sweepOrphanTempFiles() {
+        new Thread(
+            new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        File[] files = activity.getCacheDir().listFiles();
+                        if (files == null) return;
+                        long now = System.currentTimeMillis();
+                        for (File file : files) {
+                            String name = file.getName();
+                            if (!name.startsWith(TMP_PREFIX) || !name.endsWith(TMP_SUFFIX)) continue;
+                            if (now - file.lastModified() < TMP_MAX_AGE_MS) continue;
+                            if (!file.delete()) Log.w(TAG, "Старый временный файл не удалён: " + name);
+                        }
+                    } catch (Exception e) {
+                        Log.w(TAG, "Уборка кэша не удалась", e);
+                    }
+                }
+            },
+            "vh-download-sweep"
+        )
+            .start();
+    }
+
     // ------------------------------------------------------------------ чтение blob
 
+    /** Только UI-поток. */
     private void startBlobRead(String url, String name) {
-        String id = "vh" + seq.incrementAndGet();
-        Job job = new Job(id, name);
+        if (jobs.size() >= MAX_ACTIVE_JOBS) {
+            // Карта заданий обязана быть ограниченной: без предела повторные нажатия «Экспорт»
+            // с уходом со страницы копили бы дескрипторы до конца процесса.
+            sweepJobs(0, PAGE_CHANGE_GRACE_MS);
+            if (jobs.size() >= MAX_ACTIVE_JOBS) {
+                Log.w(TAG, "Слишком много незавершённых сохранений");
+                toast("Дождитесь окончания предыдущего сохранения");
+                return;
+            }
+        }
+        String id = newJobId();
+        Job job = new Job(id, pageEpoch.get(), name);
         jobs.put(id, job);
+        armWatchdog(job);
         try {
             webView.evaluateJavascript(readerJs(url, id), null);
         } catch (Exception e) {
-            jobs.remove(id);
+            takeJob(id);
             Log.w(TAG, "evaluateJavascript упал", e);
             toast("Не удалось сохранить файл");
         }
+    }
+
+    /**
+     * Разовый пропуск для страницы. Раньше это были "vh1", "vh2", … — номера предсказуемые,
+     * и любой код, у которого есть доступ к интерфейсу моста (а он достаётся всем фреймам
+     * документа), мог назвать чужой номер и подмешать свои куски в чужую выгрузку.
+     * Теперь 128 случайных бит от SecureRandom: угадать нельзя, знает его только тот,
+     * кому мы сами его передали в readerJs.
+     */
+    private String newJobId() {
+        byte[] raw = new byte[16];
+        random.nextBytes(raw);
+        StringBuilder sb = new StringBuilder("vh");
+        for (byte b : raw) {
+            sb.append(Character.forDigit((b >> 4) & 0xf, 16));
+            sb.append(Character.forDigit(b & 0xf, 16));
+        }
+        return sb.toString();
     }
 
     private static String readerJs(String url, String id) {
@@ -271,11 +544,18 @@ public class FileDownloadBridge {
         jsString(id) +
         ",u=" +
         jsString(url) +
+        ",MAX=" +
+        MAX_BYTES +
+        ",CH=" +
+        CHUNK_CHARS +
         ";" +
         "function fail(m){try{" +
         JS_INTERFACE_NAME +
         ".blobFailed(id,String(m));}catch(e){}}" +
         "try{fetch(u).then(function(r){return r.blob();}).then(function(b){" +
+        // размер известен ДО чтения: отказать сейчас дёшево, а построить строку base64
+        // на 1,4 размера и убить этим отрисовщик — дорого и молча
+        "if(b.size>MAX){fail('файл слишком большой');return;}" +
         "var fr=new FileReader();" +
         "fr.onerror=function(){fail('не читается');};" +
         "fr.onload=function(){try{" +
@@ -284,12 +564,12 @@ public class FileDownloadBridge {
         "if(!" +
         JS_INTERFACE_NAME +
         ".blobStart(id,s.slice(0,i)))return;" +
-        "var d=s.slice(i+1),CH=" +
-        CHUNK_CHARS +
-        ";" +
-        "for(var p=0;p<d.length;p+=CH){if(!" +
+        // читаем ИЗ исходной строки по смещению: s.slice(i+1) создавал вторую полную копию.
+        // Смещение куска от начала base64 кратно CH, а CH кратно 4 — значит каждый кусок
+        // декодируется независимо, как и раньше.
+        "for(var p=i+1;p<s.length;p+=CH){if(!" +
         JS_INTERFACE_NAME +
-        ".blobChunk(id,d.substr(p,CH)))return;}" +
+        ".blobChunk(id,s.substr(p,CH)))return;}" +
         JS_INTERFACE_NAME +
         ".blobEnd(id);" +
         "}catch(e){fail(e);}};" +
@@ -326,7 +606,12 @@ public class FileDownloadBridge {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 Uri uri = writeToMediaStore(job);
                 cleanup(job);
-                showSaved(job.name, job.mime, uri, "Загрузки");
+                // Имя берём ФАКТИЧЕСКОЕ: при совпадении система сама переименовывает файл
+                // в «имя (1).xlsx», а повторный экспорт в тот же день — обычное дело.
+                // Показывать запрошенное — значит отправить человека искать в «Загрузках» то,
+                // чего там нет. На пути для Android 9 так и сделано (out.getName()), здесь —
+                // не было.
+                showSaved(mediaStoreName(uri, job.name), job.mime, uri, "Загрузки");
                 return;
             }
             if (hasLegacyStoragePermission()) {
@@ -334,19 +619,21 @@ public class FileDownloadBridge {
                 return;
             }
             // разрешения нет — просим его и ждём ответа, файл уже лежит во временном
-            awaitingPermission = job;
-            ui.post(
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        ActivityCompat.requestPermissions(
-                            activity,
-                            new String[] { android.Manifest.permission.WRITE_EXTERNAL_STORAGE },
-                            REQ_LEGACY_STORAGE
-                        );
+            pendingPermission.add(job);
+            if (permissionAsked.compareAndSet(false, true)) {
+                ui.post(
+                    new Runnable() {
+                        @Override
+                        public void run() {
+                            ActivityCompat.requestPermissions(
+                                activity,
+                                new String[] { android.Manifest.permission.WRITE_EXTERNAL_STORAGE },
+                                REQ_LEGACY_STORAGE
+                            );
+                        }
                     }
-                }
-            );
+                );
+            }
         } catch (Exception e) {
             Log.e(TAG, "Ошибка сохранения файла", e);
             cleanup(job);
@@ -355,24 +642,28 @@ public class FileDownloadBridge {
     }
 
     /** Ответ на запрос WRITE_EXTERNAL_STORAGE (Android 9 и старше). */
-    public void onLegacyStoragePermissionResult(boolean granted) {
-        final Job job = awaitingPermission;
-        awaitingPermission = null;
-        if (job == null) return;
+    public void onLegacyStoragePermissionResult(final boolean granted) {
+        permissionAsked.set(false);
+        if (pendingPermission.isEmpty()) return;
         new Thread(
             new Runnable() {
                 @Override
                 public void run() {
-                    try {
-                        if (granted && hasLegacyStoragePermission()) {
-                            publishLegacyPublic(job);
-                        } else {
-                            publishLegacyPrivate(job);
+                    // Разбираем ВСЮ очередь: пока показывался системный диалог, человек мог
+                    // нажать «Экспорт» ещё раз, и второе задание тоже ждёт этого же ответа.
+                    Job job;
+                    while ((job = pendingPermission.poll()) != null) {
+                        try {
+                            if (granted && hasLegacyStoragePermission()) {
+                                publishLegacyPublic(job);
+                            } else {
+                                publishLegacyPrivate(job);
+                            }
+                        } catch (Exception e) {
+                            Log.e(TAG, "Ошибка отложенного сохранения", e);
+                            cleanup(job);
+                            toast("Не удалось сохранить файл");
                         }
-                    } catch (Exception e) {
-                        Log.e(TAG, "Ошибка отложенного сохранения", e);
-                        cleanup(job);
-                        toast("Не удалось сохранить файл");
                     }
                 }
             },
@@ -391,18 +682,50 @@ public class FileDownloadBridge {
         values.put(MediaStore.MediaColumns.IS_PENDING, 1);
         Uri item = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
         if (item == null) throw new IllegalStateException("MediaStore отказал в записи");
-        OutputStream os = null;
+        boolean done = false;
         try {
-            os = resolver.openOutputStream(item);
-            if (os == null) throw new IllegalStateException("MediaStore не отдал поток записи");
-            copy(job.tmp, os);
+            OutputStream os = null;
+            try {
+                os = resolver.openOutputStream(item);
+                if (os == null) throw new IllegalStateException("MediaStore не отдал поток записи");
+                copy(job.tmp, os);
+            } finally {
+                closeQuietly(os);
+            }
+            ContentValues finish = new ContentValues();
+            finish.put(MediaStore.MediaColumns.IS_PENDING, 0);
+            resolver.update(item, finish, null, null);
+            done = true;
+            return item;
         } finally {
-            closeQuietly(os);
+            if (!done) {
+                // Иначе запись навсегда осталась бы с IS_PENDING=1: пользователю она не видна,
+                // место занимает, сама не исчезает, и с каждой неудачей таких становится больше.
+                try {
+                    resolver.delete(item, null, null);
+                } catch (Exception e) {
+                    Log.w(TAG, "Недописанная запись MediaStore не удалена", e);
+                }
+            }
         }
-        ContentValues done = new ContentValues();
-        done.put(MediaStore.MediaColumns.IS_PENDING, 0);
-        resolver.update(item, done, null, null);
-        return item;
+    }
+
+    /** Фактическое имя записи в MediaStore — система могла переименовать при совпадении. */
+    private String mediaStoreName(Uri item, String fallback) {
+        if (item == null) return fallback;
+        Cursor cursor = null;
+        try {
+            cursor = activity.getContentResolver().query(item, new String[] { MediaStore.MediaColumns.DISPLAY_NAME }, null, null, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                String name = cursor.getString(0);
+                if (!TextUtils.isEmpty(name)) return name;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Не удалось узнать фактическое имя файла", e);
+        } finally {
+            closeQuietly(cursor);
+        }
+        return fallback;
     }
 
     /** Android 9 и старше, разрешение есть: пишем в общий /sdcard/Download. */
@@ -442,11 +765,21 @@ public class FileDownloadBridge {
 
     private void writeTo(Job job, File out) throws Exception {
         OutputStream os = null;
+        boolean done = false;
         try {
             os = new FileOutputStream(out);
             copy(job.tmp, os);
+            done = true;
         } finally {
             closeQuietly(os);
+            // Оборвалось копирование (кончилось место, вынули карту) — и в «Загрузках» оставался
+            // обрезанный vahtahoz-2026-07-31.xlsx: по имени и наличию неотличимый от целого.
+            // Человек открыл бы его через месяц на сверке и получил мусор. Лучше никакого файла,
+            // чем тихо испорченный: исключение из copy при этом уходит выше и превращается в
+            // честное «Не удалось сохранить файл».
+            if (!done && out.exists() && !out.delete()) {
+                Log.w(TAG, "Обрезанный файл не удалён: " + out);
+            }
             cleanup(job);
         }
     }
@@ -581,6 +914,13 @@ public class FileDownloadBridge {
         );
     }
 
+    /** Пересчитать доверие к главному фрейму и запомнить ответ. Только UI-поток. */
+    private boolean refreshPageTrust() {
+        boolean trusted = isTrustedPage();
+        pageTrusted = trusted;
+        return trusted;
+    }
+
     /** Страница, на которой сейчас стоит WebView, — наша? Проверять только в UI-потоке. */
     private boolean isTrustedPage() {
         try {
@@ -614,7 +954,7 @@ public class FileDownloadBridge {
         if (slash >= 0) name = name.substring(slash + 1);
         name = name.replaceAll("[\\x00-\\x1f\\x7f:*?\"<>|]", "_");
         if (name.startsWith(".")) name = "_" + name;
-        if (name.length() > 120) name = name.substring(0, 120);
+        name = limitLength(name);
         if (TextUtils.isEmpty(name)) {
             String ext = null;
             if (!TextUtils.isEmpty(mime)) {
@@ -624,6 +964,59 @@ public class FileDownloadBridge {
             name = "vahtahoz-" + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()) + "." + ext;
         }
         return name;
+    }
+
+    /**
+     * Укоротить слишком длинное имя, СОХРАНИВ расширение.
+     *
+     * Раньше здесь было substring(0, 120), и длинное кириллическое имя теряло «.xlsx» —
+     * файл переставал открываться по тапу, потому что система выбирает приложение по расширению.
+     * Режем середину-хвост основы, а расширение приклеиваем обратно.
+     *
+     * Считаем в байтах UTF-8: ограничение файловой системы (255 байт на ext4 и FAT) —
+     * байтовое, а кириллица в UTF-8 занимает по два байта на букву.
+     */
+    private static String limitLength(String name) {
+        int dot = name.lastIndexOf('.');
+        String base = name;
+        String ext = "";
+        if (dot > 0) {
+            base = name.substring(0, dot);
+            ext = name.substring(dot);
+            if (utf8Length(ext) > MAX_EXT_BYTES) {
+                // не расширение, а просто точка внутри длинного имени — режем как обычный текст
+                base = name;
+                ext = "";
+            }
+        }
+        int budget = MAX_NAME_BYTES - utf8Length(ext);
+        if (budget < 1) return name; // расширение само по себе длиннее лимита — не трогаем
+        if (utf8Length(base) <= budget) return name;
+
+        StringBuilder cut = new StringBuilder();
+        int used = 0;
+        for (int i = 0; i < base.length(); ) {
+            int cp = base.codePointAt(i);
+            int width = utf8Width(cp);
+            if (used + width > budget) break;
+            cut.appendCodePoint(cp);
+            used += width;
+            i += Character.charCount(cp); // по кодовым точкам — иначе можно разрубить суррогатную пару
+        }
+        String trimmed = cut.toString().trim();
+        if (trimmed.isEmpty()) return ext.isEmpty() ? name : ext.substring(1);
+        return trimmed + ext;
+    }
+
+    private static int utf8Length(String value) {
+        return value.getBytes(StandardCharsets.UTF_8).length;
+    }
+
+    private static int utf8Width(int codePoint) {
+        if (codePoint < 0x80) return 1;
+        if (codePoint < 0x800) return 2;
+        if (codePoint < 0x10000) return 3;
+        return 4;
     }
 
     private static File uniqueFile(File dir, String name) {
@@ -659,7 +1052,9 @@ public class FileDownloadBridge {
     }
 
     private void failJob(Job job, String reason) {
-        if (job != null) jobs.remove(job.id);
+        if (job == null) return;
+        if (jobs.remove(job.id) == null) return;
+        cancelWatchdog(job);
         Log.w(TAG, "Сохранение прервано: " + reason);
         cleanup(job);
         toast("Не удалось сохранить файл: " + reason);
