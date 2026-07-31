@@ -1322,11 +1322,14 @@ function promptSheet(msg, def="", opts={}){
     document.getElementById("_pYes").onclick = ok;
   });
 }
-function chooseSheet(msg, options){
+function chooseSheet(msg, options, note){
   // options: [{label, value, color?}]
+  // note — необязательное пояснение обычным шрифтом под заголовком: нужно там, где часть вариантов
+  // намеренно не показана, иначе их отсутствие читается как сбой («а где кнопка, которая была?»).
   return new Promise(resolve=>{
     openSheet(`
-      <div class="font-bold text-lg mb-3">${esc(msg)}</div>
+      <div class="font-bold text-lg ${note?"mb-2":"mb-3"}">${esc(msg)}</div>
+      ${note?`<div class="text-sm opacity-70 mb-3 whitespace-pre-line">${esc(note)}</div>`:""}
       <div class="space-y-2">
         ${options.map((o,i)=>`<button class="btn ${o.color||"btn-primary"} w-full" data-choice="${i}">${esc(o.label)}</button>`).join("")}
         <button class="btn btn-ghost w-full" data-choice="-1">Отмена</button>
@@ -5194,25 +5197,27 @@ function importData(ev){
       }
       const obj = validateImport(parsed);
       if(isRestrictedUser()) obj.tasks = [];   // начальник: «Задачи» из файла не импортируем
+      /* ОБЛАЧНАЯ база: режим «Заменить всё» не предлагаем ВООБЩЕ.
+         Замена делает merged.stock = obj.stock, и ближайший cloudPushNow удалит из ОБЩЕЙ базы все
+         позиции, которых нет в файле — у всей бригады, вместе с приходами, внесёнными другими уже
+         после даты бэкапа. suspectWipe тут не спасает: он ловит лишь усыхание >90%, а «файл недельной
+         давности» усыхания почти не даёт и проходит молча. Подтверждения (даже второго, с прямым
+         текстом — оно тут и стояло) для такого исхода мало: если чужие данные можно стереть одним
+         нажатием «да», рано или поздно их сотрут. Убираем сам вариант — ровно как в wipeAll, где для
+         облачной базы локальное стирание не разрешается, а вместо него даётся «Обновить из облака».
+         ЛОКАЛЬНАЯ база (без cloudId) — оба режима на месте: там замена трогает только это устройство,
+         и это законный сценарий «восстановить телефон из бэкапа». */
+      const cloudBase = !!activeCloudId();
+      const modes = [{ label:"Объединить (без дублей)", value:"merge", color:"btn-primary" }];
+      if(!cloudBase) modes.push({ label:"Заменить всё", value:"replace", color:"btn-danger" });
       const mode = await chooseSheet(
         `Найдено ${(obj.stock||[]).length} поз. Что делать?`,
-        [
-          { label:"Объединить (без дублей)", value:"merge", color:"btn-primary" },
-          { label:"Заменить всё", value:"replace", color:"btn-danger" },
-        ]
+        modes,
+        cloudBase
+          ? "База общая для всей бригады, поэтому «Заменить всё» недоступно: замена стёрла бы у всех то, чего нет в файле. Объединение только добавляет — ничего не удаляется.\nОткатить локальную копию целиком: «Настройки → Обновить базу из облака»."
+          : ""
       );
       if(!mode) return;
-      /* ОБЛАЧНАЯ база + «Заменить всё» = правка ОБЩИХ данных бригады: следующий push удалит из
-         облака все позиции, которых нет в файле, У ВСЕХ участников. Приходы, внесённые другими
-         после даты бэкапа, исчезнут. suspectWipe здесь молчит (ловит лишь усыхание >90%).
-         Поэтому подтверждение с прямым текстом — по образцу wipeAll, где стирание облачной
-         базы локально прямо запрещено. */
-      if(mode==="replace" && activeCloudId()){
-        const ok2 = await confirmSheet(
-          "База ОБЛАЧНАЯ — замена уйдёт всей бригаде.\n\nВсе позиции, которых нет в файле, будут УДАЛЕНЫ из общей базы у всех участников — включая приходы, внесённые после даты этого файла.\n\nДля добавления недостающего без удалений используйте «Объединить».",
-          { danger:true, yes:"Заменить у всей бригады", no:"Отмена", title:"⚠️ Замена общих данных" });
-        if(!ok2) return;
-      }
       const base = mode==="replace" ? structuredClone(defaultState) : state;
       const merged = mode==="replace" ? { ...base, ...obj } : structuredClone(state);
       // категории
