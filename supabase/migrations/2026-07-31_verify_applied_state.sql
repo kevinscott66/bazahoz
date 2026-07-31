@@ -1,4 +1,5 @@
 -- 2026-07-31 — ДИАГНОСТИКА: что из миграций уже применено на этой базе.
+-- (обновлено 2026-08-01, round 6 — см. блок «что изменилось» ниже)
 --
 -- Зачем: миграции применяются вручную через SQL Editor, и по виду базы не понять,
 -- какие файлы уже прошли. Один особенно опасный промежуточный случай:
@@ -6,21 +7,66 @@
 -- нет — тогда `enforce_base_member_write` отклоняет ЛЮБОЙ UPDATE строки с legacy org-ролью,
 -- и `handover_shift` (пересменка) падает целиком. Этот скрипт такое состояние называет прямо.
 --
+-- Что изменилось в round 6 (обе проблемы воспроизведены на PG16):
+--  • Скрипт ПАДАЛ ЦЕЛИКОМ («more than one row returned by a subquery»), если у
+--    stock_zeroing_report / stock_qty_restore оказывалось больше одной перегрузки — а это ровно
+--    то состояние, которое возникало от повторного прогона round3 поверх 2026-08-01. То есть
+--    во время инцидента не работала даже диагностика. Теперь версия выбирается однозначно
+--    (самая «широкая» сигнатура), а дубли показываются ОТДЕЛЬНОЙ первой строкой.
+--  • Скрипт был ЗЕЛЁНЫМ на дырявой редакции is_backend_role: он проверял только существование
+--    функции и упоминание её имени в отчёте/откате. Подмена функции на старую редакцию
+--    (подстрочный матч по сырому JSON) верификатором не замечалась. Теперь проверки ПО СУЩЕСТВУ
+--    (по prosrc) с явным отвержением признаков дырявых редакций, включая NULL-возврат.
+--
 -- Скрипт ТОЛЬКО ЧИТАЕТ: ни одного DDL/DML. Безопасно запускать на проде в любой момент.
 -- Запуск: Supabase → SQL Editor → вставить целиком → Run.
 
 with
--- ── версии функций определяем по характерным фрагментам исходника ─────────────
-enforce as (
-  select p.prosrc as src
-  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-  where n.nspname = 'public' and p.proname = 'enforce_base_member_write'
+-- ── все интересующие функции одним проходом ──────────────────────────────────────
+-- cnt = число перегрузок с этим именем. Раньше каждый CTE отдавал НЕСКОЛЬКО строк при дублях,
+-- и `(select src from ...)` ронял весь скрипт. Теперь на имя берётся ровно одна строка —
+-- самая «широкая» сигнатура (она же самая новая), а факт дублей выносится в отдельную проверку.
+fns as (
+  select p.proname::text as nm,
+         p.oid           as oid,
+         p.prosrc        as src,
+         p.pronargs      as nargs,
+         pg_get_function_identity_arguments(p.oid) as args,
+         pg_get_function_result(p.oid)             as res,
+         coalesce(array_to_string(p.proconfig, ','), '') as cfg,
+         count(*) over (partition by p.proname)    as cnt
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public'
+    and p.proname in ('enforce_base_member_write', 'enforce_org_role_write',
+                      'stock_zeroing_report', 'stock_qty_restore',
+                      'stock_meta_change_report', 'stock_meta_restore',
+                      'stock_history_capture', 'auth_rate_hit', 'is_backend_role')
+),
+one as (
+  select distinct on (nm) nm, oid, src, nargs, args, res, cfg, cnt
+  from fns order by nm, nargs desc, oid desc
+),
+enforce      as (select * from one where nm = 'enforce_base_member_write'),
+zeroing      as (select * from one where nm = 'stock_zeroing_report'),
+restore      as (select * from one where nm = 'stock_qty_restore'),
+metareport   as (select * from one where nm = 'stock_meta_change_report'),
+metarestore  as (select * from one where nm = 'stock_meta_restore'),
+capture      as (select * from one where nm = 'stock_history_capture'),
+ratehit      as (select * from one where nm = 'auth_rate_hit'),
+backend      as (select * from one where nm = 'is_backend_role'),
+dups as (
+  select count(*) as n,
+         coalesce(string_agg(distinct f.nm || '(' || f.args || ')', '; '), '') as lst
+  from fns f where f.cnt > 1
 ),
 enforce_ver as (
   select case
     when not exists (select 1 from enforce) then 'НЕТ ФУНКЦИИ'
+    -- маркер round6 — уникальный комментарий из 2026-08-01_audit_round6_fixes.sql
+    when (select src from enforce) like '%legacy-строка чинится сменой роли%' then 'round6 (последняя)'
     -- маркер версии org_guard — уникальный комментарий из 2026-07-31_org_roles_preset_guard.sql
-    when (select src from enforce) like '%тот же класс бага%' then 'org_guard (последняя)'
+    when (select src from enforce) like '%тот же класс бага%' then 'org_guard'
     when (select src from enforce) like
          $m$%TG_OP = 'UPDATE' and NEW.role is distinct from OLD.role%$m$ then 'audit_round3'
     when (select src from enforce) like
@@ -28,28 +74,6 @@ enforce_ver as (
     when (select src from enforce) like '%accounting%' then 'preset_all_roles (вариант)'
     else 'legacy (до preset_all_roles)'
   end as v
-),
-zeroing as (
-  -- res нужен отдельно: имена КОЛОНОК отчёта живут в RETURNS TABLE, а не в теле (prosrc)
-  select p.prosrc as src, pg_get_function_identity_arguments(p.oid) as args,
-         pg_get_function_result(p.oid) as res
-  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-  where n.nspname = 'public' and p.proname = 'stock_zeroing_report'
-),
-restore as (
-  select p.prosrc as src, pg_get_function_identity_arguments(p.oid) as args
-  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-  where n.nspname = 'public' and p.proname = 'stock_qty_restore'
-),
-capture as (
-  select p.prosrc as src
-  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-  where n.nspname = 'public' and p.proname = 'stock_history_capture'
-),
-ratehit as (
-  select p.prosrc as src
-  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-  where n.nspname = 'public' and p.proname = 'auth_rate_hit'
 ),
 -- ── ТРИГГЕРЫ: проверяем по СУТИ, а не по имени ───────────────────────────────────
 -- Имя триггера произвольно (`create trigger <любое имя> ... execute function <нужная>`),
@@ -105,9 +129,25 @@ trg_state as (
     end as state
   from trg_found
 ),
+-- ── ретеншн по расписанию (2026-07-31_schedule_retention.sql) ────────────────────
+-- cron.job читаем через to_regclass: без расширения pg_cron схемы cron нет вообще.
+cronjobs as (
+  select case
+    when to_regclass('cron.job') is null then 'pg_cron не установлен — ретеншн не запланирован'
+    else null
+  end as absent
+),
 checks(ord, migration, object, state) as (
+  -- ── ПЕРЕГРУЗКИ: раньше это состояние роняло весь скрипт ──────────────────────
+  select 5, 'ПЕРЕГРУЗКИ', 'ровно одна версия каждого инструмента раннбука',
+    case when (select n from dups) = 0 then 'ок'
+         else 'НЕТ — ДУБЛИ: ' || (select lst from dups)
+              || '. Вызовы раннбука падают «is not unique» (обычно от повторного прогона '
+              || 'audit_round3 поверх 2026-08-01). Лечится 2026-08-01_audit_round6_fixes.sql'
+    end
+
   -- ── 2026-07-30_base_member_preset_all_roles.sql ──────────────────────────────
-  select 10, 'preset_all_roles', 'enforce_base_member_write (версия)', (select v from enforce_ver)
+  union all select 10, 'preset_all_roles', 'enforce_base_member_write (версия)', (select v from enforce_ver)
 
   -- ── 2026-07-07_base_member_rank_trigger.sql ─────────────────────────────────
   -- Сам ТРИГГЕР, а не только функция: проверять версию enforce_base_member_write без него
@@ -164,10 +204,7 @@ checks(ord, migration, object, state) as (
 
   -- ── 2026-07-31_audit_round3_sql_fixes.sql ───────────────────────────────────
   union all select 40, 'audit_round3', 'функция is_backend_role',
-    case when exists (
-      select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-      where n.nspname = 'public' and p.proname = 'is_backend_role'
-    ) then 'есть' else 'НЕТ' end
+    case when exists (select 1 from backend) then 'есть' else 'НЕТ' end
   -- round3 в capture добавил фиксацию type/name/unit (смена type прячет позиции от повара
   -- через can_see_type, не меняя qty — без этого такое было невосстановимо).
   -- Маркер именно по type, а не по is_backend_role: последний живёт в отчёте и восстановлении.
@@ -255,41 +292,123 @@ checks(ord, migration, object, state) as (
     end
   union all select 55, 'zeroing_fixes_0801', 'пересортица: stock_meta_change_report + stock_meta_restore',
     case
-      when to_regprocedure('public.stock_meta_change_report(uuid,int,timestamptz,int,int)') is not null
-       and to_regprocedure('public.stock_meta_restore(uuid,timestamptz,boolean,timestamptz)') is not null
-        then 'есть'
-      when to_regprocedure('public.stock_meta_change_report(uuid,int,timestamptz,int,int)') is not null
-        then 'НЕТ отката (есть только детект)'
+      when exists (select 1 from metareport) and exists (select 1 from metarestore) then 'есть'
+      when exists (select 1 from metareport) then 'НЕТ отката (есть только детект)'
       else 'НЕТ — смена type у всей базы прячет позиции от повара/механика и ничем не откатывается'
     end
+
+  -- ── 2026-08-01_audit_round6_fixes.sql ───────────────────────────────────────
+  -- Проверки ПО СУЩЕСТВУ. Раньше здесь стояло только «функция есть» + «имя упомянуто»,
+  -- и подмена is_backend_role на старую дырявую редакцию оставляла верификатор зелёным.
+  union all select 70, 'audit_round6', 'is_backend_role: редакция (fail-closed, без NULL)',
+    case
+      when not exists (select 1 from backend) then 'НЕТ ФУНКЦИИ'
+      -- дыра round3-preview: подстрочный матч по СЫРОМУ JSON токена
+      when strpos((select src from backend), $m$"role":"service_role"$m$) > 0
+        then 'НЕТ — подстрочный матч по сырому JSON: ключ user_metadata пишет сам пользователь, повар получает права бэкенда'
+      when (select src from backend) like '%current_user%'
+        then 'НЕТ — проверка через current_user (внутри SECURITY DEFINER это владелец функции, а не вызывающий)'
+      -- дыра round3: `return top_role = ''service_role'';` без coalesce → NULL вместо false
+      when strpos((select src from backend), 'top_role') > 0
+       and strpos((select src from backend), 'coalesce(top_role') = 0
+        then 'НЕТ — при claims без топ-уровневого "role" ({} , {"role":null}, массив) функция возвращает NULL, и ВСЕ шесть проверок прав молча пропускаются'
+      when strpos((select src from backend), 'round6') > 0
+       and strpos((select src from backend), 'coalesce(top_role') > 0
+       and strpos((select src from backend), 'session_user') > 0
+        then 'есть (round6: fail-closed, ни одна ветка не возвращает NULL)'
+      when strpos((select src from backend), 'session_user') = 0
+        then 'НЕТ — «нет JWT-GUC ⇒ доверяем» это fail-OPEN: нужен позитивный признак по session_user'
+      else 'НЕТ — неизвестная редакция: проверьте текст функции вручную и примените 2026-08-01_audit_round6_fixes.sql'
+    end
+  union all select 71, 'audit_round6', 'is_backend_role: SET search_path',
+    case
+      when not exists (select 1 from backend) then 'НЕТ ФУНКЦИИ'
+      when (select cfg from backend) like '%search_path%' then 'есть (' || (select cfg from backend) || ')'
+      else 'НЕТ — единственная функция пакета без search_path'
+    end
+  union all select 72, 'audit_round6', 'вызовы is_backend_role обёрнуты в coalesce (NULL ≠ доступ)',
+    case
+      when not exists (select 1 from zeroing) or not exists (select 1 from restore) then 'функций нет'
+      when (select src from zeroing)     like '%coalesce(public.is_backend_role(), false)%'
+       and (select src from restore)     like '%coalesce(public.is_backend_role(), false)%'
+       and coalesce((select src from metareport),  '') like '%coalesce(public.is_backend_role(), false)%'
+       and coalesce((select src from metarestore), '') like '%coalesce(public.is_backend_role(), false)%'
+        then 'есть (все 4 инструмента)'
+      else 'НЕТ — `not is_backend_role()` даёт NULL, IF не срабатывает и forbidden НЕ бросается'
+    end
+  union all select 73, 'audit_round6', 'stock_qty_restore: не затирает правки позже p_until (action/skip)',
+    case
+      when not exists (select 1 from restore) then 'НЕТ ФУНКЦИИ'
+      when (select args from restore) like '%p_overwrite_later%'
+       and (select res  from restore) like '%action%' then 'есть'
+      else 'НЕТ — откат воскрешает позицию, которую смена законно списала ПОСЛЕ окна инцидента'
+    end
+  union all select 74, 'audit_round6', 'отчёт и откат по ОДНОМУ множеству (типовой фильтр только для клиента)',
+    case
+      when not exists (select 1 from zeroing) then 'НЕТ ФУНКЦИИ'
+      when (select src from zeroing) like '%full_scope or public.can_see_type%' then 'есть'
+      else 'НЕТ — позиции с type IS NULL/нестандартным невидимы в отчёте, но откатываются; burst_size занижен'
+    end
+  union all select 75, 'audit_round6', 'stock_zeroing_report: порог по масштабу потери (p_routine_max_loss)',
+    case
+      when not exists (select 1 from zeroing) then 'НЕТ ФУНКЦИИ'
+      when (select args from zeroing) like '%p_routine_max_loss%' then 'есть'
+      else 'НЕТ — единичная крупная потеря (500 кг → 25 кг) прячется как routine'
+    end
+  union all select 76, 'audit_round6', 'enforce_base_member_write: legacy-строка чинится сменой роли',
+    case
+      when not exists (select 1 from enforce) then 'НЕТ ФУНКЦИИ'
+      when (select src from enforce) like '%legacy-строка чинится сменой роли%' then 'есть'
+      when (select src from enforce) like '%можно менять только active%'
+        then 'НЕТ — setMemberRole по legacy-строке падает «можно менять только active»'
+      else 'НЕТ — старая версия'
+    end
+  union all select 77, 'audit_round6', 'enforce_base_member_write НЕ доступна PUBLIC/authenticated',
+    case
+      when not exists (select 1 from enforce) then 'функции нет'
+      when has_function_privilege('authenticated', (select oid from enforce), 'EXECUTE')
+        then 'ПРОБЛЕМА: EXECUTE выдан authenticated — revoke all on function public.enforce_base_member_write() from public, anon, authenticated'
+      else 'ок (отозван)'
+    end
+
+  -- ── 2026-07-31_schedule_retention.sql ───────────────────────────────────────
+  union all select 80, 'schedule_retention', 'ретеншн по расписанию (pg_cron)',
+    coalesce((select absent from cronjobs),
+      case when (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                 where n.nspname='public' and p.proname in ('stock_history_prune','auth_rate_prune')) < 2
+           then 'НЕТ функций чистки — применить 2026-07-30_stock_history_guard.sql и 2026-07-31_audit_round3_sql_fixes.sql'
+           else 'pg_cron есть — проверьте задания: select jobname, schedule, active from cron.job where jobname like ''vahtahoz_%'';'
+                || ' если пусто, примените 2026-07-31_schedule_retention.sql'
+      end)
 
   -- ── ГРАНТЫ: чего быть НЕ должно ─────────────────────────────────────────────
   union all select 60, 'ГРАНТЫ', 'stock_zeroing_report НЕ доступен authenticated',
     case
       when not exists (select 1 from zeroing) then 'функции нет'
-      when has_function_privilege('authenticated',
-             (select p.oid from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-              where n.nspname='public' and p.proname='stock_zeroing_report' limit 1), 'EXECUTE')
+      when has_function_privilege('authenticated', (select oid from zeroing), 'EXECUTE')
         then 'ПРОБЛЕМА: EXECUTE выдан authenticated'
       else 'ок (отозван)'
     end
   union all select 61, 'ГРАНТЫ', 'stock_qty_restore НЕ доступен authenticated',
     case
       when not exists (select 1 from restore) then 'функции нет'
-      when has_function_privilege('authenticated',
-             (select p.oid from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-              where n.nspname='public' and p.proname='stock_qty_restore' limit 1), 'EXECUTE')
+      when has_function_privilege('authenticated', (select oid from restore), 'EXECUTE')
         then 'ПРОБЛЕМА: EXECUTE выдан authenticated'
       else 'ок (отозван)'
     end
   union all select 63, 'ГРАНТЫ', 'stock_meta_* НЕ доступны authenticated/anon',
     case
-      when to_regprocedure('public.stock_meta_restore(uuid,timestamptz,boolean,timestamptz)') is null
-        then 'функций нет'
-      when has_function_privilege('authenticated',
-             to_regprocedure('public.stock_meta_restore(uuid,timestamptz,boolean,timestamptz)'), 'EXECUTE')
-        or has_function_privilege('anon',
-             to_regprocedure('public.stock_meta_change_report(uuid,int,timestamptz,int,int)'), 'EXECUTE')
+      when not exists (select 1 from metarestore) then 'функций нет'
+      when has_function_privilege('authenticated', (select oid from metarestore), 'EXECUTE')
+        or has_function_privilege('anon', coalesce((select oid from metareport), (select oid from metarestore)), 'EXECUTE')
+        then 'ПРОБЛЕМА: EXECUTE выдан клиентской роли'
+      else 'ок (отозван)'
+    end
+  union all select 64, 'ГРАНТЫ', 'is_backend_role НЕ доступен authenticated/anon',
+    case
+      when not exists (select 1 from backend) then 'функции нет'
+      when has_function_privilege('authenticated', (select oid from backend), 'EXECUTE')
+        or has_function_privilege('anon', (select oid from backend), 'EXECUTE')
         then 'ПРОБЛЕМА: EXECUTE выдан клиентской роли'
       else 'ок (отозван)'
     end
@@ -303,21 +422,28 @@ checks(ord, migration, object, state) as (
 
   -- ── ГЛАВНЫЙ ВЫВОД ───────────────────────────────────────────────────────────
   union all select 99, '>>> ИТОГ', 'что делать',
-    case (select v from enforce_ver)
-      when 'preset_all_roles' then
-        'СРОЧНО: применить 2026-07-31_audit_round3_sql_fixes.sql — пересменка (handover_shift) сейчас сломана на базах с legacy org-ролями'
-      when 'preset_all_roles (вариант)' then
-        'СРОЧНО: применить 2026-07-31_audit_round3_sql_fixes.sql — версия триггера промежуточная'
-      when 'audit_round3' then
-        case when to_regclass('public.stock_history') is null
-          then 'применить 2026-07-30_stock_history_guard.sql, затем _guard_fix.sql, затем повторно audit_round3'
-          else 'применить 2026-07-31_org_roles_preset_guard.sql (пресеты org-ролей + фикс пересменки по legacy custom)' end
-      when 'org_guard (последняя)' then
-        case when to_regprocedure('public.stock_meta_restore(uuid,timestamptz,boolean,timestamptz)') is null
-          then 'применить 2026-08-01_zeroing_report_fixes.sql (порог существенной потери, единая семантика отчёта и отката, детект и откат пересортицы)'
-          else 'порядок соблюдён — смотрите строки выше на «НЕТ»' end
-      when 'НЕТ ФУНКЦИИ' then 'триггерной функции нет — база сильно отстала, применяйте миграции с самой ранней'
-      else 'применить по порядку: preset_all_roles → stock_history_guard → _guard_fix → audit_round3'
+    case
+      when (select n from dups) > 0 then
+        'СРОЧНО: у инструментов раннбука по НЕСКОЛЬКО перегрузок (' || (select lst from dups)
+        || ') — отчёт и откат падают «is not unique». Применить 2026-08-01_audit_round6_fixes.sql'
+      else
+      case (select v from enforce_ver)
+        when 'preset_all_roles' then
+          'СРОЧНО: применить 2026-07-31_audit_round3_sql_fixes.sql — пересменка (handover_shift) сейчас сломана на базах с legacy org-ролями'
+        when 'preset_all_roles (вариант)' then
+          'СРОЧНО: применить 2026-07-31_audit_round3_sql_fixes.sql — версия триггера промежуточная'
+        when 'audit_round3' then
+          case when to_regclass('public.stock_history') is null
+            then 'применить 2026-07-30_stock_history_guard.sql, затем _guard_fix.sql, затем повторно audit_round3'
+            else 'применить 2026-07-31_org_roles_preset_guard.sql (пресеты org-ролей + фикс пересменки по legacy custom)' end
+        when 'org_guard' then
+          case when not exists (select 1 from metarestore)
+            then 'применить 2026-08-01_zeroing_report_fixes.sql, затем 2026-08-01_audit_round6_fixes.sql'
+            else 'применить 2026-08-01_audit_round6_fixes.sql (is_backend_role fail-closed, откат не затирает поздние правки, отчёт и откат по одному множеству)' end
+        when 'round6 (последняя)' then 'порядок соблюдён — смотрите строки выше на «НЕТ»'
+        when 'НЕТ ФУНКЦИИ' then 'триггерной функции нет — база сильно отстала, применяйте миграции с самой ранней'
+        else 'применить по порядку: preset_all_roles → stock_history_guard → _guard_fix → audit_round3'
+      end
     end
 )
 select migration as "миграция", object as "объект", state as "состояние"
