@@ -125,7 +125,7 @@ declare
   n int := 0;
 begin
   for r in
-    select p.oid::regprocedure::text as sig
+    select p.oid::regprocedure::text as sig, p.prosrc as src
     from pg_proc p
     join pg_namespace nsp on nsp.oid = p.pronamespace
     where nsp.nspname = 'public'
@@ -133,6 +133,12 @@ begin
                         'stock_meta_change_report', 'stock_meta_restore')
     order by 1
   loop
+    -- round9: этот файл СТАРШЕ 2026-08-01_handover_round9_fixes.sql и откатывает его редакцию
+    -- отчёта/отката. Внутри APPLY_ALL предупреждать не о чем — там round9 идёт следом.
+    if r.src like '%@round9%'
+       and coalesce(current_setting('vahtahoz.apply_all', true), '') <> '1' then
+      raise warning 'audit_round6 снял БОЛЕЕ НОВУЮ редакцию %. Следом обязательно примените 2026-08-01_handover_round9_fixes.sql', r.sig;
+    end if;
     execute 'drop function if exists ' || r.sig;
     n := n + 1;
   end loop;

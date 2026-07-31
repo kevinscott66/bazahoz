@@ -41,7 +41,10 @@ fns as (
     and p.proname in ('enforce_base_member_write', 'enforce_org_role_write',
                       'stock_zeroing_report', 'stock_qty_restore',
                       'stock_meta_change_report', 'stock_meta_restore',
-                      'stock_history_capture', 'auth_rate_hit', 'is_backend_role')
+                      'stock_history_capture', 'auth_rate_hit', 'is_backend_role',
+                      -- round9: пересменку верификатор не проверял ВООБЩЕ, из-за чего откат
+                      -- handover_shift штатным файлом 2026-07-28 показывался как «порядок соблюдён»
+                      'handover_shift')
 ),
 one as (
   select distinct on (nm) nm, oid, src, nargs, args, res, cfg, cnt
@@ -55,6 +58,17 @@ metarestore  as (select * from one where nm = 'stock_meta_restore'),
 capture      as (select * from one where nm = 'stock_history_capture'),
 ratehit      as (select * from one where nm = 'auth_rate_hit'),
 backend      as (select * from one where nm = 'is_backend_role'),
+handover     as (select * from one where nm = 'handover_shift'),
+-- round9: редакция пересменки. Маркер @round9 стоит в теле функции; предыдущая редакция
+-- (handover_consistency) узнаётся по вызову is_backend_role, самая старая (2026-07-28) — ни по чему.
+handover_ver as (
+  select case
+    when not exists (select 1 from handover) then 'НЕТ ФУНКЦИИ'
+    when (select src from handover) like '%@round9%'          then 'round9 (последняя)'
+    when (select src from handover) like '%is_backend_role%'  then 'handover_consistency'
+    else 'legacy 2026-07-28 (ОТКАЧЕНА)'
+  end as v
+),
 dups as (
   select count(*) as n,
          coalesce(string_agg(distinct f.nm || '(' || f.args || ')', '; '), '') as lst
@@ -371,6 +385,33 @@ checks(ord, migration, object, state) as (
       else 'ок (отозван)'
     end
 
+  -- ── ПЕРЕСМЕНКА: 2026-08-01_handover_consistency.sql + _handover_round9_fixes.sql ─
+  -- Раньше этих строк здесь не было вовсе. handover_shift определяют ТРИ файла, и штатный
+  -- 2026-07-28_journal_private_orphan_handover.sql молча откатывал более новые редакции —
+  -- а верификатор после этого показывал «порядок соблюдён». Теперь откат ВИДЕН.
+  union all select 78, 'пересменка', 'handover_shift: редакция',
+    case (select v from handover_ver)
+      when 'round9 (последняя)' then 'есть (round9: журнал пересменок, проверка заступающего, честный orphan)'
+      when 'handover_consistency' then
+        'НЕТ — редакция handover_consistency: повтор пересменки к ДРУГОМУ человеку молча '
+        || 'возвращает 0, а задачи чужой базы уезжают к управляющему другой базы. '
+        || 'Применить 2026-08-01_handover_round9_fixes.sql'
+      when 'legacy 2026-07-28 (ОТКАЧЕНА)' then
+        'ОТКАЧЕНА до 2026-07-28 (повторный прогон journal_private_orphan_handover): пересменка '
+        || 'падает ''orphan'' на базах под управлением оргструктуры, гонка проходит обе, '
+        || 'авторизация fail-open. Применить 2026-08-01_handover_consistency.sql, затем '
+        || '2026-08-01_handover_round9_fixes.sql'
+      else 'НЕТ ФУНКЦИИ — пересменка не работает совсем'
+    end
+  union all select 79, 'пересменка', 'журнал пересменок public.handover_log (повтор ≠ передача другому)',
+    case
+      when to_regclass('public.handover_log') is null
+        then 'НЕТ — второй вызов от того же уходящего к другому человеку вернёт «успех» и 0 задач. Применить 2026-08-01_handover_round9_fixes.sql'
+      when has_table_privilege('authenticated', 'public.handover_log', 'SELECT')
+        then 'ПРОБЛЕМА: SELECT выдан authenticated — revoke all on public.handover_log from authenticated'
+      else 'есть'
+    end
+
   -- ── 2026-07-31_schedule_retention.sql ───────────────────────────────────────
   union all select 80, 'schedule_retention', 'ретеншн по расписанию (pg_cron)',
     coalesce((select absent from cronjobs),
@@ -450,6 +491,21 @@ checks(ord, migration, object, state) as (
                  or coalesce((select src from backend),     '') not like '%@round6%'
             then 'ЧАСТИЧНО: триггерная функция round6, но инструменты раннбука откачены назад '
                  || '(повторный прогон старого файла) — применить 2026-08-01_audit_round6_fixes.sql'
+            -- round9: ПЕРЕСМЕНКА живёт в отдельных файлах и откатывается штатным файлом
+            -- репозитория. Пока она не round9, «порядок соблюдён» — ложь.
+            when (select v from handover_ver) = 'legacy 2026-07-28 (ОТКАЧЕНА)'
+            then 'ЧАСТИЧНО: ПЕРЕСМЕНКА ОТКАЧЕНА до редакции 2026-07-28 (повторный прогон '
+                 || 'journal_private_orphan_handover) — применить 2026-08-01_handover_consistency.sql, '
+                 || 'затем 2026-08-01_handover_round9_fixes.sql'
+            when (select v from handover_ver) = 'НЕТ ФУНКЦИИ'
+            then 'ЧАСТИЧНО: функции handover_shift нет — пересменка не работает совсем. '
+                 || 'Применить 2026-08-01_handover_consistency.sql, затем 2026-08-01_handover_round9_fixes.sql'
+            when (select v from handover_ver) <> 'round9 (последняя)'
+              or to_regclass('public.handover_log') is null
+              or coalesce((select src from zeroing), '') not like '%@round9%'
+              or coalesce((select src from restore), '') not like '%@round9%'
+            then 'ЧАСТИЧНО: пакет round9 не доложен (пересменка и/или инструменты раннбука '
+                 || 'старой редакции) — применить 2026-08-01_handover_round9_fixes.sql'
             else 'порядок соблюдён — смотрите строки выше на «НЕТ»' end
         when 'НЕТ ФУНКЦИИ' then 'триггерной функции нет — база сильно отстала, применяйте миграции с самой ранней'
         else 'применить по порядку: preset_all_roles → stock_history_guard → _guard_fix → audit_round3'

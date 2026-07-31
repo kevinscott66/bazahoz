@@ -2,9 +2,26 @@
 -- Кладётся ПОВЕРХ уже применённого состояния прода (APPLY_ALL_2026-07-31.sql +
 -- 2026-08-01_audit_round6_fixes.sql + 2026-08-01_handover_consistency.sql).
 -- Идемпотентно: только create-if-not-exists / create or replace / drop+create с зачисткой
--- всех перегрузок / update с условием «ещё не сделано». Проверено тремя прогонами подряд.
+-- всех перегрузок. Проверено тремя прогонами подряд.
 -- Все восемь дефектов воспроизведены на локальном PostgreSQL 16 (минимальная модель ВахтаХоз
 -- + прод-редакции функций), «до» и «после» — в отчёте раунда.
+--
+-- ═══ СОВМЕСТИМОСТЬ СО СТАРЫМИ СБОРКАМИ (жёсткое требование владельца) ════════════
+-- С одной и той же базой одновременно разговаривают v216, v217, v218 и новая сборка: на вахте
+-- люди месяцами сидят на закэшированной версии. Поэтому в этом файле:
+--   • НИ ОДНА политика не ужесточена — только ослабления (раздел 5, 6);
+--   • сигнатура public.handover_shift(uuid,uuid,uuid) не изменилась;
+--   • СТАРЫЕ коды ошибок пересменки ('multi_base', 'orphan', 'not_members', 'same') сохранены
+--     дословно, новые коды содержат старый как подстроку либо читаемый русский текст;
+--   • схема таблицы tasks НЕ трогается (см. п.1) — старый клиент шлёт {id, owner_id, data}
+--     и фильтрует только по владельцу, любое новое обязательное поле сломало бы ему задачи
+--     молча и на смене;
+--   • у stock_zeroing_report / stock_qty_restore новые параметры добавлены В КОНЕЦ и все —
+--     со значением по умолчанию; прежние позиционные вызовы раннбука работают дословно.
+--     Эти две функции не вызываются ни клиентом (грант отозван у authenticated/anon), ни
+--     Edge Function (она делает rpc только handover_shift / auth_rate_hit / verify_auth_code),
+--     поэтому пересоздание с зачисткой перегрузок безопасно — и обязательно, иначе вернётся
+--     состояние «is not unique», закрытое round 6.
 --
 -- ЧТО ЧИНИМ
 -- ═════════
@@ -16,23 +33,29 @@
 --    в двух базах; владелец делает то, что предписывает раннбук, — убирает его из лишней базы;
 --    затем обычная пересменка в базе 2 — и задачи БАЗЫ 1 уезжают к управляющему БАЗЫ 2.
 --
---    ФИКС — по существу, а не симметричной проверкой: задачам возвращена ПРИВЯЗКА К БАЗЕ.
---    Почему так, а не «такая же проверка для p_to»:
---      • симметричная проверка сузила бы дыру, но не закрыла: тот же увод получается и без
---        нарушения multi_base — человека добавили во вторую базу ПОСЛЕ того, как он принял
---        задачи, потом убрали из первой; на момент каждой пересменки он одно-базовый;
---      • риск схемы минимален: в supabase/schema.sql `tasks.base_id` УЖЕ объявлен
---        (`uuid not null references bases(id)`, индекс `tasks_base_idx`), то есть на проде
---        колонка, скорее всего, есть и миграция для неё — no-op. Файл не полагается на это:
---        если колонки нет, она добавляется NULLABLE (клиентские INSERT без неё продолжают
---        работать; NOT NULL не ставим сознательно — это сломало бы вставку из приложения);
---      • уже существующие задачи без привязки не теряются: те, чей владелец состоит ровно в
---        ОДНОЙ базе, размечаются однозначно; неоднозначные остаются NULL, и для них старое
---        ограничение multi_base сохраняется дословно — то есть хуже, чем было, не становится
---        ни в одном сценарии. Пересменка сама доразмечает такие задачи, когда однозначность
---        появляется.
---    Побочный эффект (желаемый): двухбазовый человек больше не блокирует пересменку, если все
---    его задачи размечены — уезжают только задачи ЭТОЙ базы.
+--    ПОЧЕМУ НЕ «ПРИВЯЗКА ЗАДАЧ К БАЗЕ» (второй вариант из задания). Проверено по коду:
+--      • прод-таблица tasks — это {id, owner_id, data jsonb}: клиент выгружает
+--        `rows = state.tasks.map(t => ({ id, owner_id: uid, data: t }))` и читает по
+--        RLS `owner_id = auth.uid()`. Поля базы у задачи нет НИ В МОДЕЛИ, ни в выгрузке;
+--      • по продуктовому смыслу задачи — ОДНО расписание человека на все его базы
+--        («Задачи — ОБЩИЕ для всех баз устройства», комментарий клиента). Приписать задаче
+--        базу по тому, кто её кому передал, — значит выдумать семантику, которой в продукте нет;
+--      • старые сборки (v216–v218) продолжают слать задачи БЕЗ такого поля. Колонка осталась бы
+--        пустой у всех новых задач, а пересменка вела бы себя по-разному для «размеченных» и
+--        «неразмеченных» задач одного человека. Сделать поле обязательным или завести под него
+--        политику нельзя вовсе: у старых телефонов задачи молча пропали бы прямо на смене.
+--    Поэтому привязка к базе — ОТДЕЛЬНЫЙ шаг (клиент + миграция данных + окно на обновление
+--    сборок), он вынесен в docs/BACKLOG_SECURITY.md. Здесь дыра закрывается по данным, без
+--    изменения схемы, и закрывается ПОЛНОСТЬЮ — обе ветки:
+--      (а) симметричная проверка на ЗАСТУПАЮЩЕГО: если у p_to есть другая база, передача
+--          отклоняется кодом multi_base_to с текстом, который прямо говорит почему;
+--      (б) «обходной» путь, который одной симметричной проверкой не закрывается: человека
+--          добавили во вторую базу ПОСЛЕ того, как он принял задачи, а из первой убрали —
+--          на момент каждой пересменки он одно-базовый, и обе проверки его пропускают.
+--          Ловится по журналу пересменок (раздел 2): если работник принимал задачи в ДРУГОЙ
+--          базе и не сдавал их там, передача отклоняется старым кодом multi_base.
+--          Ложных срабатываний на исторических данных нет: журнал заводится этим файлом
+--          и на момент применения пуст.
 --
 -- 2) HIGH — ПЕРЕСМЕНКА ВОЗВРАЩАЕТ «УСПЕХ», НИЧЕГО НЕ СДЕЛАВ.
 --    Повтор вызова после обрыва сети опознавался по СОСТОЯНИЮ (уходящий снят И заступающий
@@ -44,7 +67,7 @@
 --    ЗАПИСЬ, а не состояние:
 --      • последняя запись по (база, уходящий) ведёт К ТОМУ ЖЕ заступающему → это повтор того
 --        же вызова, тихий успех (0 перенесённых) — поведение при обрыве сети сохранено;
---      • запись ведёт к ДРУГОМУ → явная ошибка handover_repeat_other с временем и адресатом;
+--      • запись ведёт к ДРУГОМУ → явная ошибка handover_repeat_other с датой и временем;
 --      • записи нет вовсе (сняли со смены руками/легаси) → явная ошибка handover_from_off_shift.
 --    Защита от гонки не ослаблена: строки по-прежнему берутся `for update` в порядке user_id,
 --    и при одном человеке на смене второй параллельный вызов к другому получает отказ.
@@ -54,7 +77,7 @@
 --    (раздел 6) и 2026-08-01_handover_consistency.sql. Первый затирал второй, при этом файл
 --    пересменки не входил ни в APPLY_ALL, ни в список порядка README, а верификатор не
 --    проверял handover_shift вообще — после отката он показывал «порядок соблюдён».
---    ФИКС (частью здесь, частью в соседних файлах — см. отчёт):
+--    ФИКС (частью здесь, частью в соседних файлах):
 --      • здесь: редакция помечена маркером @round9 (плюс сохранён @round6, чтобы старые файлы
 --        громко предупреждали, когда снимают более новую редакцию);
 --      • 2026-07-28_journal_private_orphan_handover.sql больше НЕ затирает более новую
@@ -68,9 +91,14 @@
 --    Воспроизведено: обнуление в два шага, второй шаг за границей окна — самая крупная потеря
 --    не откатывалась, а причина гласила «это законная работа смены».
 --    ФИКС: поздняя правка считается ЧУЖОЙ (то есть работой смены) только если она сделана
---    автором, которого НЕ было среди правивших эту позицию в окне инцидента, И позже
---    p_until + p_late_grace_minutes (продолжение залпа не отсекается). Текст причины
---    нейтральный и называет автора; в выдаче появились колонки late_edit_at / late_edit_by.
+--    автором, которого НЕ было среди правивших эту позицию в окне инцидента.
+--    Рабочее правило — ИМЕННО автор: защита round 6 от затирания законной работы смены
+--    сохраняется дословно (правка ДРУГИМ человеком по-прежнему даёт action='skip'), а
+--    собственная поздняя ступень инцидента больше не выдаётся за «законную работу смены».
+--    Дополнительный параметр p_late_grace_minutes (продолжение залпа за границей окна) по
+--    умолчанию ВЫКЛЮЧЕН (0) и включается осознанно: иначе он проглотил бы законную правку
+--    смены, сделанную сразу после окна инцидента.
+--    Текст причины нейтральный и называет автора; в выдаче появились late_edit_at / late_edit_by.
 --    Здесь же: позиция со статусом «удалена» была в отчёте, но в выдаче отката отсутствовала
 --    ВОВСЕ — оператор, которому раннбук велит сверять числа, получал расхождение. Теперь она
 --    выдаётся строкой action='skip' с честной причиной («строки нет, откат остатка её не
@@ -85,12 +113,15 @@
 --    ужесточение вернуло бы ровно тот баг, который закрыли раундом раньше (пересменка падала
 --    с 'orphan' на базах под управлением из оргструктуры), и противоречило бы уже принятому
 --    решению по клиенту — там приблизительную проверку СОЗНАТЕЛЬНО перевели из запрета в
---    предупреждение именно из-за оргструктуры. Начальник партии/директор управляет базой
---    полноценно: добавит человека, проведёт следующую пересменку. Тупика нет — есть отсутствие
+--    предупреждение именно из-за оргструктуры. Ужесточение к тому же било бы по старым
+--    сборкам сильнее всего: они показывают предупреждение, а отказ сервера для них — глухое
+--    «Не удалось передать смену». Начальник партии/директор управляет базой полноценно:
+--    добавит человека, проведёт следующую пересменку. Тупика нет — есть отсутствие
 --    управляющего НА МЕСТЕ, и это факт для предупреждения, а не для запрета.
 --    ФИКС: шапка и текст ошибки Edge Function приведены к факту; отсутствие ЛОКАЛЬНОГО
 --    управляющего фиксируется в handover_log (local_manager_left) и выдаётся NOTICE'ом, а
---    Edge Function возвращает признак local_manager_left в ответе.
+--    Edge Function возвращает признак local_manager_left в ответе (старый клиент лишнее поле
+--    игнорирует).
 --
 -- 6) MEDIUM — ПОРОГ «РУТИНЫ» БЫЛ АБСОЛЮТНЫМ и прятал почти полную потерю малообъёмного товара.
 --    Воспроизведено: потеря 92 % малообъёмной позиции помечалась рутиной и скрывалась из
@@ -100,7 +131,7 @@
 --    что было. По умолчанию p_routine_max_frac = 0.5, то есть потеря больше половины позиции
 --    рутиной не считается никогда. При стандартном пороге кандидатов (p_min_frac = 0.20)
 --    это означает, что рутиной не помечается ничего, что уже прошло долевой порог, — так и
---    задумано: отчёт не должен прятать то, что сам же признал существенной потерей.
+--    задумано: отчёт не должен прятать то, что сам признал существенной потерей.
 --
 -- 7) MEDIUM — ИНВАРИАНТ «ОТКАТ ⊆ ОТЧЁТ» был заявлен в комментарии функции БЕЗУСЛОВНО, а
 --    держится не всегда: при ненулевом p_max_frac отчёт по умолчанию режет 'routine', а откат
@@ -112,13 +143,14 @@
 --    ни удалить. Политика fail-closed на неопределимом типе била не только по чтению, но и по
 --    ЗАПИСИ: повар и даже начальник участка получали отказ политики при записи журнала по новой,
 --    ещё не синхронизированной позиции; начальник участка такие строки не видел и не мог удалить.
---    ФИКС, раздельно по чтению и записи:
+--    ФИКС, раздельно по чтению и записи (ОБА направления — ослабление, старым сборкам от него
+--    может стать только лучше):
 --      • ЧТЕНИЕ (can_see_type): fail-closed сохраняется РОВНО для тех ролей, которых тип
 --        ограничивает, — повар и механик. Для остальных участников базы (worker, site_manager,
 --        accounting) прятать неопределимый тип не от чего: им и так открыты все типы, а прятать
---        значит делать строки неудаляемыми. Owner и орг-роли — как были;
+--        значит делать строки неудаляемыми. Владелец, орг-роли и НЕ-участник — как были;
 --      • ЗАПИСЬ: политика вставки/обновления журнала больше не требует определимости типа.
---        Запись ничего не раскрывает, а отказ теряет легитимную запись движения.
+--        Запись ничего не раскрывает, а отказ терял легитимную запись движения.
 --    Здесь же мелочь: диагностика урезанных прав отбирала только четыре роли и не показывала
 --    ни бухгалтера, ни legacy-строки — а именно у legacy заступление оставляет нулевые права.
 
@@ -137,67 +169,13 @@ begin
   if to_regclass('public.stock_history') is null then
     raise exception 'Сначала примените 2026-07-30_stock_history_guard.sql (нет таблицы public.stock_history)';
   end if;
-  if to_regclass('public.tasks') is null then
-    raise exception 'Нет таблицы public.tasks — база не соответствует supabase/schema.sql';
-  end if;
 end
 $pre$;
 
--- ═══ 1. Задачи получают привязку к базе (п.1) ═════════════════════════════════════
--- Колонка NULLABLE сознательно: клиент вставляет задачи без неё, NOT NULL сломал бы вставку.
-alter table public.tasks add column if not exists base_id uuid;
-
-do $fk$
-begin
-  -- внешний ключ ставим, только если его ещё нет и типы сходятся; без него тоже работает
-  if not exists (
-    select 1 from pg_constraint c
-    join pg_class t on t.oid = c.conrelid
-    join pg_namespace n on n.oid = t.relnamespace
-    where n.nspname = 'public' and t.relname = 'tasks'
-      and c.contype = 'f'
-      and c.conkey = array[(select attnum from pg_attribute
-                             where attrelid = 'public.tasks'::regclass and attname = 'base_id')]
-  ) then
-    begin
-      alter table public.tasks
-        add constraint tasks_base_id_fkey foreign key (base_id)
-        references public.bases(id) on delete cascade not valid;
-    exception when others then
-      raise notice 'round9: внешний ключ tasks.base_id → bases(id) не поставлен (%). Это не мешает пересменке.', sqlerrm;
-    end;
-  end if;
-end
-$fk$;
-
-create index if not exists tasks_base_idx        on public.tasks (base_id);
-create index if not exists tasks_owner_base_idx  on public.tasks (owner_id, base_id);
-
--- Разметка уже существующих задач БЕЗ привязки: только там, где она ОДНОЗНАЧНА —
--- владелец состоит ровно в одной базе. Неоднозначные остаются NULL, для них ниже
--- сохраняется прежнее ограничение multi_base. Идемпотентно (условие base_id is null).
-do $backfill$
-declare n int := 0;
-begin
-  with one_base as (
-    select m.user_id, min(m.base_id) as base_id
-    from public.base_members m
-    group by m.user_id
-    having count(distinct m.base_id) = 1
-  )
-  update public.tasks t
-     set base_id = ob.base_id
-    from one_base ob
-   where t.base_id is null
-     and t.owner_id = ob.user_id;
-  get diagnostics n = row_count;
-  if n > 0 then
-    raise notice 'round9: размечено задач по базе владельца: %', n;
-  end if;
-end
-$backfill$;
-
--- ═══ 2. Журнал пересменок: тождество вызова вместо догадки по состоянию (п.2) ═════
+-- ═══ 1. Журнал пересменок (п.1б, п.2, п.5) ════════════════════════════════════════
+-- Служебная таблица: ни клиент, ни PostgREST её не читают. Нужна, чтобы отличить ПОВТОР
+-- того же вызова от передачи смены ДРУГОМУ (по состоянию базы это неразличимо), и чтобы
+-- поймать «обходной» увод задач между базами через смену членства.
 create table if not exists public.handover_log (
   id                 bigserial   primary key,
   base_id            uuid        not null,
@@ -209,6 +187,7 @@ create table if not exists public.handover_log (
 );
 create index if not exists handover_log_base_from_idx
   on public.handover_log (base_id, from_user, done_at desc, id desc);
+create index if not exists handover_log_to_idx   on public.handover_log (to_user, done_at desc);
 create index if not exists handover_log_time_idx on public.handover_log (done_at);
 
 alter table public.handover_log enable row level security;
@@ -220,8 +199,9 @@ revoke all on sequence public.handover_log_id_seq from public, anon, authenticat
 grant  usage, select on sequence public.handover_log_id_seq to service_role;
 
 comment on table public.handover_log is
-  'Журнал пересменок. Нужен, чтобы отличить ПОВТОР того же вызова (обрыв сети) от передачи '
-  'смены ДРУГОМУ человеку: по состоянию базы это неразличимо, и второй вызов молча возвращал 0.';
+  'Журнал пересменок. Отличает ПОВТОР того же вызова (обрыв сети) от передачи смены ДРУГОМУ '
+  'человеку — по состоянию базы это неразличимо, и второй вызов молча возвращал 0. Плюс ловит '
+  'увод задач между базами через смену членства (round9, п.1).';
 
 create or replace function public.handover_log_prune(p_days int default 365)
 returns bigint
@@ -231,6 +211,7 @@ set search_path to 'public'
 as $$
 declare n bigint;
 begin
+  -- держим не меньше 30 дней: на меньшем окне теряется различение «повтор» / «передал другому»
   delete from public.handover_log
    where done_at < now() - make_interval(days => greatest(p_days, 30));
   get diagnostics n = row_count;
@@ -239,7 +220,8 @@ end $$;
 revoke all on function public.handover_log_prune(int) from public, anon, authenticated;
 grant execute on function public.handover_log_prune(int) to service_role;
 
--- ═══ 3. handover_shift v3 (@round9) — п.1, 2, 5 ═══════════════════════════════════
+-- ═══ 2. handover_shift v3 (@round9) — п.1, 2, 5 ═══════════════════════════════════
+-- Сигнатура не меняется: (uuid, uuid, uuid) → integer. Edge Function зовёт её как раньше.
 create or replace function public.handover_shift(p_base uuid, p_from uuid, p_to uuid)
 returns integer
 language plpgsql
@@ -248,14 +230,13 @@ set search_path to 'public'
 as $function$
 declare
   moved        int := 0;
-  moved_null   int := 0;
-  amb_tasks    int := 0;
   other_bases  int := 0;
   from_active  boolean;
   from_manage  boolean;
   to_active    boolean;
   last_to      uuid;
   last_at      timestamptz;
+  held_base    text;
   local_mgrs   int := 0;
   org_mgr      boolean := false;
 begin
@@ -287,7 +268,7 @@ begin
 
   -- ── (п.2) Уходящий уже снят. Что это — повтор или передача ДРУГОМУ? ──────────────
   -- Решает ЖУРНАЛ, а не состояние базы: «заступающий уже активен» на нормальной базе истинно
-  -- почти всегда и ничего не доказывает.
+  -- почти всегда и ничего не доказывает. Прежняя редакция на этом и ошибалась.
   if from_active is false then
     select h.to_user, h.done_at into last_to, last_at
       from public.handover_log h
@@ -298,48 +279,63 @@ begin
     if last_to is not null and last_to = p_to then
       return 0;                 -- ровно тот же вызов: сеть отвалилась после успеха, нажали ещё раз
     elsif last_to is not null then
-      raise exception 'handover_repeat_other: смену от этого работника уже приняли % (её принял другой человек) — повторно передать её нельзя',
-            to_char(last_at, 'YYYY-MM-DD HH24:MI:SS TZ')
+      raise exception 'handover_repeat_other: смену от этого работника уже приняли (%). Повторно передать её другому нельзя — обновите список работников',
+            to_char(last_at, 'DD.MM.YYYY HH24:MI')
         using errcode = 'P0001';
     else
-      raise exception 'handover_from_off_shift: работник не на смене и записи о передаче нет — передавать нечего'
+      raise exception 'handover_from_off_shift: этот работник не на смене — передавать нечего. Обновите список работников'
         using errcode = 'P0001';
     end if;
   end if;
 
-  -- ── (п.1) Задачи: переносим ТОЛЬКО задачи ЭТОЙ базы ──────────────────────────────
-  -- Задачи без привязки (легаси) однозначны лишь тогда, когда уходящий состоит в одной базе;
-  -- иначе сохраняется прежнее ограничение multi_base — хуже, чем было, не становится.
-  select count(*) into amb_tasks
-    from public.tasks t where t.owner_id = p_from and t.base_id is null;
+  -- ── (п.1) Задачи привязаны к аккаунту, а не к базе ───────────────────────────────
+  -- Схему tasks здесь НЕ меняем (см. шапку): дыра закрывается по данным.
+  -- (а) уходящий состоит в другой базе — уедут и её задачи. Код прежний: 'multi_base'.
+  select count(*) into other_bases
+    from base_members where user_id = p_from and base_id <> p_base;
+  if other_bases > 0 then raise exception 'multi_base'; end if;
 
-  if amb_tasks > 0 then
-    select count(*) into other_bases
-      from base_members where user_id = p_from and base_id <> p_base;
-    if other_bases > 0 then
-      raise exception 'multi_base';
-    end if;
-    -- одна база → задачи без привязки принадлежат ей; заодно проставляем привязку,
-    -- чтобы вопрос больше не возникал
-    update public.tasks
-       set owner_id = p_to, base_id = p_base, updated_at = now()
-     where owner_id = p_from and base_id is null;
-    get diagnostics moved_null = row_count;
+  -- (б) НОВОЕ: заступающий состоит в другой базе. Раньше это не проверялось вовсе, и задачи
+  -- ЭТОЙ базы оседали на человеке, который завтра сдаст смену в ДРУГОЙ базе — и утащит их туда.
+  -- Код содержит 'multi_base' подстрокой: старый разбор ошибок деградирует в осмысленный текст.
+  select count(*) into other_bases
+    from base_members where user_id = p_to and base_id <> p_base;
+  if other_bases > 0 then
+    raise exception 'multi_base_to: у заступающего есть другая база. Задачи личные (не привязаны к базе), поэтому вместе со сменой к нему уедут и задачи этой базы, а из другой базы он потом утащит их дальше. Уберите его из лишней базы или снимите уходящего со смены вручную';
   end if;
 
-  update public.tasks
-     set owner_id = p_to, updated_at = now()
-   where owner_id = p_from and base_id = p_base;
+  -- (в) НОВОЕ: обходной путь без нарушения (а) и (б) — человек принял задачи в ДРУГОЙ базе,
+  -- потом его добавили сюда и убрали оттуда. На момент каждой пересменки он одно-базовый.
+  -- Ловим по журналу: принимал задачи в другой базе и не сдавал их там.
+  select b.name into held_base
+    from public.handover_log h
+    left join public.bases b on b.id = h.base_id
+   where h.to_user = p_from
+     and h.base_id <> p_base
+     and h.tasks_moved > 0
+     and not exists (
+       select 1 from public.handover_log h2
+       where h2.from_user = p_from and h2.base_id = h.base_id and h2.done_at > h.done_at
+     )
+   order by h.done_at desc, h.id desc
+   limit 1;
+  if found then
+    raise exception 'multi_base: работник принял задачи в базе «%» и не сдавал их там — при передаче они уедут в эту базу. Сначала проведите пересменку в той базе (или снимите его со смены вручную)',
+          coalesce(held_base, '(другая база)');
+  end if;
+
+  update tasks set owner_id = p_to, updated_at = now() where owner_id = p_from;
   get diagnostics moved = row_count;
-  moved := moved + moved_null;
 
   -- ── Пересменка статусов ──────────────────────────────────────────────────────────
   update base_members set active = false
    where base_id = p_base and user_id = p_from and active is true;
 
   -- Заступающий получает КАНОНИЧЕСКИЕ флаги своей роли (пресет), а не то, что лежало в строке.
+  -- Блок 1-в-1 с enforce_base_member_write (round6) и PRESETS в
+  -- supabase/functions/manage-user/index.ts — не менять в одном месте, не меняя в двух других.
   -- Роли ВНЕ базового списка (legacy 'party_chief'/'custom') не трогаем: у них меняется только
-  -- active — того же требует триггер enforce_base_member_write, иначе UPDATE отвалится.
+  -- active — того же требует триггер, иначе UPDATE отвалится.
   update base_members m set
       active         = true,
       can_view_stock = case m.role when 'accounting' then true
@@ -369,7 +365,8 @@ begin
   -- Проверка запускается лишь тогда, когда уходящий САМ держал управление базой (иначе
   -- операция не могла убавить управление). Управляющим считается и активная орг-роль,
   -- покрывающая базу (нач. партии своей партии, директор/ген.директор глобально) — это
-  -- осознанное решение: такая роль управляет базой полноценно.
+  -- осознанное решение: такая роль управляет базой полноценно. Шапка прежней редакции
+  -- обещала обратное и была неправдой.
   select count(*) into local_mgrs
     from base_members where base_id = p_base and active and can_manage;
   select exists (
@@ -382,7 +379,7 @@ begin
   end if;
 
   -- Управляющего НА МЕСТЕ не осталось — это не ошибка (базой управляют из оргструктуры),
-  -- но владелец должен об этом знать. Признак уходит в журнал и в ответ Edge Function.
+  -- но владелец должен об этом знать: признак уходит в журнал и в ответ Edge Function.
   if local_mgrs = 0 then
     raise notice 'round9: на базе % не осталось управляющего НА МЕСТЕ — управление только из оргструктуры/у владельца', p_base;
   end if;
@@ -398,34 +395,20 @@ revoke execute on function public.handover_shift(uuid, uuid, uuid) from public, 
 grant  execute on function public.handover_shift(uuid, uuid, uuid) to service_role;
 
 comment on function public.handover_shift(uuid, uuid, uuid) is
-  'Пересменка (round9). Переносит задачи ТОЛЬКО этой базы (tasks.base_id); задачи без привязки — '
-  'лишь когда уходящий состоит в одной базе, иначе multi_base. Повтор того же вызова опознаётся '
-  'по public.handover_log и возвращает 0; передача смены ДРУГОМУ после уже принятой — ошибка '
-  'handover_repeat_other. orphan бросается только если управляющего не останется ни в базе, '
-  'ни в оргструктуре.';
+  'Пересменка (round9). Задачи по-прежнему привязаны к аккаунту, поэтому передача запрещена, '
+  'если другая база есть у уходящего (multi_base), у ЗАСТУПАЮЩЕГО (multi_base_to) или если '
+  'уходящий держит непереданные задачи другой базы по journal handover_log (multi_base). '
+  'Повтор того же вызова опознаётся по public.handover_log и возвращает 0; передача ДРУГОМУ '
+  'после уже принятой смены — ошибка handover_repeat_other. orphan бросается только если '
+  'управляющего не останется ни в базе, ни в оргструктуре.';
 
--- ═══ 4. Отсутствие управляющего НА МЕСТЕ — читаемый признак для Edge Function (п.5) ═
-create or replace function public.base_has_local_manager(p_base uuid)
-returns boolean
-language sql
-stable
-security definer
-set search_path to 'public'
-as $$
-  select exists (
-    select 1 from public.base_members m
-    where m.base_id = p_base and m.active and m.can_manage
-  );
-$$;
-revoke all on function public.base_has_local_manager(uuid) from public, anon, authenticated;
-grant execute on function public.base_has_local_manager(uuid) to service_role;
-
--- ═══ 5. can_see_type: fail-closed только там, где тип реально ограничивает (п.8) ═══
--- Было: неопределимый тип закрыт ДЛЯ ВСЕХ участников базы. Это било по начальнику участка,
--- бухгалтеру и хозрабочему, которых тип не ограничивает вовсе: они и так видят все типы,
--- а строки с неопределимым типом становились невидимыми и неудаляемыми — «застревали навсегда».
+-- ═══ 3. can_see_type: fail-closed только там, где тип реально ограничивает (п.8) ═══
+-- ОСЛАБЛЕНИЕ, не ужесточение. Было: неопределимый тип закрыт ДЛЯ ВСЕХ участников базы.
+-- Это било по начальнику участка, бухгалтеру и хозрабочему, которых тип не ограничивает вовсе:
+-- они и так видят все типы, а строки с неопределимым типом становились невидимыми и
+-- неудаляемыми — «застревали навсегда».
 -- Стало: закрыт для повара и механика (их роль ограничена типами) и для НЕ-участника базы.
--- Владелец и орг-роли — как были.
+-- Владелец и орг-роли — как были. Ветка определимого типа не изменена ни на символ.
 create or replace function public.can_see_type(p_base uuid, p_type text)
 returns boolean
 language sql
@@ -469,7 +452,10 @@ comment on function public.can_see_type(uuid, text) is
   '(их роль ограничена типами) и для не-участника базы; начальник участка, хозрабочий и '
   'бухгалтер его видят — иначе такие строки нельзя ни увидеть, ни удалить.';
 
--- ═══ 6. Политики журнала: запись не требует определимости типа (п.8) ══════════════
+-- ═══ 4. Политики журнала: запись не требует определимости типа (п.8) ══════════════
+-- Тоже ОСЛАБЛЕНИЕ: набор разрешённого только расширяется. Запрос старого клиента
+-- (POST /rest/v1/journal_entries с {id, base_id, kind, data}) проходит как раньше, а форма
+-- «позиция ещё не синхронизирована, stockType не проставлен» перестаёт отклоняться.
 do $jrn$
 begin
   if to_regclass('public.journal_entries') is null then
@@ -495,8 +481,9 @@ begin
         and public.can_see_type(base_id, app_private.journal_row_type(base_id, data))
       )$p$;
 
-  -- ЗАПИСЬ — тип-граница применяется, ТОЛЬКО если тип определим. Запись ничего не раскрывает,
-  -- а отказ терял легитимную запись движения по ещё не синхронизированной позиции.
+  -- ЗАПИСЬ — тип-граница применяется, ТОЛЬКО если тип определим. Запись ничего не раскрывает
+  -- (прочитать созданную строку повар/механик по-прежнему не смогут), а отказ терял
+  -- легитимную запись движения по ещё не синхронизированной позиции.
   execute $p$
     create policy journal_insert on public.journal_entries
       for insert to authenticated
@@ -535,9 +522,12 @@ $jrn$;
 
 commit;
 
--- ═══ 7. Инструменты раннбука: п.4, 6, 7 ═══════════════════════════════════════════
--- Тип возврата меняется (новые колонки), поэтому сначала снимаем ВСЕ перегрузки по имени.
--- Более новую редакцию файл снял бы с громким WARNING — как это делают round3/round6.
+-- ═══ 5. Инструменты раннбука: п.4, 6, 7 ═══════════════════════════════════════════
+-- Тип возврата меняется (новые колонки), поэтому сначала снимаем ВСЕ перегрузки по имени —
+-- ровно как это делают round3/round6. Иначе рядом остаются две сигнатуры, и все три
+-- инструмента падают «is not unique» (состояние, закрытое round 6).
+-- Ни клиент, ни Edge Function эти функции не вызывают: грант отозван у anon/authenticated,
+-- в index.ts rpc только handover_shift / auth_rate_hit / verify_auth_code.
 begin;
 
 do $overloads$
@@ -560,15 +550,16 @@ begin
 end
 $overloads$;
 
--- ── 7.1 stock_zeroing_report ──────────────────────────────────────────────────────
+-- ── 5.1 stock_zeroing_report ──────────────────────────────────────────────────────
 -- Новое против round6:
 --   • p_routine_max_frac — долевой потолок рутины (п.6): порог рутины = МИНИМУМ из
 --     абсолютного (p_routine_max_loss) и долевого;
---   • edited_after_until считается по ТОЙ ЖЕ правиле «чужой поздней правки», что и откат
+--   • edited_after_until считается по ТОМУ ЖЕ правилу «чужой поздней правки», что и откат
 --     (п.4), — иначе колонка отчёта перестала бы соответствовать action='skip' отката,
 --     а раннбук на этом соответствии построен;
 --   • добавлена колонка edited_after_until_by — кто именно правил позже окна.
--- Новые параметры добавлены В КОНЕЦ списка: прежние позиционные вызовы раннбука не ломаются.
+-- Новые параметры добавлены В КОНЕЦ списка и все со значением по умолчанию:
+-- прежние позиционные вызовы раннбука (p_base, 48, метка[, ...]) работают дословно.
 create function public.stock_zeroing_report(
   p_base                uuid,
   p_hours               int         default 48,
@@ -580,7 +571,7 @@ create function public.stock_zeroing_report(
   p_routine_max_loss    numeric     default 20,
   p_until               timestamptz default null,
   p_routine_max_frac    numeric     default 0.5,   -- round9 (п.6): доля, выше которой не рутина
-  p_late_grace_minutes  int         default 10,    -- round9 (п.4): продолжение залпа за границей окна
+  p_late_grace_minutes  int         default 0,     -- round9 (п.4): продолжение залпа за границей окна (0 = выключено)
   p_late_same_author    boolean     default true   -- round9 (п.4): тот же автор = тот же инцидент
 )
 returns table (
@@ -615,7 +606,7 @@ declare
   win_start  timestamptz := coalesce(p_since, now() - make_interval(hours => win_hours));
   loss_cap   numeric := greatest(coalesce(p_routine_max_loss, 20), 0);
   frac_cap   numeric := least(greatest(coalesce(p_routine_max_frac, 0.5), 0), 1);
-  grace      interval := make_interval(mins => greatest(coalesce(p_late_grace_minutes, 10), 0));
+  grace      interval := make_interval(mins => greatest(coalesce(p_late_grace_minutes, 0), 0));
   same_auth  boolean := coalesce(p_late_same_author, true);
   full_scope boolean;
 begin
@@ -677,6 +668,7 @@ begin
     order by h.item_id, h.changed_at asc, h.id asc
   ),
   cand as (
+    -- БЕЗ фильтра видимости: он применяется в самом конце, уже ПОСЛЕ подсчёта burst_size
     select f.item_id, f.name, f.type, f.unit,
            f.qty        as qty_start,
            l.qty        as qty_last,
@@ -694,9 +686,9 @@ begin
     left join public.stock_items s on s.base_id = p_base and s.id = f.item_id
     left join later lt on lt.item_id = f.item_id
     where (
-        s.id is null
-        or s.qty = 0
-        or s.qty < f.qty * frac
+        s.id is null                 -- строка удалена
+        or s.qty = 0                 -- строгий ноль
+        or s.qty < f.qty * frac      -- СУЩЕСТВЕННАЯ потеря относительно начала окна
       )
   ),
   burst as (
@@ -747,12 +739,12 @@ comment on function public.stock_zeroing_report(uuid, int, timestamptz, numeric,
   'stock_qty_restore с p_at = p_since. p_min_frac — порог попадания в отчёт (0.20 = осталось '
   'меньше 20%). Порог рутины — МИНИМУМ из абсолютного (p_routine_max_loss, 20 ед.) и долевого '
   '(p_routine_max_frac, 0.5): потеря больше половины позиции рутиной не считается никогда, '
-  'поэтому при стандартном p_min_frac=0.20 в ''routine'' практически ничего не попадает — '
+  'поэтому при стандартном p_min_frac = 0.20 в ''routine'' практически ничего не попадает — '
   'отчёт не прячет то, что сам признал существенной потерей. edited_after_until заполняется '
   'по тому же правилу «чужой поздней правки», что и action=''skip'' у stock_qty_restore. '
   'Бэкенд и владелец видят ВСЕ типы, включая type IS NULL.';
 
--- ── 7.2 stock_qty_restore ─────────────────────────────────────────────────────────
+-- ── 5.2 stock_qty_restore ─────────────────────────────────────────────────────────
 -- Новое против round6:
 --   • «поздняя правка» больше не означает автоматически «законная работа смены» (п.4):
 --     учитывается автор и окно продолжения залпа; текст причины нейтральный и называет автора;
@@ -766,7 +758,7 @@ create function public.stock_qty_restore(
   p_until               timestamptz default null,
   p_max_frac            numeric     default 0,
   p_overwrite_later     boolean     default false,
-  p_late_grace_minutes  int         default 10,    -- round9: продолжение залпа за границей окна
+  p_late_grace_minutes  int         default 0,     -- round9: продолжение залпа за границей окна (0 = выключено)
   p_late_same_author    boolean     default true   -- round9: тот же автор = тот же инцидент
 )
 returns table (
@@ -785,7 +777,7 @@ set search_path to 'public'
 as $$
 declare
   frac      numeric := least(greatest(coalesce(p_max_frac, 0), 0), 1);
-  grace     interval := make_interval(mins => greatest(coalesce(p_late_grace_minutes, 10), 0));
+  grace     interval := make_interval(mins => greatest(coalesce(p_late_grace_minutes, 0), 0));
   same_auth boolean := coalesce(p_late_same_author, true);
   ovr       boolean := coalesce(p_overwrite_later, false);
 begin
@@ -865,38 +857,42 @@ begin
        and d.act = 'restore'
        and not p_dry_run
     returning s.id
+  ),
+  out_rows as (
+    select d.item_id, d.name, d.qty as qty_restored, d.qty_was, d.act as action,
+           case
+             when d.act = 'skip' then
+               'позицию правили после p_until (' || to_char(d.first_later, 'YYYY-MM-DD HH24:MI:SS TZ')
+               || ', автор ' || coalesce(d.later_by::text, 'бэкенд/скрипт')
+               || '); этого автора не было среди правивших её в окне инцидента, поэтому откат её '
+               || 'НЕ трогает. Законная это правка смены или продолжение инцидента — решает человек: '
+               || 'сверьте с отчётом (edited_after_until, last_changed_by). Откатить всё равно — '
+               || 'p_overwrite_later => true'
+             when d.first_later is not null and ovr then
+               'правку после p_until (' || to_char(d.first_later, 'YYYY-MM-DD HH24:MI:SS TZ')
+               || ') перезаписали по явному p_overwrite_later => true'
+             when d.first_later is null and p_until is not null and exists (
+                    select 1 from public.stock_history h
+                    where h.base_id = p_base and h.item_id = d.item_id
+                      and h.changed_at > p_until
+                  ) then
+               'правки позже p_until есть, но они в окне продолжения залпа и/или сделаны тем же '
+               || 'автором, что и в окне инцидента — считаем их продолжением инцидента и откатываем '
+               || '(отключается p_late_same_author => false / p_late_grace_minutes => 0)'
+             else null
+           end as reason,
+           d.first_later as late_edit_at, d.later_by as late_edit_by
+    from decided d
+    union all
+    select g.item_id, g.name, g.qty, null::numeric, 'skip',
+           'позиция удалена целиком — строки в складе нет, откат остатка её не восстанавливает. '
+           || 'Строку восстанавливают вручную из public.stock_history (op=''delete''), см. §5.3 раннбука',
+           g.first_later, g.later_by
+    from gone g
   )
-  select d.item_id, d.name, d.qty, d.qty_was, d.act,
-         case
-           when d.act = 'skip' then
-             'позицию правили после p_until (' || to_char(d.first_later, 'YYYY-MM-DD HH24:MI:SS TZ')
-             || ', автор ' || coalesce(d.later_by::text, 'бэкенд/скрипт')
-             || '); этого автора не было среди правивших её в окне инцидента, поэтому откат её '
-             || 'НЕ трогает. Законная это правка смены или продолжение инцидента — решает человек: '
-             || 'сверьте с отчётом (edited_after_until, last_changed_by). Откатить всё равно — '
-             || 'p_overwrite_later => true'
-           when d.first_later is not null and ovr then
-             'правку после p_until (' || to_char(d.first_later, 'YYYY-MM-DD HH24:MI:SS TZ')
-             || ') перезаписали по явному p_overwrite_later => true'
-           when d.first_later is null and exists (
-                  select 1 from public.stock_history h
-                  where h.base_id = p_base and h.item_id = d.item_id
-                    and p_until is not null and h.changed_at > p_until
-                ) then
-             'правки позже p_until есть, но они в окне продолжения залпа и/или сделаны тем же '
-             || 'автором, что и в окне инцидента — считаем их продолжением инцидента и откатываем '
-             || '(отключается p_late_same_author => false / p_late_grace_minutes => 0)'
-           else null
-         end,
-         d.first_later, d.later_by
-  from decided d
-  union all
-  select g.item_id, g.name, g.qty, null::numeric, 'skip',
-         'позиция удалена целиком — строки в складе нет, откат остатка её не восстанавливает. '
-         || 'Строку восстанавливают вручную из public.stock_history (op=''delete''), см. §5.3 раннбука',
-         g.first_later, g.later_by
-  from gone g
-  order by 5 desc, 3 desc, 1;   -- сначала restore, потом skip; внутри — по величине
+  select o.item_id, o.name, o.qty_restored, o.qty_was, o.action, o.reason, o.late_edit_at, o.late_edit_by
+  from out_rows o
+  order by (o.action = 'skip'), o.qty_restored desc, o.item_id;
 end $$;
 
 revoke all on function public.stock_qty_restore(uuid, timestamptz, boolean, timestamptz, numeric, boolean, int, boolean)
@@ -917,28 +913,19 @@ comment on function public.stock_qty_restore(uuid, timestamptz, boolean, timesta
 
 commit;
 
--- ═══ 8. Диагностика (безопасно смотреть после применения) ═════════════════════════
+-- ═══ 6. Диагностика (безопасно смотреть после применения) ═════════════════════════
 
 -- Редакция пересменки: должна быть round9.
 select case
          when p.prosrc like '%@round9%' then 'round9 (актуальная)'
          when p.prosrc like '%is_backend_role%' then 'handover_consistency — примените 2026-08-01_handover_round9_fixes.sql'
-         else 'СТАРАЯ (2026-07-28) — пересменка откачена, примените файлы пересменки заново'
+         else 'СТАРАЯ (2026-07-28) — пересменка ОТКАЧЕНА, примените файлы пересменки заново'
        end as "редакция handover_shift"
 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
 where n.nspname = 'public' and p.proname = 'handover_shift';
 
--- Задачи, привязку которых определить не удалось: для их владельцев пересменка вернёт multi_base.
-select coalesce(p.username, p.id::text) as "владелец задач", count(*) as "задач без привязки к базе",
-       (select count(*) from public.base_members m where m.user_id = t.owner_id) as "баз у владельца"
-  from public.tasks t
-  left join public.profiles p on p.id = t.owner_id
- where t.base_id is null
- group by t.owner_id, p.username, p.id
- order by 2 desc;
-
 -- Базы без управляющего НА МЕСТЕ: работают, но добавить человека и провести пересменку
--- может только оргструктура или владелец.
+-- может только оргструктура или владелец. Это ПРЕДУПРЕЖДЕНИЕ, не ошибка (см. п.5).
 select b.name as "база",
        coalesce((select count(*) from base_members m
                   where m.base_id = b.id and m.active and m.can_manage), 0) as "управляющих в базе",
@@ -973,11 +960,10 @@ select b.name as "база", coalesce(p.username, p.id::text) as "логин", m
    )
  order by 1, 2;
 
--- Люди, состоящие больше чем в одной базе: после round9 это БЕЗОПАСНО, пока у них нет
--- задач без привязки (колонка «задач без привязки» должна быть 0).
+-- Люди, состоящие больше чем в одной базе. Для них пересменка НЕДОСТУПНА в обе стороны
+-- (multi_base / multi_base_to) — снимайте со смены вручную либо уберите лишнюю базу.
 select coalesce(p.username, p.id::text) as "логин", p.id as user_id,
-       string_agg(b.name || case when m.active then ' (на смене)' else ' (не на смене)' end, ', ' order by b.name) as "базы",
-       (select count(*) from public.tasks t where t.owner_id = p.id and t.base_id is null) as "задач без привязки"
+       string_agg(b.name || case when m.active then ' (на смене)' else ' (не на смене)' end, ', ' order by b.name) as "базы"
   from base_members m
   join bases b    on b.id = m.base_id
   join profiles p on p.id = m.user_id
@@ -985,6 +971,28 @@ select coalesce(p.username, p.id::text) as "логин", p.id as user_id,
 having count(*) > 1
  order by 1;
 
-select '2026-08-01 round9: задачи с привязкой к базе + журнал пересменок (повтор ≠ передача другому) + '
-       'откат учитывает автора поздней правки и выдаёт удалённые строкой skip + долевой порог рутины + '
-       'журнал пишется при неопределимом типе' as status;
+-- Работники, держащие НЕПЕРЕДАННЫЕ задачи другой базы (ловушка «обходного пути», п.1в).
+-- Пересменка для них вернёт multi_base с названием той базы.
+select coalesce(p.username, p.id::text) as "логин",
+       b.name as "принял задачи в базе", h.tasks_moved as "задач принято",
+       to_char(h.done_at, 'DD.MM.YYYY HH24:MI') as "когда"
+  from public.handover_log h
+  join public.profiles p on p.id = h.to_user
+  left join public.bases b on b.id = h.base_id
+ where h.tasks_moved > 0
+   and not exists (select 1 from public.handover_log h2
+                   where h2.from_user = h.to_user and h2.base_id = h.base_id and h2.done_at > h.done_at)
+ order by h.done_at desc;
+
+-- Записи журнала, НЕВИДИМЫЕ участнику базы: тип строки не определяется. После round9 их видит
+-- и может удалить начальник участка (а также хозрабочий и бухгалтер) — раньше они застревали.
+select b.name as "база", je.kind as "журнал", count(*) as "строк с неопределимым типом"
+  from public.journal_entries je
+  join public.bases b on b.id = je.base_id
+ where app_private.journal_row_type(je.base_id, je.data) not in ('product','household','tool')
+ group by 1, 2
+ order by 3 desc;
+
+select '2026-08-01 round9: журнал пересменок (повтор ≠ передача другому) + проверка заступающего и '
+       'обходного пути между базами + откат учитывает автора поздней правки и выдаёт удалённые '
+       'строкой skip + долевой порог рутины + журнал пишется при неопределимом типе' as status;

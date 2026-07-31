@@ -146,6 +146,10 @@
   .btn:focus-visible, .chip:focus-visible, .nav-btn:focus-visible, .input:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
   /* косметика: кнопки в 3-колоночной сетке (типы склада) — компактнее, чтобы подписи не обрезались на узком iPhone */
   .grid-cols-3 > .btn{ padding:0 6px; font-size:15px; gap:4px; min-width:0; }
+  /* Очень узкий экран: приветствие с датой — украшение, а чип базы и кнопка фильтра — рабочие
+     органы шапки. При нехватке места приветствие ужималось до одной буквы («Д…»); честнее убрать
+     его совсем, чем показывать огрызок. Дата видна на дашборде. */
+  @media (max-width:359px){ #greeting, #dateStr{ display:none; } }
   @media (max-width:360px){ .grid-cols-3 > .btn{ font-size:13px; padding:0 4px; } }
   /* iPhone SE / очень узкие: подписи в 3-колоночной сетке (типы склада, выбор темы) переносим, а не обрезаем */
   /* min-height 44px, а не 40: height:auto тут снимает базовые 52px от .btn, и «＋ Продукт/Хозтовар/
@@ -179,8 +183,6 @@
   .light #loginGate .btn-ghost{ background:rgba(255,255,255,.08); color:#f1f5f9; }
   /* косметика: тап-зона у раскрывающихся секций (details/summary) — палец попадает уверенно */
   details > summary{ padding:8px 0; min-height:44px; display:flex; align-items:center; }   /* тап-таргет ≥44px (WCAG) */
-  .stock-cat > summary{ cursor:pointer; width:max-content; max-width:100%; }
-  .stock-cat > summary::-webkit-details-marker{ display:none; }   /* скрываем дефолтный треугольник — свой ▾ */
   /* ---- .hidden — последнее слово о видимости ----
      .hidden{display:none} приходит из сборки Tailwind, где он лежит в @layer utilities, а СЛОИСТОЕ
      правило всегда проигрывает НЕслоистому: любое наше .btn{display:inline-flex} / .chip / .set-row
@@ -205,9 +207,12 @@
       <div id="greeting" class="text-xl font-bold truncate">ВахтаХоз</div>
       <div id="dateStr" class="text-sm text-gray-400 truncate"></div>
     </div>
-    <div class="flex items-center gap-2">
-      <button id="syncChip" class="btn btn-ghost text-xs hidden" style="padding:6px 10px" title="Синхронизация с облаком" aria-label="Синхронизация с облаком"></button>
-      <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px;max-width:38vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Сменить базу" aria-label="Сменить базу"></button>
+    <div class="flex items-center gap-2" style="min-width:0">
+      <button id="syncChip" class="btn btn-ghost text-xs hidden" style="padding:6px 10px;flex:0 0 auto" title="Синхронизация с облаком" aria-label="Синхронизация с облаком"></button>
+      <!-- чип базы ужимается ПЕРВЫМ: имя базы читаемо и в обрезанном виде («2 отряд РоГРП…»),
+           а кнопка фильтра при сжатии перестала бы попадать под палец (44×44 — нижняя граница) -->
+      <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px;min-width:0;flex:1 1 auto;max-width:38vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Сменить базу" aria-label="Сменить базу"></button>
+      <button id="filterChip" class="btn btn-ghost text-xs" style="display:none;padding:6px 10px;min-width:44px;min-height:44px;max-width:52vw;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Фильтры" aria-label="Фильтры"></button>
     </div>
   </header>
   <!-- тонкий статус-бар синхронизации (под шапкой).
@@ -322,7 +327,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v220";
+const APP_BUILD = "v221";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -1616,6 +1621,120 @@ function shortBaseName(name){
   const plain = s.replace(/\(.*?\)/g,"").replace(/[«»"]/g,"").trim();   // фолбэк: без скобок/кавычек
   return plain.length>16 ? plain.slice(0,15)+"…" : plain;
 }
+/* КНОПКА ФИЛЬТРОВ В ШАПКЕ (справа вверху, где когда-то переключали тему).
+   Ленты чипов жили на полотне и ничем не были закреплены: при длинном списке они уезжали вверх —
+   чтобы сменить фильтр, приходилось прокручивать наверх, — а часть ленты пряталась за правым краем
+   без единого намёка («Показывать выполненные» на «Задачах», хвост категорий на «Складе»). На
+   «Складе» таких лент было три подряд, и они съедали экран.
+   Кнопка ПОКАЗЫВАЕТ СОСТОЯНИЕ, а не только открывает список: подпись — активный фильтр, вид
+   меняется на акцентный. Иначе человек на смене гадает, почему список короткий.
+   Счётчик просрочки со «Склада» не потерян: ради него на чипы и смотрели, поэтому он остался
+   видимым без открытия — красным бейджем прямо на кнопке (в том же срезе, что и раньше на чипе).
+   Состояние у экранов своё: ушёл со «Склада» на «Задачи» и вернулся — выбор на складе прежний. */
+function stockExpScope(){
+  const allowed = allowedTypeKeys();
+  const base = state.stock.filter(s=> STOCK_TYPE_KEYS.includes(stockTab) ? s.type===stockTab : allowed.includes(s.type));
+  // тот же срез, что считали чипы сроков: категория + ТОТ ЖЕ поиск, что и в renderStockList
+  const terms = searchTerms(stockSearch);
+  const scope = base.filter(s=> (!stockCat || s.category===stockCat) && stockMatches(s, terms));
+  let expired=0, soon=0;
+  for(const s of scope){
+    if(!inStock(s) || !s.expiry) continue;
+    const d = daysLeft(s.expiry);
+    if(d===null) continue;
+    if(d<0) expired++; else if(d<=14) soon++;
+  }
+  return { allowed, base, scope, expired, soon };
+}
+function filterChipState(){
+  if(currentView==="tasks"){
+    const on = taskFilter.cat!=="Все" || taskFilter.showDone;
+    const lbl = taskFilter.cat!=="Все" ? taskFilter.cat : "Фильтр";
+    return { on, html:`☰ ${esc(lbl)}${taskFilter.showDone?" ✓":""}`,
+             aria:`Фильтр задач: ${taskFilter.cat}${taskFilter.showDone?", показывать выполненные":""}` };
+  }
+  if(currentView==="stock" && stockMode==="stock"){
+    const c = stockExpScope();
+    const parts = [];
+    // exp14 — приход с плитки «Сроки истекают»: просрочка И «скоро» одновременно, одно значение
+    if(stockExpiryFilter==="expired") parts.push("Просрочка");
+    else if(stockExpiryFilter==="soon") parts.push("Скоро");
+    else if(stockExpiryFilter==="exp14") parts.push("Сроки ≤14 дн.");
+    if(STOCK_TYPE_KEYS.includes(stockTab)){
+      const t = visibleStockTypes().find(x=>x.key===stockTab);
+      if(t && visibleStockTypes().length>1) parts.push(t.short);   // роль с одним типом — это не «фильтр»
+    }
+    if(stockCat) parts.push(stockCat);
+    const on = parts.length>0;
+    const lbl = on ? (parts[0] + (parts.length>1?` +${parts.length-1}`:"")) : "Фильтр";
+    return { on,
+      html:`☰ ${esc(lbl)}` + (c.expired?`<span class="badge badge-red" style="margin-left:4px">${c.expired}</span>`:""),
+      aria:`Фильтры склада${on?": "+parts.join(", "):""}${c.expired?`. Просрочено позиций: ${c.expired}`:""}` };
+  }
+  return null;   // дашборд/кухня/ещё и режимы журнала — фильтровать нечего
+}
+function renderFilterChip(){
+  const fc = document.getElementById("filterChip");
+  if(!fc) return;
+  let st = null;
+  try{ st = filterChipState(); }catch(e){ console.warn("filterChip", e); }
+  if(!st){ fc.style.display = "none"; return; }
+  fc.style.display = "";
+  fc.innerHTML = st.html;
+  fc.className = "btn text-xs " + (st.on ? "btn-primary" : "btn-ghost");
+  fc.title = st.aria;
+  fc.setAttribute("aria-label", st.aria);
+}
+function openFilterSheet(){
+  if(currentView==="tasks") openTaskFilterSheet();
+  else if(currentView==="stock" && stockMode==="stock") openStockFilterSheet();
+}
+// строка выбора в листе фильтров: 44px под палец, галочка — явная отметка текущего выбора
+const _fLine = (active, label, attrs) =>
+  `<button class="btn ${active?"btn-primary":"btn-ghost"} w-full text-left" style="min-height:44px;min-width:0" ${attrs}>${active?"✓ ":""}${label}</button>`;
+function openTaskFilterSheet(){
+  openSheet(`
+    <div class="font-bold text-xl mb-3">Фильтр задач</div>
+    <div class="text-sm opacity-70 mb-2">Раздел</div>
+    <div class="space-y-2">${TASK_CATS.map(c=>_fLine(taskFilter.cat===c, esc(c), `data-ftaskcat="${esc(c)}"`)).join("")}</div>
+    <div class="text-sm opacity-70 mt-4 mb-2">Показ</div>
+    ${_fLine(taskFilter.showDone, "Показывать выполненные", `data-ftaskdone="1"`)}
+    <button class="btn btn-ghost w-full mt-4" data-close>Готово</button>`);
+}
+function openStockFilterSheet(){
+  const _vis = visibleStockTypes();
+  const c = stockExpScope();
+  let cats = [];
+  if(STOCK_TYPE_KEYS.includes(stockTab)) cats = state.categories[stockTab] || [];
+  else cats = [...new Set(c.allowed.flatMap(k=>state.categories[k]||[]))];
+  const countByCat = {};
+  c.base.forEach(s=>{ if(s.category && inStock(s)){ countByCat[s.category]=(countByCat[s.category]||0)+1; } });
+  /* СРОКИ. «Просрочка + скоро» (exp14) — это ПОЛНОЦЕННОЕ значение фильтра, а не пара одиночных:
+     ровно его включает плитка дашборда «Сроки истекают», и человек, пришедший оттуда, должен
+     увидеть и просроченное, и истекающее. Поэтому оба пункта отмечаются ОДНОВРЕМЕННО (как раньше
+     подсвечивались оба чипа), а нажатие на любой из них сужает выборку до него одного. */
+  const expBad  = stockExpiryFilter==="expired" || stockExpiryFilter==="exp14";
+  const expSoon = stockExpiryFilter==="soon"    || stockExpiryFilter==="exp14";
+  openSheet(`
+    <div class="font-bold text-xl mb-3">Фильтры склада</div>
+    ${_vis.length>1 ? `<div class="text-sm opacity-70 mb-2">Тип</div>
+      <div class="space-y-2">
+        ${_fLine(stockTab==="all", `Все (${state.stock.filter(s=>inStock(s)&&c.allowed.includes(s.type)).length})`, `data-ftab="all"`)}
+        ${_vis.map(t=>_fLine(stockTab===t.key, `${t.icon} ${esc(t.short)} (${state.stock.filter(s=>s.type===t.key&&inStock(s)).length})`, `data-ftab="${t.key}"`)).join("")}
+      </div>` : ""}
+    <div class="text-sm opacity-70 mt-4 mb-2">Сроки${stockExpiryFilter==="exp14"?' · выбрано «просрочка + скоро»':""}</div>
+    <div class="space-y-2">
+      ${_fLine(stockExpiryFilter==="all", "Все сроки", `data-fexp="all"`)}
+      ${_fLine(expBad,  `⛔ Просрочка (${c.expired})`, `data-fexp="expired"`)}
+      ${_fLine(expSoon, `⏰ Скоро, до 14 дней (${c.soon})`, `data-fexp="soon"`)}
+    </div>
+    ${cats.length ? `<div class="text-sm opacity-70 mt-4 mb-2">Категория</div>
+    <div class="space-y-2">
+      ${_fLine(stockCat==="", "Все категории", `data-fcat=""`)}
+      ${cats.map(cc=>_fLine(stockCat===cc, `${esc(cc)}${countByCat[cc]?` (${countByCat[cc]})`:""}`, `data-fcat="${esc(cc)}"`)).join("")}
+    </div>` : ""}
+    <button class="btn btn-ghost w-full mt-4" data-close>Готово</button>`);
+}
 function renderHeader(){
   const now = new Date();
   const h = now.getHours();
@@ -1628,6 +1747,7 @@ function renderHeader(){
     if(visibleProfiles().length>1 && !roleBaseLocked()){ bc.textContent = `🏠 ${shortBaseName(activeProfileName())}`; bc.style.display=""; }
     else { bc.style.display="none"; }
   }
+  renderFilterChip();
   // статус-бар/чип облака скрываем, если активная база не связана с облаком или нет входа
   if(typeof cloud!=="undefined" && (!cloud.ready || !activeCloudId())){
     const sc=document.getElementById("syncChip"), sb=document.getElementById("syncBar");
@@ -1753,13 +1873,9 @@ function renderTasks(){
   if(!taskFilter.showDone) list = list.filter(t=>!t.done);
   list.sort(taskCompare);
 
+  // лента фильтров переехала в кнопку шапки (см. renderFilterChip): на полотне её больше нет
   v.innerHTML = `
     <button class="btn btn-primary w-full" onclick="openTaskEdit()">＋ Новая задача</button>
-
-    <div class="scroll-x flex gap-2 pb-1">
-      ${TASK_CATS.map(c=>`<button class="chip ${taskFilter.cat===c?"active":""}" onclick="taskFilter.cat='${c}';render()">${c}</button>`).join("")}
-      <button class="chip ${taskFilter.showDone?"active":""}" onclick="taskFilter.showDone=!taskFilter.showDone;render()">Показывать выполненные</button>
-    </div>
 
     ${list.length
       ? `<div class="space-y-2">${list.map(taskRow).join("")}</div>`
@@ -2020,7 +2136,6 @@ async function deleteTask(id){
 let stockTab = "all";
 let stockSearch = "";
 let stockCat = ""; // фильтр по категории ("" = все)
-let stockCatOpen = false;   // раскрыт ли длинный ряд категорий (свёрнут по умолчанию — экономит место в «Складе»)
 let stockMode = "stock"; // stock | receipt | issue | writeoff | order
 let stockLimit = 100;    // сколько карточек показываем (чанкинг)
 let stockSearchT = null; // debounce таймер
@@ -2065,49 +2180,16 @@ function renderStock(){
     return;
   }
 
-  // список категорий для фильтра в зависимости от tab
-  let cats = [];
-  const allowed = allowedTypeKeys();
-  if(STOCK_TYPE_KEYS.includes(stockTab)) cats = state.categories[stockTab] || [];
-  else cats = [...new Set(allowed.flatMap(k=>state.categories[k]||[]))];
-
-  // подсчёт по категориям для текущего таба (только позиции в наличии)
-  const countByCat = {};
-  const base = state.stock.filter(s=> stockTab==="all" ? allowed.includes(s.type) : s.type===stockTab);
-  base.forEach(s=>{ if(s.category && inStock(s)){ countByCat[s.category]=(countByCat[s.category]||0)+1; } });
-  // счётчики сроков должны совпадать с видимым списком: та же категория и ТОТ ЖЕ поиск (stockMatches),
-  // что и в renderStockList — иначе чип обещает одно число, а список показывает другое
-  const _terms = searchTerms(stockSearch);
-  const expScope = base.filter(s=>
-    (!stockCat || s.category===stockCat) && stockMatches(s, _terms)
-  );
-
+  /* Три ленты чипов (тип, сроки, категории) переехали в кнопку фильтра в шапке — см.
+     openStockFilterSheet. Счётчики никуда не делись: они внутри листа, а самый дежурный из них —
+     просрочка — виден на самой кнопке красным бейджем. «⚙️ Категории» и «📍 Места» из ряда
+     категорий убраны совсем: это не фильтры, а переходы в редакторы, и они уже есть в
+     «Ещё» → «Данные» (там же, где ими и пользуются). */
   v.innerHTML = `
     ${modeTabs}
     <div class="grid grid-cols-3 gap-2">
       ${visibleStockTypes().map(t=>`<button class="btn btn-ghost" onclick="openStockEdit(null,'${t.key}')">＋ ${t.addLabel}</button>`).join("")}
     </div>
-
-    <div class="scroll-x flex gap-2">
-      ${_visTypes.length>1?`<button class="chip ${stockTab==='all'?'active':''}" data-stocktab="all">Все (${state.stock.filter(s=>inStock(s)&&allowed.includes(s.type)).length})</button>`:""}
-      ${_visTypes.map(t=>`<button class="chip ${stockTab===t.key?'active':''}" data-stocktab="${t.key}">${t.icon} ${t.short} (${state.stock.filter(s=>s.type===t.key&&inStock(s)).length})</button>`).join("")}
-    </div>
-
-    <div class="scroll-x flex gap-2">
-      <button class="chip ${stockExpiryFilter==='all'?'active':''}" data-expfilter="all">Все сроки</button>
-      <button class="chip ${(stockExpiryFilter==='expired'||stockExpiryFilter==='exp14')?'active':''}" data-expfilter="expired">⛔ Просрочка (${expScope.filter(s=>inStock(s)&&s.expiry&&daysLeft(s.expiry)<0).length})</button>
-      <button class="chip ${(stockExpiryFilter==='soon'||stockExpiryFilter==='exp14')?'active':''}" data-expfilter="soon">⏰ Скоро (${expScope.filter(s=>{if(!inStock(s))return false;const d=s.expiry?daysLeft(s.expiry):null;return d!==null&&d>=0&&d<=14;}).length})</button>
-    </div>
-
-    <details class="stock-cat" ${stockCatOpen?"open":""}>
-      <summary class="chip" style="display:inline-flex;align-items:center;gap:6px;list-style:none">🏷 ${stockCat?`Категория: ${esc(stockCat)}`:"Все категории"} ▾</summary>
-      <div class="scroll-x flex gap-2 mt-2" id="stockCatChips">
-        <button class="chip ${stockCat===''?'active':''}" data-stockcat="">Все категории</button>
-        ${cats.map(c=>`<button class="chip ${stockCat===c?'active':''}" data-stockcat="${esc(c)}">${esc(c)}${countByCat[c]?` <span class="opacity-70">${countByCat[c]}</span>`:""}</button>`).join("")}
-        <button class="chip" onclick="openCategoriesEdit()">⚙️ Категории</button>
-        <button class="chip" onclick="openLocationsEdit()">📍 Места</button>
-      </div>
-    </details>
 
     <input class="input" id="stockSearchInp" placeholder="Поиск по складу…" value="${esc(stockSearch)}" autocomplete="off" />
 
@@ -2124,7 +2206,7 @@ function renderStock(){
       // молча показывал только просрочку). Ищут всегда по всему складу.
       if(stockExpiryFilter!=="all" && inp.value.trim()){
         stockExpiryFilter = "all";
-        renderStock();   // чипы сроков тоже перерисовать, иначе подсветка чипа врёт
+        renderStock(); renderFilterChip();   // кнопку фильтра тоже обновить, иначе она врёт про сроки
         // renderStock пересоздал input — вернуть фокус и каретку, чтобы набор не прервался
         const ni = document.getElementById("stockSearchInp");
         if(ni){ ni.focus(); try{ ni.setSelectionRange(ni.value.length, ni.value.length); }catch(_){} }
@@ -2132,10 +2214,9 @@ function renderStock(){
       }
       stockLimit = 100;
       renderStockList();
+      renderFilterChip();   // бейдж просрочки считается в срезе с учётом поиска
     }, 150);
   });
-  const catDet = v.querySelector("details.stock-cat");
-  if(catDet) catDet.addEventListener("toggle", ()=>{ stockCatOpen = catDet.open; });   // помним раскрытие: выбор категории не схлопывает ряд
   renderStockList();
 }
 
@@ -6052,6 +6133,7 @@ async function writeoffExpired(){
 document.querySelectorAll("#navbar .nav-btn").forEach(b=>b.addEventListener("click",()=>nav(b.dataset.nav)));
 document.getElementById("baseChip").addEventListener("click", ()=>openProfilesSheet());
 document.getElementById("syncChip").addEventListener("click", ()=>{ if(typeof cloudSyncNow==="function") cloudSyncNow(); });
+document.getElementById("filterChip").addEventListener("click", ()=>openFilterSheet());
 
 /* ---------- Global delegation для data-атрибутов (защита от апострофов в именах) ---------- */
 document.addEventListener("click", e=>{
@@ -6063,8 +6145,19 @@ document.addEventListener("click", e=>{
   if(expBtn){ stockExpiryFilter = expBtn.dataset.expfilter; stockLimit=100; render(); return; }
   const jrMonthBtn = e.target.closest("[data-jrmonth]");
   if(jrMonthBtn){ journalMonth = jrMonthBtn.dataset.jrmonth; render(); return; }
-  const catChip = e.target.closest("[data-stockcat]");
-  if(catChip){ stockCat = catChip.dataset.stockcat; stockLimit=100; renderStockList(); document.querySelectorAll("[data-stockcat]").forEach(el=>el.classList.toggle("active", el.dataset.stockcat===stockCat)); const _s=document.querySelector("details.stock-cat > summary"); if(_s) _s.textContent = "🏷 "+(stockCat?("Категория: "+stockCat):"Все категории")+" ▾"; return; }
+  /* Выбор в ЛИСТЕ фильтров. Через data-атрибуты, а не inline-onclick: имена категорий приходят от
+     пользователя и содержат апострофы. После выбора перерисовываем и экран, и сам лист — иначе
+     галочка осталась бы на прежнем пункте. */
+  const fTab = e.target.closest("[data-ftab]");
+  if(fTab){ stockTab = fTab.dataset.ftab; stockCat=""; stockLimit=100; render(); openStockFilterSheet(); return; }
+  const fExp = e.target.closest("[data-fexp]");
+  if(fExp){ stockExpiryFilter = fExp.dataset.fexp; stockLimit=100; render(); openStockFilterSheet(); return; }
+  const fCat = e.target.closest("[data-fcat]");
+  if(fCat){ stockCat = fCat.dataset.fcat; stockLimit=100; render(); openStockFilterSheet(); return; }
+  const fTaskCat = e.target.closest("[data-ftaskcat]");
+  if(fTaskCat){ taskFilter.cat = fTaskCat.dataset.ftaskcat; render(); openTaskFilterSheet(); return; }
+  const fTaskDone = e.target.closest("[data-ftaskdone]");
+  if(fTaskDone){ taskFilter.showDone = !taskFilter.showDone; render(); openTaskFilterSheet(); return; }
   const catAct = e.target.closest("[data-cat-action]");
   if(catAct){
     const a = catAct.dataset;
@@ -6075,7 +6168,8 @@ document.addEventListener("click", e=>{
 });
 
 /* ---------- Expose for inline handlers ---------- */
-Object.assign(window,{nav,navStock,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTaskItem,moveTask,taskFilter,
+Object.assign(window,{openFilterSheet,openTaskFilterSheet,openStockFilterSheet,renderFilterChip,stockExpScope,filterChipState,
+  nav,navStock,openTaskEdit,saveTask,deleteTask,toggleTask,toggleTaskItem,moveTask,taskFilter,
   openStockEdit,saveStock,deleteStock,openBatchAdd,saveBatch,openBatchEdit,saveBatchEdit,deleteBatch,quickAdjust,
   openOpEdit,saveOp,deleteOp,editOp,saveOpEdit,orderReceive,
   openCategoriesEdit,addCategory,renameCategory,deleteCategory,
