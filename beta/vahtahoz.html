@@ -120,7 +120,10 @@
   .grid-cols-3 > .btn{ padding:0 6px; font-size:15px; gap:4px; min-width:0; }
   @media (max-width:360px){ .grid-cols-3 > .btn{ font-size:13px; padding:0 4px; } }
   /* iPhone SE / очень узкие: подписи в 3-колоночной сетке (типы склада, выбор темы) переносим, а не обрезаем */
-  @media (max-width:340px){ .grid-cols-3 > .btn{ font-size:11px; padding:2px; line-height:1.15; white-space:normal; height:auto; min-height:40px; } }
+  /* min-height 44px, а не 40: height:auto тут снимает базовые 52px от .btn, и «＋ Продукт/Хозтовар/
+     Инструмент» на узком экране проваливались под минимальный тап-таргет (WCAG 44×44), которого
+     держится весь остальной интерфейс (.chip, summary, стрелки порядка). Перенос строк сохраняем. */
+  @media (max-width:340px){ .grid-cols-3 > .btn{ font-size:11px; padding:2px; line-height:1.15; white-space:normal; height:auto; min-height:44px; } }
   /* активная вкладка нижней навигации — подчёркивание для ясности (position:relative задан выше на .nav-btn.active) */
   .nav-btn.active::after{ content:""; position:absolute; top:0; left:50%; transform:translateX(-50%); width:22px; height:3px; border-radius:0 0 3px 3px; background:currentColor; }
   /* косметика: светлая тема — видимые границы/контраст; disabled-кнопки; тап-зона узких кнопок */
@@ -1247,6 +1250,12 @@ function openSheet(html){
   oldBody.replaceWith(freshBody);
   freshBody.innerHTML = html;
   s.classList.add("open");
+  /* #sheetBody объявлен role="dialog" aria-modal="true", но фон под ним оставался живым: порядок
+     документа — #app → #navbar → #sheet, поэтому Tab с последнего элемента листа уходил на кнопки
+     склада и нижнюю навигацию. Они лишь ЗАТЕМНЕНЫ оверлеем — то есть невидимы глазом, но кликабельны
+     и озвучиваются скринридером, что прямо противоречит aria-modal. Переиспользуем готовый паттерн
+     гейта: inert убирает поддерево из фокуса, кликов и а11у-дерева (+ aria-hidden для старых движков). */
+  _gateInert(true);
   // Клавиатура телефона перекрывает нижние поля листа (100vh не уменьшается на iOS) — подтягиваем
   // активный инпут к центру. Задержка: анимация появления клавиатуры.
   freshBody.addEventListener("focusin", (e)=>{
@@ -1262,6 +1271,11 @@ function _sheetEsc(e){ if(e.key==="Escape") closeSheet(); }   // лист зак
 function closeSheet(){
   document.getElementById("sheet").classList.remove("open");
   document.removeEventListener("keydown", _sheetEsc);
+  /* Возвращаем фон в работу — но ТОЛЬКО если под листом не экран входа. Лист умеет открываться
+     ПОВЕРХ гейта (юр-страницы, смена пароля: z-index 100 против 90), и там inert поставил сам
+     showLoginGate. Безусловный сброс открыл бы за экраном входа склад и навигацию — ровно ту дыру,
+     ради закрытия которой гейт этот inert и ставит. */
+  if(!gateOpen()) _gateInert(false);
   // возвращаем фокус тому, кто открыл лист (иначе после закрытия фокус улетает в начало документа).
   // НО не под гейт: при принудительном разлогине фокус уезжал на кнопку склада за экраном входа.
   if(_sheetOpener){ const el=_sheetOpener; _sheetOpener=null; if(!gateOpen()){ try{ el.focus({preventScroll:true}); }catch(_){} } }
@@ -1491,12 +1505,19 @@ function renderDashboard(){
       <div class="card">
         <div class="font-bold mb-2">Сроки истекают</div>
         <div class="space-y-2">${sortedStock(expiringSoon).slice(0,5).map(stockRow).join("")}</div>
+        ${expiringSoon.length>5?`<div class="text-xs opacity-60 mt-2 text-center">…и ещё ${expiringSoon.length-5} — смотрите на вкладке «📦 Склад»</div>`:""}
       </div>`:""}
 
     ${lowStock.length?`
       <div class="card">
         <div class="font-bold mb-2">Надо докупить</div>
-        <div class="space-y-2">${lowStock.slice(0,5).map(stockRow).join("")}</div>
+        <!-- sortedStock: без него список шёл в порядке state.stock (по сути — порядок добавления),
+             и «первые пять» были случайной пятёркой, а не самыми критичными. Соседний блок «Сроки
+             истекают» сортируется давно — приводим к нему.
+             «…и ещё N»: плитка сверху показывает ПОЛНОЕ число, а карточка режет до 5 — без подписи
+             это читалось как расхождение счётчика с экраном, на который он же и ведёт. -->
+        <div class="space-y-2">${sortedStock(lowStock).slice(0,5).map(stockRow).join("")}</div>
+        ${lowStock.length>5?`<div class="text-xs opacity-60 mt-2 text-center">…и ещё ${lowStock.length-5} — смотрите на вкладке «📦 Склад»</div>`:""}
       </div>`:""}
   `;
 }
@@ -1925,6 +1946,10 @@ function renderStockList(){
     // Пустой список обязан НАЗВАТЬ активные фильтры: «Ничего не найдено» при включённой
     // «Просрочке» читалось как «товары пропали», хотя они просто отфильтрованы.
     const parts = [];
+    // Поиск НАЗЫВАЕМ первым: он переживает смену вкладки склада (это удобно — искать одно
+    // наименование по типам), и именно поэтому чаще всего он и есть незамеченная причина пустоты.
+    // Раньше подсказка молчала о нём, и «Ничего не найдено» при забытом запросе читалось как пропажа позиций.
+    if(stockSearch.trim()) parts.push(`поиск «${esc(stockSearch.trim())}»`);
     if(stockExpiryFilter==="expired") parts.push("фильтр «⛔ Просрочка»");
     if(stockExpiryFilter==="soon") parts.push("фильтр «⏰ Скоро»");
     if(stockCat) parts.push(`категория «${esc(stockCat)}»`);
@@ -4566,10 +4591,14 @@ async function exportXlsx(){
     "Тип": typeMeta(s.type).addLabel,
     "Категория": s.category||"",
     "Наименование": s.name,
-    "Количество": roundQty(s.qty||0),
+    /* Количество и срок — ЧЕРЕЗ АГРЕГАТОРЫ, как в exportCsv и runFilteredXlsx. Сырые s.qty/s.expiry
+       врали, пока агрегаты карточки не пересчитаны (например, сразу после слияния партий из облака
+       — до полной перезагрузки страницы): в главном экспорте «Количество» и «Срок годности»
+       расходились и с экраном приложения, и с соседними выгрузками того же склада. */
+    "Количество": totalQtyOf(s),
     "Ед. изм.": s.unit||"",
     "Мин. запас": _xlNum(s.minStock),   // NaN в числовой ячейке = «файл повреждён» в Excel
-    "Срок годности": s.expiry||"",
+    "Срок годности": nearestExpiryOf(s)||"",
     "Место": locationsOf(s).join("; "),
     "Примечание": s.note||"",
   }));
@@ -6814,7 +6843,11 @@ function _gateInert(on){
 }
 function hideLoginGate(){
   const g = document.getElementById("loginGate"); if(g){ g.classList.add("hidden"); g.style.display="none"; }  // .hidden не перебьёт инлайн display — гасим явно
-  _gateInert(false);
+  // фон возвращаем только если поверх не висит модальный лист (он теперь тоже ставит inert):
+  // иначе успешный вход при открытом поверх гейта листе (смена пароля) распечатывал бы фон под ним.
+  // Не сбросили здесь — сбросит closeSheet, гейт к тому моменту уже скрыт.
+  const _sh = document.getElementById("sheet");
+  if(!(_sh && _sh.classList.contains("open"))) _gateInert(false);
 }
 async function cloudLogin(email, password){
   const sb = await ensureSB();
@@ -7413,6 +7446,28 @@ function qtyFromCloudBatches(cleaned, cloudQty){
   if(!cleaned || !cleaned.length) return cloudQty;
   return roundQty(cleaned.reduce((a,b)=>a+roundQty(b.qty||0), 0));
 }
+/* Пересчёт ЛЕГАСИ-АГРЕГАТОВ (expiry/location) после того, как слияние забрало ПАРТИИ ИЗ ОБЛАКА.
+   Ломалось так: ветки слияния писали только qty и batches — напрямую, минуя syncItemFromBatches.
+   Поля it.expiry/it.location оставались от ДОмерджевого состояния и чинились лишь при следующем
+   ПОЛНОМ старте приложения (там normalizeStockItem зовёт syncItemFromBatches). Пока сессия жива,
+   врало всё, что читает s.expiry НАПРЯМУЮ, а не через nearestExpiryOf():
+     • sortedStock() — тай-брейк по a.expiry/b.expiry ставил позицию не на своё место в списке;
+     • expiryNoticeOnOpen() — первичный фильтр по сырому s.expiry, поэтому утренняя сводка могла
+       скрыть реально просроченное или показать уже неактуальное.
+   Одни и те же значения кладём И в выгружаемую строку r (stockToRow тянет expiry/location в облако),
+   И в позицию state it: иначе подпись curSig(r) разошлась бы с той, что построит следующий push,
+   и получился бы лишний холостой цикл выгрузки.
+   Инвариант «qty = сумма партий» не трогаем: syncItemFromBatches пересчитывает ровно ту же сумму,
+   что уже вернул qtyFromCloudBatches — значение qty не меняется.
+   Пустой список партий из облака НЕ обрабатываем: там позиция законно остаётся в легаси-режиме
+   с облачным qty, и её собственные expiry/location — единственный источник срока. */
+function applyCloudBatchAggregates(r, it, cleaned){
+  if(!Array.isArray(cleaned) || !cleaned.length) return;
+  const locs = locationsOf({ batches: cleaned });
+  const loc = locs.length===1 ? locs[0] : "";   // несколько мест → карточное поле пустое (как в syncItemFromBatches)
+  if(r){ r.expiry = nearestExpiryOf({ batches: cleaned }) || ""; r.location = loc; }
+  if(it && Array.isArray(it.batches) && it.batches.length) syncItemFromBatches(it);
+}
 async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
   try{
     const ids = upsert.map(r=>r.id); if(!ids.length) return;
@@ -7439,9 +7494,10 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
           const _cb=cloudBatchesOnce(cr); const _cq=qtyFromCloudBatches(_cb, cloudQty);
           r.qty = _cq;
           if(_cb) r.batches = _cb;
-          curSig[r.id]=_sigOf(r);
           const it=state.stock.find(s=>s.id===r.id);
           if(it){ it.qty=_cq; if(_cb) it.batches=_cb.map(b=>({...b})); localChanged=true; }
+          applyCloudBatchAggregates(r, it, _cb);   // expiry/location из облачных партий — ДО подписи, иначе curSig разойдётся
+          curSig[r.id]=_sigOf(r);
         } else if(cloudQty !== (Number(r.qty)||0)){
           r.qty = cloudQty; curSig[r.id]=_sigOf(r);
           const it=state.stock.find(s=>s.id===r.id); if(it && Number(it.qty)!==cloudQty){ it.qty=cloudQty; localChanged=true; }
@@ -7459,12 +7515,13 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
         const _cb=cloudBatchesOnce(cr); const _cq=qtyFromCloudBatches(_cb, cloudQty);
         r.qty = _cq;
         if(_cb) r.batches = _cb;
-        curSig[r.id]=_sigOf(r);
         const it=state.stock.find(s=>s.id===r.id);
         if(it){
           if(Number(it.qty)!==_cq){ it.qty=_cq; localChanged=true; }
           if(_cb){ it.batches = _cb.map(b=>({...b})); localChanged=true; }
         }
+        applyCloudBatchAggregates(r, it, _cb);   // expiry/location из облачных партий — ДО подписи, иначе curSig разойдётся
+        curSig[r.id]=_sigOf(r);
         continue;
       }
       const merged = Math.max(0, roundQty((Number(r.qty)||0) + cloudQty - snapQty));   // 3-way CRDT-счётчик
@@ -7493,12 +7550,13 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
         const _cq = qtyFromCloudBatches(_useCb ? _cb : null, cloudQty);
         r.qty = _cq;
         if(_useCb) r.batches = _cb;
-        curSig[r.id]=_sigOf(r);
         const it=state.stock.find(s=>s.id===r.id);
         if(it){
           if(Number(it.qty)!==_cq){ it.qty=_cq; localChanged=true; }
           if(_cb && (((Array.isArray(it.batches)&&it.batches.length) || _cb.length) > 0)){ it.batches=_cb.map(b=>({...b})); localChanged=true; }
         }
+        applyCloudBatchAggregates(r, it, _useCb ? _cb : null);   // expiry/location из облачных партий — ДО подписи
+        curSig[r.id]=_sigOf(r);
       }
       if(localChanged){ const _w=cloud.applying; cloud.applying=true; try{ saveState(); }finally{ cloud.applying=_w; } }
       try{ toast("Слияние остатков сбой — взяты количества из облака, проверьте вручную"); }catch(_){}
