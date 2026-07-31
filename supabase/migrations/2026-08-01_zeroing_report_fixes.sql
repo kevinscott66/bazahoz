@@ -84,10 +84,14 @@ begin
     from pg_proc p
     join pg_namespace nsp on nsp.oid = p.pronamespace
     where nsp.nspname = 'public'
-      and p.proname in ('stock_zeroing_report', 'stock_qty_restore')
+      and p.proname in ('stock_zeroing_report', 'stock_qty_restore',
+                        'stock_meta_change_report', 'stock_meta_restore')
     order by 1
   loop
-    if r.src like '%round6%' then
+    -- внутри APPLY_ALL этот файл идёт ДО audit_round6_fixes, который тут же вернёт
+    -- актуальную редакцию, поэтому там предупреждать не о чем.
+    if r.src like '%@round6%'
+       and coalesce(current_setting('vahtahoz.apply_all', true), '') <> '1' then
       raise warning 'zeroing_report_fixes снял БОЛЕЕ НОВУЮ редакцию %. Следом обязательно примените 2026-08-01_audit_round6_fixes.sql', r.sig;
     end if;
     execute 'drop function if exists ' || r.sig;
@@ -310,7 +314,7 @@ comment on function public.stock_qty_restore(uuid, timestamptz, boolean, timesta
 
 -- ── 4. Пересортица: детект смены type / name / unit ──────────────────────────────
 -- Отдельная функция, а не колонки в отчёте по остаткам: зерно другое (позиция × поле).
-drop function if exists public.stock_meta_change_report(uuid, int, timestamptz, int, int);
+-- (все перегрузки stock_meta_* сняты блоком $overloads$ выше — round 6)
 
 create function public.stock_meta_change_report(
   p_base          uuid,
@@ -409,7 +413,6 @@ comment on function public.stock_meta_change_report(uuid, int, timestamptz, int,
   'не видит по определению. Откат — stock_meta_restore.';
 
 -- ── 4. Пересортица: откат type / name / unit ─────────────────────────────────────
-drop function if exists public.stock_meta_restore(uuid, timestamptz, boolean, timestamptz);
 
 create function public.stock_meta_restore(
   p_base    uuid,

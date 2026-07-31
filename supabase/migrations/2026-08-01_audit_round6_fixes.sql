@@ -165,6 +165,7 @@ declare
   claim_role text := nullif(current_setting('request.jwt.claim.role',  true), '');
   top_role   text;
 begin
+  -- @round6 (маркер редакции: по нему верификатор и старые файлы отличают её от прежних)
   -- round6: fail-closed, ни одна ветка не может вернуть NULL (coalesce на каждом return).
 
   -- 1) Отдельный GUC роли (старый путь PostgREST) — ТОЧНОЕ сравнение, не подстрока.
@@ -228,6 +229,7 @@ declare
   mgrs int := 0;
   base_roles constant text[] := array['worker','cook','mechanic','site_manager','accounting'];
 begin
+  -- @round6 (маркер редакции: по нему верификатор и старые файлы отличают её от прежних)
   if caller is null then return coalesce(NEW, OLD); end if;
   if exists (select 1 from profiles where id = caller and is_admin) then
     return coalesce(NEW, OLD);
@@ -369,9 +371,10 @@ declare
   loss_cap   numeric := greatest(coalesce(p_routine_max_loss, 20), 0);
   full_scope boolean;
 begin
+  -- @round6 (маркер редакции: по нему верификатор и старые файлы отличают её от прежних)
   -- Бэкенд определяем ПОЗИТИВНО: у anon auth.uid() тоже null, и при дефолтных грантах Supabase
   -- он проходил бы как «доверенный вызов» и читал чужие базы.
-  -- coalesce обязателен: is_backend_role() исторически могла вернуть NULL, и тогда весь
+  -- round6: coalesce обязателен — is_backend_role() исторически могла вернуть NULL, и тогда весь
   -- `not ... and not ...` давал NULL, IF не срабатывал и проверка прав молча пропускалась.
   if not coalesce(public.is_backend_role(), false)
      and not coalesce(public.has_perm(p_base, 'manage'), false)
@@ -516,6 +519,7 @@ as $$
 declare
   frac numeric := least(greatest(coalesce(p_max_frac, 0), 0), 1);
 begin
+  -- @round6 (маркер редакции: по нему верификатор и старые файлы отличают её от прежних)
   if not coalesce(public.is_backend_role(), false)
      and not exists (select 1 from public.profiles pr where pr.id = auth.uid() and pr.is_admin) then
     raise exception 'forbidden' using errcode = '42501';
@@ -523,7 +527,7 @@ begin
 
   -- СЕМАНТИКА: история хранит СТАРОЕ значение со временем правки, поэтому «состояние на p_at» —
   -- снимок в САМОЙ РАННЕЙ правке ПОСЛЕ p_at. Тайбрейк по id.
-  -- p_until ограничивает окно инцидента. Раньше он ограничивал ТОЛЬКО выбор снимка-источника,
+  -- round6: p_until ограничивает окно инцидента. Раньше он ограничивал ТОЛЬКО выбор снимка-источника,
   -- а перезаписывались все позиции с s.qty = 0 — из-за чего откат затирал ЗАКОННОЕ списание
   -- в ноль, сделанное ПОСЛЕ окна (воспроизведено). Теперь позиция, у которой есть история
   -- позже p_until, из отката исключается и возвращается с action='skip' и причиной.
@@ -628,12 +632,14 @@ declare
   win_start  timestamptz := coalesce(p_since, now() - make_interval(hours => win_hours));
   full_scope boolean;
 begin
+  -- @round6 (маркер редакции: по нему верификатор и старые файлы отличают её от прежних)
   if not coalesce(public.is_backend_role(), false)
      and not coalesce(public.has_perm(p_base, 'manage'), false)
      and not exists (select 1 from public.profiles pr where pr.id = auth.uid() and pr.is_admin) then
     raise exception 'forbidden' using errcode = '42501';
   end if;
 
+  -- round6: типовой фильтр только для клиентского вызывающего (см. ниже)
   full_scope := coalesce(public.is_backend_role(), false)
                 or exists (select 1 from public.profiles pr where pr.id = auth.uid() and pr.is_admin);
 
@@ -723,6 +729,7 @@ security definer
 set search_path to 'public'
 as $$
 begin
+  -- @round6 (маркер редакции: по нему верификатор и старые файлы отличают её от прежних)
   -- Права ровно как у stock_qty_restore: запись в склад — только владелец или бэкенд.
   if not coalesce(public.is_backend_role(), false)
      and not exists (select 1 from public.profiles pr where pr.id = auth.uid() and pr.is_admin) then
@@ -730,7 +737,7 @@ begin
   end if;
 
   -- Семантика идентична stock_qty_restore: «состояние на p_at» = САМЫЙ РАННИЙ снимок ПОСЛЕ p_at.
-  -- Та же правка, что в stock_qty_restore (п.2 шапки): позиция, которую правили ПОЗЖЕ p_until,
+  -- round6, та же правка, что в stock_qty_restore (п.2 шапки): позиция, которую правили ПОЗЖЕ p_until,
   -- не откатывается — иначе легитимное переименование после инцидента молча затиралось.
   -- Идемпотентность: после отката самый ранний снимок в окне равен текущему значению,
   -- поэтому повторный вызов даёт 0 строк.

@@ -312,7 +312,7 @@ checks(ord, migration, object, state) as (
       when strpos((select src from backend), 'top_role') > 0
        and strpos((select src from backend), 'coalesce(top_role') = 0
         then 'НЕТ — при claims без топ-уровневого "role" ({} , {"role":null}, массив) функция возвращает NULL, и ВСЕ шесть проверок прав молча пропускаются'
-      when strpos((select src from backend), 'round6') > 0
+      when strpos((select src from backend), '@round6') > 0
        and strpos((select src from backend), 'coalesce(top_role') > 0
        and strpos((select src from backend), 'session_user') > 0
         then 'есть (round6: fail-closed, ни одна ветка не возвращает NULL)'
@@ -440,7 +440,17 @@ checks(ord, migration, object, state) as (
           case when not exists (select 1 from metarestore)
             then 'применить 2026-08-01_zeroing_report_fixes.sql, затем 2026-08-01_audit_round6_fixes.sql'
             else 'применить 2026-08-01_audit_round6_fixes.sql (is_backend_role fail-closed, откат не затирает поздние правки, отчёт и откат по одному множеству)' end
-        when 'round6 (последняя)' then 'порядок соблюдён — смотрите строки выше на «НЕТ»'
+        when 'round6 (последняя)' then
+          -- триггерная функция может быть round6, а инструменты раннбука — откачены назад
+          -- повторным прогоном старого файла. Тогда «порядок соблюдён» было бы ложью.
+          case when coalesce((select src from zeroing),     '') not like '%@round6%'
+                 or coalesce((select src from restore),     '') not like '%@round6%'
+                 or coalesce((select src from metareport),  '') not like '%@round6%'
+                 or coalesce((select src from metarestore), '') not like '%@round6%'
+                 or coalesce((select src from backend),     '') not like '%@round6%'
+            then 'ЧАСТИЧНО: триггерная функция round6, но инструменты раннбука откачены назад '
+                 || '(повторный прогон старого файла) — применить 2026-08-01_audit_round6_fixes.sql'
+            else 'порядок соблюдён — смотрите строки выше на «НЕТ»' end
         when 'НЕТ ФУНКЦИИ' then 'триггерной функции нет — база сильно отстала, применяйте миграции с самой ранней'
         else 'применить по порядку: preset_all_roles → stock_history_guard → _guard_fix → audit_round3'
       end
