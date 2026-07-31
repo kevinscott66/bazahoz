@@ -466,6 +466,11 @@ const cloud = {
   pushPending:false, retryTimer:null, pullRetryT:null, baseMembers:[], basesLoaded:false, membersLoaded:false,
   // синк задач (scope по владельцу): отдельные таймеры/канал/флаги
   tasksTimer:null, tasksRetry:null, tasksPullTimer:null, tasksChannel:null, tasksSubUid:null, tasksBusy:false,
+  _remoteMissed:false,          // чужая правка прилетела, пока шли push/pull → добрать ОДИН pull после (см. cloudOnRemote)
+  // защита от порчи склада (suspectWipe): cid базы, чья выгрузка остановлена, и ОДНОРАЗОВОЕ разрешение
+  // пользователя «это я удалил намеренно» (снимается сразу после успешной выгрузки — иначе защита
+  // выключилась бы навсегда, и следующая настоящая порча слота уехала бы в облако молча).
+  _wipePending:null, _wipeOverride:null,
 };
 
 /* ---------- Utils ---------- */
@@ -5140,6 +5145,15 @@ function importData(ev){
       } else {
         merged.categories = catBase;
       }
+      /* «Объединить» + СТАРЫЙ бэкап воскрешает удалённое: union возвращает категорию, которую пользователь
+         уже удалил, и следующий push отправил бы её в облако как revive. Вычитаем надгробия ПРЯМО ЗДЕСЬ,
+         на месте union — normalizeState ниже делает то же самое вторым рубежом, но полагаться на него
+         как на единственный фильтр нельзя: он про форму состояния, а не про семантику импорта.
+         При «Заменить всё» надгробий нет: там state отбрасывается вместе с delCat. */
+      if(mode!=="replace"){
+        ensureTomb();
+        for(const k of STOCK_TYPE_KEYS) merged.categories[k] = applyTomb(merged.categories[k]||[], (state.delCat&&state.delCat[k])||[]);
+      }
       // сток
       const norm = s => (s||"").toString().toLowerCase().replace(/\s+/g," ").trim();
       if(mode==="replace"){
@@ -5252,16 +5266,23 @@ function importData(ev){
         merged.tasks = mergeById(merged.tasks||[], obj.tasks||[]);
         merged.log   = mergeById(merged.log||[],   obj.log||[]);
         if(obj.journals){
+          ensureTomb();
+          /* Надгробия ЯВНО удалённых записей (state.delJr) тут игнорировались: запись, которую вахта
+             удалила, возвращалась из старого бэкапа по id, и push делал ей re-upsert в облако —
+             удаление отменялось у всех, а ledger снова считал списание/приход. Отсекаем ДО mergeById. */
+          const _delJ = new Set(Array.isArray(state.delJr) ? state.delJr : []);
           merged.journals = merged.journals || emptyJournals();
           JOURNAL_KEYS.forEach(k=>{
-            merged.journals[k] = mergeById(merged.journals[k]||[], obj.journals[k]||[]);
+            merged.journals[k] = mergeById(merged.journals[k]||[], (obj.journals[k]||[]).filter(x=> x && !_delJ.has(x.id)));
           });
         }
         // объединяем пользовательские места хранения (validateImport уже очистил строки)
         if(obj.locations){
+          ensureTomb();
           merged.locations = merged.locations || {};
           for(const k of STOCK_TYPE_KEYS){
-            merged.locations[k] = [...new Set([...(merged.locations[k]||[]), ...(obj.locations[k]||[])])];
+            // как с категориями: union со старым бэкапом возвращает удалённое место, и оно ушло бы в облако как revive
+            merged.locations[k] = applyTomb([...new Set([...(merged.locations[k]||[]), ...(obj.locations[k]||[])])], (state.delLoc&&state.delLoc[k])||[]);
           }
         }
       }
@@ -6525,7 +6546,10 @@ async function cloudCallFnPublic(action, payload){
   if(!r.ok || d.error) throw new Error(d.error || ("Ошибка "+r.status));
   return d;
 }
-function _recErr(m){ return m==="wrong_code"?"Неверный код":m==="expired"?"Код истёк — запросите заново":m==="too_many"?"Слишком много попыток, подождите":m==="wait"?"Подождите минуту перед повтором":m; }
+// "invalid" сервер отдаёт НАМЕРЕННО обезличенно (confirm_reset не подсказывает, существует ли логин —
+// иначе форма сброса стала бы оракулом перебора). Без своей ветки это сырое слово всплывало пользователю
+// латиницей прямо в поле ошибки — человек на вахте видел «invalid» и не понимал, что чинить.
+function _recErr(m){ return m==="wrong_code"?"Неверный код":m==="expired"?"Код истёк — запросите заново":m==="too_many"?"Слишком много попыток, подождите":m==="wait"?"Подождите минуту перед повтором":m==="invalid"?"Неверный код или логин":m; }
 async function cloudRefreshRecoveryProfile(){
   if(!cloud.session?.access_token || !cloud.profile?.id) return null;
   try{
@@ -6674,6 +6698,11 @@ function openSetNewPassword(token){
         body: JSON.stringify({ password: pw })
       });
       if(!r.ok) throw new Error("expired");
+      /* Пользователь мог закрыть лист тапом по фону, пока шёл запрос: _sheetOnClose уже вернул гейт,
+         человек начал вводить логин. Продолжать было нельзя — closeSheet()/toast()/exitRecoveryMode()
+         срабатывали поверх ДРУГОГО экрана: поле логина обнулялось гейтом заново, а всплывал тост про
+         смену пароля, которого никто в этот момент не ждал. Проверяем актуальность DOM (как в catch). */
+      if(!document.getElementById("npGo")) return;
       _sheetOnClose = null;   // успех: закрытие шита не должно повторно дёргать exitRecoveryMode
       closeSheet(); toast("Пароль изменён — войдите с новым");
       exitRecoveryMode();   // сброс _recoveryMode + гейт + отложенный cloudInit (online-листенеры)
@@ -7251,6 +7280,18 @@ async function cloudPull(cid){
     cloud.applying=false;
     // если во время загрузки появилась несинхронизированная правка — до-выгружаем её
     if(localStorage.getItem(cloudDirtyKey(cid))) cloudMaybePush();
+    else if(cloud._remoteMissed){
+      // realtime-событие пришло, пока мы были заняты (cloudOnRemote тогда только пометил флаг).
+      // Догоняем РОВНО ОДИН раз: флаг снимаем ДО планирования, поэтому повтор возможен только от
+      // НОВОГО события — цикла «pull → pull → …» не будет.
+      cloud._remoteMissed = false;
+      clearTimeout(cloud.pullTimer);
+      cloud.pullTimer = setTimeout(()=>{
+        const c = activeCloudId();
+        if(c && cloud.ready && cloud.session && !cloud.busy && !cloud.pushPending && !cloud.applying &&
+           !localStorage.getItem(cloudDirtyKey(c))) cloudPull(c).catch(()=>{});
+      }, 800);
+    }
     render();
   }
 }
@@ -7522,7 +7563,11 @@ async function cloudPushNow(){
       } else {
         suspectWipe = !_typeRestricted && prevCount>=20 && rows.length < prevCount*0.1;
       }
-      if((rows.length===0 || suspectWipe) && prevCount>0){
+      // ОДНОРАЗОВОЕ разрешение: пользователь через диалог (cloudResolveWipe) подтвердил, что удалил склад
+      // САМ. Без него защита fail-closed навсегда блокировала бы законную массовую чистку базы.
+      // Флаг снимается сразу после успешной выгрузки — на следующий push защита снова в силе.
+      const _wipeOk = (cloud._wipeOverride === cid);
+      if(!_wipeOk && (rows.length===0 || suspectWipe) && prevCount>0){
         if(suspectWipe) _suspectWipe=true;   // помним: при усыхании НЕ снимаем dirty и не говорим «synced»
         console.warn("cloudPush: склад подозрительно мал ("+rows.length+" из "+prevCount+") — выгрузка склада пропущена (защита от порчи)");
       } else {
@@ -7571,6 +7616,9 @@ async function cloudPushNow(){
         del.forEach(id=>{ delete mergedSig[id]; });
         saveStockSig(cid, mergedSig);
         saveSyncSig(cid, "stockAllowed", curSig);
+        // разрешение ИСПОЛЬЗОВАНО: склад уехал в облако, снимок пересчитан. Снимаем сразу здесь (а не в конце
+        // push-а) — дальше идут настройки/журналы, их сбой не должен оставлять защиту выключенной.
+        if(_wipeOk){ cloud._wipeOverride=null; cloud._wipePending=null; }
         // === НАСТРОЙКИ (места/категории) — СВОЯ дельта, НЕ на каждое изменение склада ===
         // Шлём ТОЛЬКО если списки реально менялись (иначе смена количества зря переписывала
         // блоб и могла затереть чужие правки). При выгрузке ОБЪЕДИНЯЕМ с облаком (union) —
@@ -7647,9 +7695,16 @@ async function cloudPushNow(){
       }
     }
     // ЗАДАЧИ НЕ ВЫГРУЖАЕМ — они общие-локальные (одно расписание на все базы устройства).
+    if(!_suspectWipe && cloud._wipePending===cid) cloud._wipePending=null;   // склад восстановился сам (pull/правки) — снимаем ожидание решения
     if(_suspectWipe){
-      // склад выглядит повреждённым: НЕ снимаем dirty (чтобы при восстановлении не потерять маркер) и зовём обновить из облака
-      setSyncStatus("error","Склад выглядит повреждённым — нажмите ↻ (обновить) вверху, чтобы восстановить из облака");
+      /* Склад выглядит повреждённым: НЕ снимаем dirty (чтобы при восстановлении не потерять маркер).
+         РАНЬШЕ статус звал «нажать ↻, чтобы восстановить из облака» — а ↻ (cloudSyncNow → cloudActivate)
+         видел живой dirty и снова уходил в push, упираясь в тот же отказ; cloudPull при dirty вообще
+         не стартует. То есть кнопка НИКОГДА не восстанавливала, и человек жал её по кругу.
+         Теперь ↻ открывает явный выбор (cloudResolveWipe): восстановить из облака ИЛИ подтвердить,
+         что удаление намеренное. По умолчанию — по-прежнему fail-closed: облако не трогаем. */
+      cloud._wipePending = cid;
+      setSyncStatus("error","Склад резко уменьшился — выгрузка остановлена, общая база цела. Нажмите ↻ вверху и выберите, что делать");
     } else if(_dirtyGen !== _genAtStart){
       // пока шла выгрузка, пользователь успел что-то изменить — эта правка НЕ в нашем снимке.
       // dirty НЕ снимаем (иначе при сбое следующей выгрузки retry не запустится, а pull затрёт
@@ -7829,7 +7884,11 @@ function cloudSubscribeTasks(){
 }
 function cloudOnRemote(){
   clearTimeout(cloud.pullTimer);               // всегда гасим прежний отложенный pull, иначе он сработает после dirty и затрёт правки
-  if(cloud.busy || cloud.pushPending || cloud.applying) return;  // push/pull в полёте — не стартуем второй pull
+  // push/pull в полёте — второй pull не стартуем. НО событие нельзя просто выбросить: чужая правка,
+  // прилетевшая во время нашей загрузки, не попадала в этот pull (он уже читал облако ДО неё) и не
+  // планировала следующий — экран висел устаревшим до случайного следующего триггера (своя правка,
+  // возврат сети, перезапуск). Запоминаем «был remote во время занятости» и добираем ОДИН pull в finally.
+  if(cloud.busy || cloud.pushPending || cloud.applying){ cloud._remoteMissed = true; return; }
   // есть несинхронизированные локальные правки → не тянем (затёрли бы своё); сначала выгрузим их
   const cid0 = activeCloudId();
   if(cid0 && localStorage.getItem(cloudDirtyKey(cid0))){ cloudMaybePush(); return; }
@@ -7897,6 +7956,43 @@ async function cloudRefreshMyMembership(){
     renderHeader();
   }catch(_){}
 }
+/* Разбор ситуации «склад подозрительно усох» (suspectWipe остановил выгрузку).
+   Раньше выхода из неё через интерфейс НЕ БЫЛО: dirty не снимался, ↻ снова звал push (тот же отказ),
+   cloudPull при dirty не стартует — лечило только Настройки→«Обновить из облака», о которых статус молчал.
+   Два честных исхода, оба явные; отмена ничего не меняет (fail-closed: облако не трогаем, dirty жив). */
+async function cloudResolveWipe(cid){
+  const nm = cloud.bases[cid] || "облачная база";
+  const choice = await chooseSheet(
+    `В базе «${nm}» на этом телефоне осталось меньше 10% позиций от прошлой выгрузки. Отправка в общую базу остановлена — в облаке данные целы. Что произошло?`,
+    [ { label:"Данные пропали — восстановить из облака", value:"pull", color:"btn-primary" },
+      { label:"Это я удалил намеренно — отправить в облако", value:"push", color:"btn-danger" } ]);
+  if(choice==="pull"){
+    // Отбрасываем несинхронизированное локальное — иначе cloudPull снова свернёт в push (см. его первую проверку).
+    // Снимок НЕ трогаем: он нужен как ориентир при следующей сверке.
+    cloud._wipePending = null; cloud._wipeOverride = null;
+    clearTimeout(cloud.pushTimer); clearTimeout(cloud.retryTimer); cloud.pushPending = false;
+    try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(_){}
+    setSyncStatus("syncing","Восстановление из облака…");
+    try{ await cloudPull(cid); toast("Восстановлено из облака"); }
+    catch(e){ toast("Не удалось восстановить — проверьте интернет и повторите"); }
+    render();
+    return;
+  }
+  if(choice==="push"){
+    // Второе подтверждение: это удаление у ВСЕЙ бригады, а не только на своём телефоне.
+    const ok = await confirmSheet(
+      "Позиции, которых нет на этом телефоне, будут УДАЛЕНЫ из общей базы у всех участников. Отменить это будет нельзя.",
+      { danger:true, yes:"Да, удалить у всех", no:"Отмена", title:"⚠️ Удаление общих данных" });
+    if(!ok) return;   // отказ = прежнее поведение: защита в силе, dirty жив, облако цело
+    cloud._wipeOverride = cid;   // ОДНОРАЗОВО: cloudPushNow снимет флаг сразу после успешной выгрузки склада
+    cloud._wipePending = null;
+    setSyncStatus("syncing","Отправка в облако…");
+    await cloudPushNow();
+    render();
+    return;
+  }
+  // отмена диалога — ничего не меняем (защита остаётся включённой)
+}
 async function cloudSyncNow(){
   if(!cloud.ready){ toast("Сначала войдите в облако"); return; }
   if(!cloudOnline()){ toast("Нет интернета — попробуйте позже"); return; }
@@ -7906,6 +8002,9 @@ async function cloudSyncNow(){
   await cloudRelinkIfNeeded();   // если база ещё не связана с облаком (после сбоя входа) — привяжем по имени
   const cid = activeCloudId();
   if(!cid){ toast("База пока не в облаке. При хорошем интернете нажмите ↻ (обновить) вверху — она привяжется"); return; }
+  // Защита от порчи склада остановила выгрузку: обычный cloudActivate тут бесполезен — он увидит
+  // живой dirty и снова уйдёт в тот же отказ. Даём пользователю реальный выбор вместо круга.
+  if(cloud._wipePending === cid){ await cloudResolveWipe(cid); return; }
   await cloudRefreshMyMembership();   // подхватить возврат/снятие со смены
   if(isOffShift(cid)){
     setSyncStatus(membershipUnknown()?"offline":"error", membershipUnknown()

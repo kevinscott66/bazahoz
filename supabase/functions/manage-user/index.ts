@@ -87,22 +87,50 @@ async function sendCode(to: string, code: string, purpose: "bind" | "reset"): Pr
   const body = purpose === "bind"
     ? `Ваш код подтверждения: ${code}\n\nОткройте ВахтаХоз → Ещё → Резервная почта и введите код. Действует 15 минут.\n\nЕсли письма нет во «Входящих» — проверьте папку «Спам» и отметьте «Не спам».\n\nЕсли вы не привязывали почту — удалите это письмо.`
     : `Ваш код восстановления пароля: ${code}\n\nВведите его в приложении вместе с новым паролем. Действует 15 минут.\n\nЕсли письма нет во «Входящих» — проверьте папку «Спам».\n\nЕсли вы не запрашивали восстановление — удалите это письмо.`;
+  // Таймаут как в provisionMail: почтовый VPS внешний, без AbortController зависший коннект
+  // держал бы воркер до общего лимита выполнения (а под waitUntil — ещё и после ответа).
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 8000);
   try {
-    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "X-Provision-Secret": secret }, body: JSON.stringify({ to, subject, body, from_name: "ВахтаХоз" }) });
+    const r = await fetch(url, { method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json", "X-Provision-Secret": secret }, body: JSON.stringify({ to, subject, body, from_name: "ВахтаХоз" }) });
     return r.ok;
   } catch { return false; }
+  finally { clearTimeout(t); }
+}
+
+// Фоновая отправка письма. Ждать её нельзя — время ответа выдало бы существование логина.
+// Но и просто бросить промис нельзя: в Supabase Edge Runtime после return воркер может быть
+// заморожен/утилизирован, и письмо не уйдёт. А состояние уже изменено: старые коды погашены,
+// новый вставлен, 60-секундный per-user замок взведён — пользователь остаётся без письма,
+// без возможности повторить и с ответом {ok:true}. waitUntil держит воркер живым до отправки,
+// ответ при этом уходит немедленно. Проверка через globalThis — чтобы код работал и вне Edge Runtime.
+function background(p: Promise<unknown>): void {
+  const safe = p.catch((e) => { console.warn("background", e); });
+  const rt = (globalThis as any).EdgeRuntime;
+  if (rt && typeof rt.waitUntil === "function") rt.waitUntil(safe);
 }
 
 const RANK: Record<string, number> = {
   owner: 6, general_director: 5, director: 4, party_chief: 3,
   site_manager: 2, worker: 1, cook: 1, mechanic: 1, accounting: 1,
 };
-const rankOf = (r: string) => RANK[r] ?? 0;
+// Object.hasOwn, а не `RANK[r] ?? 0`: RANK — обычный объектный литерал, поэтому role="constructor"
+// или "toString" достаёт функцию из прототипа, и rankOf вернул бы её вместо 0 (все ранговые
+// сравнения `caps.rank <= rankOf(role)` сломались бы). Сейчас от этого спасает только финальный
+// `return "Неизвестная роль"` в canGrant — запас в одну строку.
+const rankOf = (r: string) => (Object.hasOwn(RANK, r) ? RANK[r] : 0);
 
 // какие роли где живут
-const BASE_ROLES = new Set(["worker", "cook", "mechanic", "site_manager"]);
+// BASE_ROLES — что допускается писать в base_members. Список 1-в-1 с `base_roles` в
+// enforce_base_member_write (audit_round3 / org_roles_preset_guard): БД принимает там accounting
+// (пресет — только чтение склада), а функция его отвергала — манифесты кода и БД разъезжались.
+const BASE_ROLES = new Set(["worker", "cook", "mechanic", "site_manager", "accounting"]);
 const PARTY_ROLES = new Set(["party_chief"]);
 const GLOBAL_ROLES = new Set(["director", "general_director", "accounting"]);
+// accounting живёт в ОБОИХ местах (в базе — бухгалтер одной базы, в org_roles — по всей оргструктуре),
+// поэтому «это org-роль?» больше нельзя выводить как `!BASE_ROLES.has(role)` — нужен явный список,
+// иначе выдача бухгалтера через create_org_member/set_org_role отвалилась бы как «Неизвестная роль».
+const ORG_ROLES = new Set([...PARTY_ROLES, ...GLOBAL_ROLES]);
 
 // пресеты прав по роли (источник истины для RLS — флаги; роль лишь задаёт пресет)
 const PRESETS: Record<string, Record<string, boolean>> = {
@@ -118,7 +146,7 @@ const PRESETS: Record<string, Record<string, boolean>> = {
 };
 // подмножество флагов для base_members (там нет can_import)
 const baseFlags = (r: string) => {
-  const p = PRESETS[r]; if (!p) return null;
+  const p = Object.hasOwn(PRESETS, r) ? PRESETS[r] : null; if (!p) return null;   // hasOwn: см. rankOf — "constructor"/"toString" не должны проходить как роль
   return { can_view_stock: p.can_view_stock, can_edit_stock: p.can_edit_stock, can_view_tasks: p.can_view_tasks, can_edit_tasks: p.can_edit_tasks, can_manage: p.can_manage };
 };
 
@@ -137,7 +165,16 @@ async function callerCaps(admin: any, uid: string): Promise<Caps> {
   for (const o of orgs || []) {
     caps.rank = Math.max(caps.rank, rankOf(o.role));
     if (o.role === "party_chief" && o.party_id) caps.parties.add(o.party_id);
-    if (GLOBAL_ROLES.has(o.role) && o.can_manage) caps.global = true; // director/gen.director управляют глобально
+    // ПАРТИЙНЫЙ СКОУП org-роли — это НЕ глобальные права. В БД он легитимен и учитывается везде:
+    // has_perm и can_see_type фильтруют `o.party_id is null or o.party_id = b.party_id`. Здесь же
+    // party_id игнорировался, и строка org_roles{role:'director', party_id:<P>, can_manage:true}
+    // (сама функция такие не создаёт — party_id жёстко null, но их заводит владелец через SQL Editor,
+    // и RLS их допускает) давала caps.global: baseScoped пропускал ЛЮБУЮ базу, canGrant — любую
+    // территорию, list_org_members отдавал всю оргструктуру.
+    // Правило: глобально — только party_id IS NULL; иначе территория = его партия.
+    if (GLOBAL_ROLES.has(o.role) && o.can_manage) {
+      if (o.party_id) caps.parties.add(o.party_id); else caps.global = true;
+    }
   }
   const { data: bms, error: be } = await admin.from("base_members").select("base_id,role,can_manage,active").eq("user_id", uid).eq("active", true);
   if (be) throw new Error("caps_bm");
@@ -154,7 +191,10 @@ async function canGrant(admin: any, caps: Caps, targetRole: string, baseId?: str
   const tr = rankOf(targetRole);
   if (!tr) return "Неизвестная роль";
   if (caps.rank <= tr) return "Нельзя назначить роль равную или выше своей";
-  if (BASE_ROLES.has(targetRole)) {
+  // accounting числится и базовой, и org-ролью, поэтому ветку выбираем по ЗАПРОШЕННОЙ зоне
+  // (передан baseId или нет), а не по порядку проверок: иначе org-выдача бухгалтера молча
+  // сваливалась бы в базовую ветку и падала на «Не указана база».
+  if (BASE_ROLES.has(targetRole) && (baseId || !ORG_ROLES.has(targetRole))) {
     if (!baseId) return "Не указана база";
     if (caps.global || caps.bases.has(baseId)) return null;
     // party_chief: база должна быть в его партии
@@ -176,13 +216,17 @@ async function canGrant(admin: any, caps: Caps, targetRole: string, baseId?: str
 
 // выпуск почтового ящика username@razvedchick.ru с тем же паролем (для восстановления/веб-почты).
 // Не критично для создания аккаунта — при сбое почты аккаунт всё равно создаётся.
-async function provisionMail(username: string, password: string) {
+// Возвращает: true — синхронизировано (или провижининг не настроен, т.е. ящика нет и расходиться
+// нечему), false — настроено, но НЕ удалось. Раньше сбой глотался целиком: пароль ящика молча
+// разъезжался с паролем приложения, и если резервная почта пользователя — <логин>@razvedchick.ru,
+// восстановление становилось неработающим, а никто об этом не узнавал. Теперь флаг уходит в ответ.
+async function provisionMail(username: string, password: string): Promise<boolean> {
   try {
     const url = Deno.env.get("MAIL_PROVISION_URL");
     const secret = Deno.env.get("MAIL_PROVISION_SECRET");
-    if (!url || !secret) return;
+    if (!url || !secret) return true;
     // Пароль уходит во внешний сервис — ТОЛЬКО по https (иначе утечёт в открытом виде). http/иное — не шлём.
-    if (!/^https:\/\//i.test(url)) { console.warn("provisionMail: MAIL_PROVISION_URL не https — пропуск"); return; }
+    if (!/^https:\/\//i.test(url)) { console.warn("provisionMail: MAIL_PROVISION_URL не https — пропуск"); return false; }
     // Таймаут: провижининг почты не должен подвешивать создание/сброс аккаунта.
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8000);
@@ -193,8 +237,9 @@ async function provisionMail(username: string, password: string) {
         body: JSON.stringify({ username, password }),
       });
       if (!r.ok) console.warn("provisionMail: провижининг вернул", r.status, (await r.text().catch(() => "")).slice(0, 120));
+      return r.ok;
     } finally { clearTimeout(t); }
-  } catch (_) { /* почта не критична — аккаунт создаётся/сбрасывается в любом случае */ }
+  } catch (_) { /* почта не критична — аккаунт создаётся/сбрасывается в любом случае */ return false; }
 }
 
 Deno.serve(async (req) => {
@@ -204,6 +249,10 @@ Deno.serve(async (req) => {
   const admin = createClient(SUPABASE_URL, SERVICE);
   let p: any;
   try { p = await req.json(); } catch { return json({ error: "bad json" }, 400); }
+  // JSON.parse("null") УСПЕШЕН, как и `[]`/`"строка"`/`42` — дальше p.action бросал TypeError,
+  // а необработанное исключение отдаётся рантаймом как 500 БЕЗ наших CORS-заголовков
+  // (браузер показал бы «CORS error» вместо внятного ответа). Отсекаем не-объекты явно.
+  if (!p || typeof p !== "object" || Array.isArray(p)) return json({ error: "bad json" }, 400);
   const action = String(p.action || "");
   const uuid = (v: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 
@@ -228,7 +277,7 @@ Deno.serve(async (req) => {
           await admin.from("auth_codes").update({ used: true }).eq("user_id", u.id).eq("purpose", "reset_password").eq("used", false);
           await admin.from("auth_codes").insert({ user_id: u.id, purpose: "reset_password", email: rec2.recovery_email, code_hash: await sha256(u.id + ":" + code), expires_at: new Date(Date.now() + 15 * 60000).toISOString() });
           // письмо — без await на критическом пути ответа: иначе timing выдаёт «логин с почтой существует»
-          void sendCode(rec2.recovery_email, code, "reset");
+          background(sendCode(rec2.recovery_email, code, "reset"));
         }
       }
     }
@@ -238,12 +287,22 @@ Deno.serve(async (req) => {
     return json({ ok: true }); // нейтрально: «если логин с привязанной почтой существует — код отправлен»
   }
   if (action === "confirm_reset") {
+    const t0 = Date.now();
     const username = String(p.username || "").trim().toLowerCase().replace(/@.*$/, "");
     const code = String(p.code || "").trim();
     const newPassword = String(p.new_password || "");
     if (!/^[a-z0-9_]{3,32}$/.test(username) || !/^\d{6}$/.test(code) || newPassword.length < 8) return json({ error: "bad input" }, 400);
-    // ЕДИНЫЙ ответ "invalid" + задержка; проверка кода — атомарная RPC (FOR UPDATE), без гонки attempts
-    const fail = async () => { await new Promise((r) => setTimeout(r, 250 + Math.floor(Math.random() * 150))); return json({ error: "invalid" }, 400); };
+    // ЕДИНЫЙ ответ "invalid" + задержка; проверка кода — атомарная RPC (FOR UPDATE), без гонки attempts.
+    // ПОЛ, а не аддитивный sleep (как в request_reset): ветка «логина нет» делает на один round-trip
+    // меньше, чем «логин есть, код неверный» (verify_auth_code = SELECT FOR UPDATE + UPDATE attempts),
+    // и добавка 250–400 мс ложилась ПОВЕРХ этой разницы — джиттера в 150 мс не хватало, чтобы её скрыть.
+    // Тело и статус ответов одинаковы, оракул был чисто временной. Теперь любой ответ добирается
+    // до одного и того же пола, отсчитываемого от начала обработчика.
+    const floorPad = async () => {
+      const pad = Math.max(0, 600 + Math.floor(Math.random() * 200) - (Date.now() - t0));
+      if (pad > 0) await new Promise((r) => setTimeout(r, pad));
+    };
+    const fail = async () => { await floorPad(); return json({ error: "invalid" }, 400); };
     // per-IP: 30 попыток / 15 мин. attempts≤5 капает ОДИН код; без общего тормоза перебор
     // размазывался по многим логинам. Ответ — тот же «invalid», нового оракула не добавляем.
     if (!(await rateOk(admin, req, "confirm_reset", 900, 30))) return await fail();
@@ -259,6 +318,7 @@ Deno.serve(async (req) => {
     const { error: pwErr } = await admin.auth.admin.updateUserById(u.id, { password: newPassword });
     if (pwErr) { console.error("confirm_reset updateUser", pwErr); return await fail(); }
     // Сессии намеренно не сбрасываем (нет повторного входа на доверенных устройствах).
+    await floorPad();   // тот же пол и на успехе — чтобы «успех» не выделялся по времени
     return json({ ok: true });
   }
 
@@ -279,7 +339,7 @@ Deno.serve(async (req) => {
     const code = genCode();
     await admin.from("auth_codes").update({ used: true }).eq("user_id", callerId).eq("purpose", "bind_email").eq("used", false);  // живым остаётся только последний код
     await admin.from("auth_codes").insert({ user_id: callerId, purpose: "bind_email", email, code_hash: await sha256(callerId + ":" + email + ":" + code), expires_at: new Date(Date.now() + 15 * 60000).toISOString() });
-    void sendCode(email, code, "bind");   // не раскрываем sent в ответе (инфра-оракул)
+    background(sendCode(email, code, "bind"));   // не раскрываем sent в ответе (инфра-оракул)
     return json({ ok: true });
   }
   if (action === "confirm_recovery_email") {
@@ -365,8 +425,10 @@ Deno.serve(async (req) => {
     const { error: merr } = await admin.from("base_members")
       .insert({ base_id: baseId, user_id: newId, role, active: true, ...flags });
     if (merr) { console.error("base_members insert", merr); await admin.auth.admin.deleteUser(newId).catch(() => {}); return json({ error: "Не удалось добавить в базу, попробуйте ещё раз" }, 400); }
-    await provisionMail(username, password);   // выпуск почтового ящика с тем же логином/паролем
-    return json({ ok: true, user_id: newId, username, email });
+    const mailOk = await provisionMail(username, password);   // выпуск почтового ящика с тем же логином/паролем
+    // mail_synced — ДОБАВЛЕННОЕ поле (ничего не удалено, старые клиенты не ломаются): аккаунт создан,
+    // но при false пароль ящика разошёлся с паролем приложения — UI должен предупредить.
+    return json({ ok: true, user_id: newId, username, email, mail_synced: mailOk });
   }
 
   // ── создать аккаунт с ТЕРРИТОРИАЛЬНОЙ/ГЛОБАЛЬНОЙ ролью (party_chief/director/gen_director/accounting) ──
@@ -377,7 +439,8 @@ Deno.serve(async (req) => {
     const partyId = String(p.party_id || "");
     if (!/^[a-z0-9_]{3,32}$/.test(username)) return json({ error: "Логин: 3-32 символа a-z 0-9 _" }, 400);
     if (password.length < 8) return json({ error: "Пароль не короче 8 символов" }, 400);
-    if (!PRESETS[role] || BASE_ROLES.has(role)) return json({ error: "Неизвестная роль" }, 400);
+    // ORG_ROLES вместо `!BASE_ROLES.has(role)`: accounting теперь есть в обоих списках (см. выше)
+    if (!Object.hasOwn(PRESETS, role) || !ORG_ROLES.has(role)) return json({ error: "Неизвестная роль" }, 400);
     if (PARTY_ROLES.has(role) && !uuid(partyId)) return json({ error: "Не указана партия" }, 400);
     const caps = await callerCaps(admin, callerId);
     const deny = await canGrant(admin, caps, role, undefined, PARTY_ROLES.has(role) ? partyId : undefined);
@@ -403,8 +466,8 @@ Deno.serve(async (req) => {
     const row: any = { user_id: newId, role, active: true, party_id: PARTY_ROLES.has(role) ? partyId : null, ...PRESETS[role] };
     const { error: oerr } = await admin.from("org_roles").insert(row);
     if (oerr) { console.error("org_roles insert", oerr); await admin.auth.admin.deleteUser(newId).catch(() => {}); return json({ error: "Не удалось назначить роль" }, 400); }
-    await provisionMail(username, password);   // выпуск почтового ящика с тем же логином/паролем
-    return json({ ok: true, user_id: newId, username, email });
+    const mailOk = await provisionMail(username, password);   // выпуск почтового ящика с тем же логином/паролем
+    return json({ ok: true, user_id: newId, username, email, mail_synced: mailOk });   // см. create_member
   }
 
   // ── выдать/снять территориальную/глобальную роль существующему пользователю ──
@@ -414,7 +477,7 @@ Deno.serve(async (req) => {
     const partyId = String(p.party_id || "");
     const remove = !!p.remove;
     // СНАЧАЛА права на роль — до resolve username (иначе любой залогиненный перечислял логины ответом «не найден»)
-    if (!PRESETS[role] || BASE_ROLES.has(role)) return json({ error: "Неизвестная роль" }, 400);
+    if (!Object.hasOwn(PRESETS, role) || !ORG_ROLES.has(role)) return json({ error: "Неизвестная роль" }, 400);
     if (PARTY_ROLES.has(role) && !uuid(partyId)) return json({ error: "Не указана партия" }, 400);
     const caps = await callerCaps(admin, callerId);
     const deny = await canGrant(admin, caps, role, undefined, PARTY_ROLES.has(role) ? partyId : undefined);
@@ -514,8 +577,10 @@ Deno.serve(async (req) => {
     // а не profiles.username — они могут разойтись. Ящик существует только для домена @razvedchick.ru.
     const { data: tu } = await admin.auth.admin.getUserById(targetId);
     const mailMatch = /^([a-z0-9_]+)@razvedchick\.ru$/i.exec(tu?.user?.email || "");
-    if (mailMatch) await provisionMail(mailMatch[1].toLowerCase(), password);
-    return json({ ok: true });
+    // Пароль приложения УЖЕ сменён. Если ящик не синхронизировался — молчать нельзя: при резервной
+    // почте <логин>@razvedchick.ru пользователь теряет и вход в ящик, и путь восстановления.
+    const mailOk = mailMatch ? await provisionMail(mailMatch[1].toLowerCase(), password) : true;
+    return json({ ok: true, mail_synced: mailOk });
   }
 
   if (action === "handover") {
@@ -556,7 +621,7 @@ Deno.serve(async (req) => {
     const baseIds: string[] = [...new Set(rawIds.map((x) => String(x || "")).filter(Boolean))];
     if (!baseIds.length || baseIds.length > 40) return json({ error: "Укажите от 1 до 40 баз" }, 400);
     for (const id of baseIds) if (!uuid(id)) return json({ error: "Некорректный base_id" }, 400);
-    if (!remove && !BASE_ROLES.has(role)) return json({ error: "Роль должна быть базовой (хозрабочий / повар / механик / нач. участка)" }, 400);
+    if (!remove && !BASE_ROLES.has(role)) return json({ error: "Роль должна быть базовой (хозрабочий / повар / механик / нач. участка / бухгалтер)" }, 400);
 
     if (!uuid(userId)) {
       if (!/^[a-z0-9_]{3,32}$/.test(username)) return json({ error: "Логин: 3-32 символа a-z 0-9 _" }, 400);
