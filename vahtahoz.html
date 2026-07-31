@@ -362,7 +362,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v225";
+const APP_BUILD = "v226";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -5209,6 +5209,35 @@ async function sendBroadcast(){
   try{ const d=await cloudCallFn("broadcast",{subject:s,body:b}); toast(`Отправлено: ${d.sent||0} из ${d.total||0}`); }
   catch(e){ toast("Не удалось: "+(e.message||"проверьте интернет")); }
 }
+/* Замеры экрана для разбора жалобы «нижняя панель стоит выше низа экрана». Правка по догадке
+   (v225) на устройстве владельца ничего не изменила, а значит вьюпорт сообщает не то, что я
+   предполагал. Числа снимаем на самом телефоне: сравниваем, где по мнению страницы низ окна,
+   низ видимой области и низ панели. Блок закрыт в <details> — обычному работнику он не мешает. */
+function screenDiag(){
+  const nb=document.getElementById("navbar"), r=nb?nb.getBoundingClientRect():null;
+  const vv=window.visualViewport;
+  const probe=document.createElement("div");
+  probe.style.cssText="position:absolute;left:-9999px;top:0;width:1px;height:100svh";
+  document.body.appendChild(probe); const svh=probe.offsetHeight;
+  probe.style.height="100lvh"; const lvh=probe.offsetHeight;
+  probe.style.height="100dvh"; const dvh=probe.offsetHeight;
+  probe.style.height="env(safe-area-inset-bottom)"; const sab=probe.offsetHeight;
+  probe.style.height="env(safe-area-inset-top)"; const sat=probe.offsetHeight;
+  probe.remove();
+  const n=v=>(v==null?"—":Math.round(v*10)/10);
+  return [
+    ["экран", `${n(screen.width)}×${n(screen.height)} @${n(devicePixelRatio)}`],
+    ["окно (inner)", n(innerHeight)],
+    ["документ (client)", n(document.documentElement.clientHeight)],
+    ["видимая обл.", vv?`${n(vv.height)} (сверху ${n(vv.offsetTop)}, масштаб ${n(vv.scale)})`:"нет"],
+    ["svh / lvh / dvh", `${n(svh)} / ${n(lvh)} / ${n(dvh)}`],
+    ["безоп. зона ↑/↓", `${n(sat)} / ${n(sab)}`],
+    ["панель верх/низ", r?`${n(r.top)} / ${n(r.bottom)}`:"нет"],
+    ["сдвиг панели", n(typeof _navShift==="number"?_navShift:null)],
+    ["прокрутка", `${n(scrollY)} из ${n(document.body.scrollHeight)}`],
+    ["standalone", (matchMedia("(display-mode: standalone)").matches||navigator.standalone)?"да":"нет"]
+  ].map(([k,v])=>`<div style="display:flex;gap:8px"><span style="opacity:.6;min-width:130px">${k}</span><b>${v}</b></div>`).join("");
+}
 function openAboutSheet(){ openSheet(`
   <div class="font-bold text-xl mb-3">О программе</div>
   <div class="text-sm space-y-2" style="line-height:1.5">
@@ -5216,6 +5245,9 @@ function openAboutSheet(){ openSheet(`
     <div class="opacity-70">Сборка ${APP_BUILD} · оффлайн PWA</div>
     <div class="opacity-70">Правообладатель: ООО «Разведчик».</div>
     <div class="opacity-70">Сайт и поддержка: <a href="https://vahta.razvedchick.ru" style="color:var(--accent)">vahta.razvedchick.ru</a></div>
+    <details class="mt-2"><summary class="opacity-70">Замеры экрана</summary>
+      <div class="mt-2" style="font-family:ui-monospace,monospace;font-size:12px;line-height:1.6">${screenDiag()}</div>
+    </details>
   </div>`); }
 function openFaqSheet(){ const q=(t,a)=>`<details class="border-b border-white/5"><summary class="font-semibold">${t}</summary><div class="text-sm opacity-80 pb-2" style="line-height:1.5">${a}</div></details>`;
   openSheet(`<div class="font-bold text-xl mb-3">Помощь и частые вопросы</div>
