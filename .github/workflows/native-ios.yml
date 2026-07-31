@@ -6,6 +6,13 @@ on:
       - 'v*'
 permissions:
   contents: read
+
+# ВНИМАНИЕ. В отличие от Android, проект native/ios/ в репозитории НЕ лежит и создаётся
+# заново на каждый прогон (`npx cap add ios`). Пока в нём нет собственного нативного кода —
+# это нормально. Как только появится (например WKDownloadDelegate для сохранения экспортов,
+# см. отчёт по паритету обёрток), проект нужно будет закоммитить и заменить `cap add` на
+# `cap sync`, иначе шаблон будет затирать правки — ровно та же ловушка, что была на Android.
+
 jobs:
   ios:
     runs-on: macos-14
@@ -18,7 +25,7 @@ jobs:
         with:
           node-version: '20'
       - name: Install deps
-        run: npm install
+        run: npm ci
       - name: Add iOS platform
         run: npx cap add ios
       - name: Sync

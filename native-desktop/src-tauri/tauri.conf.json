@@ -1,22 +1,14 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ВахтаХоз",
+  "mainBinaryName": "vahtahoz",
   "version": "1.0.0",
   "identifier": "ru.razvedchick.vahta",
   "build": {
     "frontendDist": "../www"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "ВахтаХоз",
-        "width": 1100,
-        "height": 800,
-        "resizable": true,
-        "url": "https://vahta.razvedchick.ru/vahtahoz.html"
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }
