@@ -2,4 +2,9 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <external-path name="my_images" path="." />
     <cache-path name="my_cache_images" path="." />
+    <!-- Запасная папка сохранения на Android 9 и старше, когда внешнего хранилища нет вовсе
+         (FileDownloadBridge.publishLegacyPrivate). Без этой строки FileProvider отказался бы
+         отдать ссылку, и в диалоге «Файл сохранён» пропали бы кнопки «Открыть» и «Поделиться» —
+         файл есть, а добраться до него нечем. -->
+    <files-path name="app_downloads" path="downloads/" />
 </paths>

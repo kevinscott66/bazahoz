@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Подложка адаптивной иконки: у рабочей сборки белая, у отладочной — красная.
+     Отличие видно на рабочем столе, ещё до запуска. -->
+<resources>
+    <color name="ic_launcher_background">#D32F2F</color>
+</resources>
