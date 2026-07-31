@@ -3094,6 +3094,47 @@ function _impFileHint(name){
   return m ? m[1] : String(name||"").replace(/\.[^.]+$/,"").slice(0,24);
 }
 
+/* СУХОЙ ПРОГОН строк импорта: какие из них recordReceiptRow отбросит из-за единиц измерения.
+   Диалог подтверждения обещал «Импортировать поступлений: N» по числу строк с именем и qty>0, а отсев
+   по единицам (неизвестная ед. в файле; ед. не сводится с ед. карточки без фасовки) происходил уже
+   ПОСЛЕ «Импортировать» и сообщался безымянным тостом «пропущено ед.: K». Пользователь видел «принято
+   40», по факту 33, и какие семь позиций не доехали — узнать было негде. Здесь считаем это заранее.
+   Склад НЕ мутируем: findStockForImport/_impAlignQtyToProduct только читают. Карточки, которые импорт
+   создаст сам, моделируем в virtual — чтобы вторая строка с тем же именем оценивалась против неё,
+   как и в реальном прогоне. */
+function _impPreflightUnits(rows){
+  const skipped = [];   // {name, unit} — попадёт в диалог
+  const virtual = new Map();
+  let ok = 0;
+  for(const r of rows){
+    const name = cleanNameImport(r.name);
+    const rawUnit = String(r.unit||"").trim();
+    let qty = roundQty(parseNum(r.qty));
+    let unit = _impMapUnit(r.unit);
+    if(unit==null){ skipped.push({ name, unit: rawUnit || "—" }); continue; }
+    ({ qty, unit } = _impNormalizePackQty(name, qty, unit));
+    let product = findStockForImport(name, unit);
+    if(!product){
+      const pack = _impPackSize(name);
+      if(pack > 1){
+        const alts = unit==="шт" ? ["кор","уп"] : (unit==="кор"||unit==="уп") ? ["шт"] : [];
+        for(const au of alts){ const cand = findStockForImport(name, au); if(cand){ product = cand; break; } }
+      }
+    }
+    if(!product){
+      const vk = stockNormName(name);
+      if(virtual.has(vk)) product = virtual.get(vk);
+      else { virtual.set(vk, { name, unit, type:"product", qty:0 }); ok++; continue; }   // будет создана
+    }
+    if(!_impAlignQtyToProduct(product, name, qty, unit)){
+      skipped.push({ name, unit: `${rawUnit||unit} ≠ ${product.unit||"шт"} в базе` });
+      continue;
+    }
+    ok++;
+  }
+  return { ok, skipped };
+}
+
 async function importReceiptsExcel(ev){
   const list = ev.target.files ? Array.from(ev.target.files) : [];
   const inputEl = ev.target;
@@ -3152,8 +3193,14 @@ async function importReceiptsExcel(ev){
     const d = _impParseDate(r.receiptDate);
     return `• ${cleanNameImport(r.name).slice(0,48)} — ${fmtQty(roundQty(parseNum(r.qty)))} ${u}${d?` · ${d.split("-").reverse().join(".")}`:""}`;
   }).join("\n");
+  // отсев по единицам считаем ДО диалога, чтобы обещанное число совпало с фактическим
+  const pre = _impPreflightUnits(valid);
+  const unitLines = pre.skipped.slice(0,5).map(x=>`• ${String(x.name||"—").slice(0,40)} — ${x.unit}`).join("\n");
+  const unitBlock = pre.skipped.length
+    ? `\n\nНЕ будут импортированы (единица измерения):\n${unitLines}${pre.skipped.length>5?`\n…и ещё ${pre.skipped.length-5}`:""}`
+    : "";
   const go = await confirmSheet(
-    `Импортировать поступлений: ${valid.length}${skipped?`\nПропущено: ${skipped}`:""}\n\nФайлы:\n${filesLine}\n\n${preview}${valid.length>8?`\n…и ещё ${valid.length-8}`:""}`,
+    `Импортировать поступлений: ${pre.ok}${pre.skipped.length?`\nПропущено по единицам: ${pre.skipped.length}`:""}${skipped?`\nПропущено пустых строк: ${skipped}`:""}${unitBlock}\n\nФайлы:\n${filesLine}\n\n${preview}${valid.length>8?`\n…и ещё ${valid.length-8}`:""}`,
     { yes:"Импортировать", no:"Отмена", title:"Подтверждение импорта" }
   );
   if(!go) return;
