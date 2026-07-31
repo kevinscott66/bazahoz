@@ -1022,6 +1022,23 @@ function finalizeBatchMutation(it){
     syncItemFromBatches(it);
   }
 }
+/* ОСТАТОК КОНЧИЛСЯ — СРОК И МЕСТО КОНЧИЛИСЬ ВМЕСТЕ С НИМ. У карточки С ПАРТИЯМИ это делает
+   finalizeBatchMutation: пустой список партий обнуляет агрегаты. У карточки БЕЗ партий (а это
+   большинство — всё, что заведено через «＋ Продукт») расход до нуля оставлял expiry/location как
+   есть. На экране их не видно — карточка прячет срок при нулевом остатке, — но данные никуда не
+   девались, и СЛЕДУЮЩИЙ ПРИХОД поднимал остаток вместе со старым сроком: человек оприходовал
+   свежую партию, а приложение показывало ему срок давно съеденной. Особенно вредно после списания
+   по сроку: просроченная дата возвращалась вместе с новым приходом и позиция снова горела красным.
+   Чистим ТОЛЬКО ПЕРЕХОД в ноль (было >0, стало 0): карточку каталога, заведённую с нулём и заранее
+   проставленным сроком, никто не трогает. */
+function clearExpiryOnZero(it, hadQty){
+  if(!it || hasBatches(it)) return false;
+  if(!(Number(hadQty||0) > 0)) return false;
+  if(roundQty(Number(it.qty||0)) > 0) return false;
+  if(!it.expiry && !it.location) return false;
+  it.expiry = ""; it.location = ""; it.updatedAt = new Date().toISOString();
+  return true;
+}
 
 /* ---------- Input sanitization ---------- */
 const SAFE_ID = /^[A-Za-z0-9_\-]{1,64}$/;
@@ -2599,7 +2616,9 @@ function applyStockDelta(product, sign, qty, note, op){
     if(op){ op.batchId = newB.id; op.batchLocation = ""; op.batchExpiry = ""; }
     syncItemFromBatches(product);
   } else {
-    product.qty = roundQty(Number(product.qty||0) + sign*qty);
+    const _was = Number(product.qty||0);
+    product.qty = roundQty(_was + sign*qty);
+    clearExpiryOnZero(product, _was);   // расход в ноль — срок и место уходят вместе с остатком
   }
   product.updatedAt = new Date().toISOString();
 }
@@ -3700,9 +3719,11 @@ async function deleteOp(kind, opId){
           toast("Запись отвязана от удалённой партии — откат недоступен. Удалите запись без отката.");
           return;
         }
-        const next = Number(product.qty||0) - effectiveSign*Number(op.qty||0);
+        const _wasQty = Number(product.qty||0);
+        const next = _wasQty - effectiveSign*Number(op.qty||0);
         if(next<0){ toast("Нельзя откатить: на складе меньше"); return; }
         product.qty = roundQty(next); product.updatedAt = new Date().toISOString();
+        clearExpiryOnZero(product, _wasQty);   // откат обнулил остаток — срок и место тоже
       }
       // если принятый заказ — удалить парную запись в Поступлении по точному id (fallback: по совпадению)
       if(kind==="order"){
@@ -3855,6 +3876,10 @@ async function saveOpEdit(kind, opId){
     newProd.qty = roundQty(Number(newProd.qty||0) + effSign*newQty);
     newProd.updatedAt = new Date().toISOString();
   }
+  // правка увела остаток в ноль — срок и место уходят вместе с ним (снимки qty сняты ДО мутаций;
+  // если товар один и тот же, newProdQtyBefore===null и достаточно одной проверки по итогу)
+  clearExpiryOnZero(oldProd, oldProdQtyBefore);
+  if(newProd && newProd!==oldProd) clearExpiryOnZero(newProd, newProdQtyBefore);
 
   // 3) обновить саму запись
   op.ts = newTs;
@@ -4056,7 +4081,9 @@ async function quickAdjust(id, sign){
   if(state.stock.find(s=>s.id===id)!==it){ toast("Данные обновились — повторите операцию"); render(); return; }   // объект пересоздан pull-ом во время диалога → не теряем правку
   const next = roundQty(Number(it.qty||0) + sign*n);
   if(next<0){ toast("Не хватает на складе"); return; }
+  const _wasQty = Number(it.qty||0);
   it.qty = next; it.updatedAt = new Date().toISOString();
+  clearExpiryOnZero(it, _wasQty);   // «−» до нуля — срок и место уходят вместе с остатком
   state.journals[kind] = state.journals[kind]||[];
   state.journals[kind].unshift({
     id:uid(), ts:new Date().toISOString(), productId:it.id, productName:it.name,
@@ -4077,6 +4104,24 @@ function openStockEdit(id, typeDefault){
   const isProd = tk==="product";
   const expiryLabel = isProd ? "Срок годности" : (tk==="tool" ? "Срок/гарантия (опц.)" : "Срок годности (опц.)");
   const bList = id ? batchesOf(it) : [];
+  /* ФОРМА ОБЯЗАНА ПОКАЗЫВАТЬ ТО ЖЕ, ЧТО КАРТОЧКА СКЛАДА. Карточка рисуется агрегаторами
+     (totalQtyOf / nearestExpiryOf / locationsOf), а форма читала СЫРЫЕ легаси-поля it.qty/it.expiry/
+     it.location. Стоит им разойтись (слияние перед выгрузкой подменяло партии и количество,
+     не пересчитывая агрегаты) — и человек видел на карточке «4 кг, до 02.08», а в форме правки той
+     же позиции «6, до 04.08». Два разных числа за два тапа. Берём агрегаты. */
+  const batched = bList.length>0;
+  const vLocs = locationsOf(it);
+  const vQty  = batched ? totalQtyOf(it) : it.qty;
+  const vExp  = batched ? (nearestExpiryOf(it)||"") : (it.expiry||"");
+  const vLoc  = batched ? (vLocs.length===1 ? vLocs[0] : "") : (it.location||"");
+  /* И НЕ ПРИТВОРЯЕМСЯ, ЧТО ПОЛЕ РЕДАКТИРУЕТСЯ. У позиции с партиями saveStock эти три значения
+     отбрасывает (они производные) — а поля выглядели рабочими: белый текст, курсор, календарь.
+     Человек стирал дату системной кнопкой «Сбросить» в календаре телефона, жал «Сохранить»,
+     получал подтверждение — и ничего не менялось. Теперь поля отключены и рядом написано, где
+     срок и место правятся на самом деле. */
+  const batchNote = batched
+    ? `<div class="text-xs opacity-70" style="margin-top:-6px">Количество, срок и место у этой позиции считаются ПО ПАРТИЯМ. Правьте их в нужной партии — ✏️ в списке партий ниже.</div>`
+    : "";
   const batchesSection = (id && bList.length>0) ? `
     <div class="border-t border-gray-700 pt-3">
       <div class="text-sm opacity-70 mb-2">Партии (${bList.length}) — qty/срок/место карточки считаются автоматически</div>
@@ -4105,24 +4150,27 @@ function openStockEdit(id, typeDefault){
     <div class="space-y-3">
       <input class="input" id="sn" placeholder="Название" value="${esc(it.name)}" autofocus />
       <div class="grid grid-cols-2 gap-2">
-        <input class="input" id="sq" type="text" inputmode="decimal" placeholder="Количество" value="${it.qty!==undefined&&it.qty!==""?fmtQty(it.qty):""}" />
+        <input class="input" id="sq" type="text" inputmode="decimal" placeholder="Количество" value="${vQty!==undefined&&vQty!==""?fmtQty(vQty):""}" ${batched?"disabled":""} />
         <select class="input" id="su">
           ${UNITS.map(u=>`<option ${it.unit===u?"selected":""}>${u}</option>`).join("")}
         </select>
       </div>
       <input class="input" id="sm" type="text" inputmode="decimal" placeholder="Мин. запас" value="${it.minStock??""}" />
+      ${batchNote}
 
       <div>
         <div class="text-sm opacity-70 mb-1">Категория</div>
         <div class="scroll-x flex gap-2">${(state.categories[tk]||[]).map(c=>`<button class="chip ${it.category===c?"active":""}" data-cat="${esc(c)}" onclick="${CHIP_PICK}">${esc(c)}</button>`).join("")}</div>
       </div>
       <div>
-        <div class="text-sm opacity-70 mb-1">Место хранения</div>
-        <div class="scroll-x flex gap-2">${getLocationsWithOrphan(tk, it.location).map(l=>`<button class="chip ${it.location===l?"active":""}" data-loc="${esc(l)}" onclick="${CHIP_PICK}">${esc(l)}</button>`).join("")}<button type="button" class="chip chip-add" onclick="addLocChip(this,'${tk}')" aria-label="Добавить место хранения">＋ Место</button></div>
+        <div class="text-sm opacity-70 mb-1">Место хранения${batched?" (из партий)":""}</div>
+        ${batched
+          ? `<div class="flex flex-wrap gap-2">${vLocs.length?vLocs.map(l=>`<span class="badge badge-gray">📍 ${esc(l)}</span>`).join(""):`<span class="badge badge-gray opacity-50">без места</span>`}</div>`
+          : `<div class="scroll-x flex gap-2"><button class="chip ${vLoc?"":"active"}" data-loc="" onclick="${CHIP_PICK}">без места</button>${getLocationsWithOrphan(tk, it.location).map(l=>`<button class="chip ${vLoc===l?"active":""}" data-loc="${esc(l)}" onclick="${CHIP_PICK}">${esc(l)}</button>`).join("")}<button type="button" class="chip chip-add" onclick="addLocChip(this,'${tk}')" aria-label="Добавить место хранения">＋ Место</button></div>`}
       </div>
       <div>
-        <div class="text-sm opacity-70 mb-1">${expiryLabel}</div>
-        <input class="input" id="se" type="date" value="${it.expiry||""}" />
+        <div class="text-sm opacity-70 mb-1">${expiryLabel}${batched?" (из партий)":""}</div>
+        <input class="input" id="se" type="date" value="${vExp}" ${batched?"disabled":""} />
       </div>
       <textarea class="input" id="sno" rows="2" placeholder="Примечание">${esc(it.note)}</textarea>
 
@@ -4162,13 +4210,23 @@ function saveStock(id, type){
     const it = state.stock.find(s=>s.id===id);
     if(!it){ toast("Позиция изменилась на другом устройстве"); closeSheet(); render(); return; }   // удалена/синкнута, пока форма была открыта → не падаем на Object.assign(undefined)
     const oldName = it.name;
+    const _prevQty = Number(it.qty||0), _prevExpiry = it.expiry||"";   // снимки ДО Object.assign
     propType = it.type;
     if(hasBatches(it)){
-      // в режиме партий qty/expiry/location — производные, перезаписывать вручную нельзя
+      /* В режиме партий qty/expiry/location — производные, перезаписывать вручную нельзя. Форма их
+         показывает отключёнными (см. openStockEdit), но лист мог быть открыт до обновления версии
+         или значения подставит автозаполнение. МОЛЧА ОТБРАСЫВАТЬ НЕЛЬЗЯ: раньше человек стирал дату,
+         жал «Сохранить», получал закрытый лист — и ничего не менялось. Место в сравнение не берём:
+         у партийной карточки чипов мест в форме нет вовсе, и оно всегда придёт пустым. */
+      const ignored = roundQty(qty)!==roundQty(totalQtyOf(it)) || (expiry||"")!==(nearestExpiryOf(it)||"");
       Object.assign(it,{name,unit,minStock,category,note,updatedAt:new Date().toISOString()});
       syncItemFromBatches(it);
+      if(ignored) setTimeout(()=>toast("Количество, срок и место берутся из партий — измените их в нужной партии (✏️ в списке партий)"), 60);
     } else {
       Object.assign(it,{name,qty:roundQty(qty),unit,minStock,expiry,location,category,note,updatedAt:new Date().toISOString()});
+      // остаток стал нулём вручную — срок и место уходят вместе с ним (см. clearExpiryOnZero).
+      // НЕ трогаем, если человек в этом же сохранении задал НОВУЮ дату: это осознанный ввод.
+      if((expiry||"")===_prevExpiry && clearExpiryOnZero(it, _prevQty)) setTimeout(()=>toast("Остаток 0 — срок и место очищены"), 60);
       /* ОТКАЧЕНО (было в v206): запись корректирующего списания в журнал при занижении остатка.
          Идея была закрыть «post-pull raise молча возвращает старый остаток», но реализация
          небезопасна принципиально, и адверсарная проверка это показала:
@@ -6033,7 +6091,10 @@ async function writeoffExpired(){
         note: `Списано по сроку (просрочено ${-d} дн., ${fmtDate(it.expiry)})`
       });
       logOp("WRITEOFF", `${it.name} -${fmtQty(it.qty)} ${it.unit||""} (срок)`);
+      const _wasQty = Number(it.qty||0);
       it.qty = 0; it.updatedAt = now;
+      // просроченную дату НЕ оставляем: иначе следующий приход поднимал бы остаток вместе с ней
+      clearExpiryOnZero(it, _wasQty);
     }
     done++;
   }
