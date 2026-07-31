@@ -30,7 +30,9 @@ enforce_ver as (
   end as v
 ),
 zeroing as (
-  select p.prosrc as src, pg_get_function_identity_arguments(p.oid) as args
+  -- res нужен отдельно: имена КОЛОНОК отчёта живут в RETURNS TABLE, а не в теле (prosrc)
+  select p.prosrc as src, pg_get_function_identity_arguments(p.oid) as args,
+         pg_get_function_result(p.oid) as res
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
   where n.nspname = 'public' and p.proname = 'stock_zeroing_report'
 ),
@@ -224,6 +226,43 @@ checks(ord, migration, object, state) as (
   union all select 50, 'auth_rate_per_ip', 'таблица public.auth_rate',
     case when to_regclass('public.auth_rate') is null then 'НЕТ' else 'есть' end
 
+  -- ── 2026-08-01_zeroing_report_fixes.sql ─────────────────────────────────────
+  -- Без него отчёт ловит только уничтожение ≥99%, печатает НЕ то число, которое вернёт
+  -- откат, шумит легальным расходом и не видит пересортицу вовсе.
+  union all select 51, 'zeroing_fixes_0801', 'stock_zeroing_report: настраиваемый порог потери (p_min_frac)',
+    case
+      when not exists (select 1 from zeroing) then 'НЕТ ФУНКЦИИ'
+      when (select args from zeroing) like '%p_min_frac%' then 'есть'
+      else 'НЕТ — зашитый порог 1%: саботаж с остатком 1–2% невидим'
+    end
+  union all select 52, 'zeroing_fixes_0801', 'stock_zeroing_report: qty_at_window_start (та же семантика, что у отката)',
+    case
+      when not exists (select 1 from zeroing) then 'НЕТ ФУНКЦИИ'
+      when (select res from zeroing) like '%qty_at_window_start%' then 'есть'
+      else 'НЕТ — отчёт показывает ПОСЛЕДНИЙ снимок, а откат вернёт ПЕРВЫЙ (100 → 50 → 0: 50 против 100)'
+    end
+  union all select 53, 'zeroing_fixes_0801', 'stock_zeroing_report: отсев обычного расхода (verdict)',
+    case
+      when not exists (select 1 from zeroing) then 'НЕТ ФУНКЦИИ'
+      when (select res from zeroing) like '%verdict%' then 'есть'
+      else 'НЕТ — «доели до 0.5 кг» выглядит как инцидент'
+    end
+  union all select 54, 'zeroing_fixes_0801', 'stock_qty_restore: параметр p_max_frac («почти ноль» по требованию)',
+    case
+      when not exists (select 1 from restore) then 'НЕТ ФУНКЦИИ'
+      when (select args from restore) like '%p_max_frac%' then 'есть'
+      else 'НЕТ — откатить «почти ноль» нечем'
+    end
+  union all select 55, 'zeroing_fixes_0801', 'пересортица: stock_meta_change_report + stock_meta_restore',
+    case
+      when to_regprocedure('public.stock_meta_change_report(uuid,int,timestamptz,int,int)') is not null
+       and to_regprocedure('public.stock_meta_restore(uuid,timestamptz,boolean,timestamptz)') is not null
+        then 'есть'
+      when to_regprocedure('public.stock_meta_change_report(uuid,int,timestamptz,int,int)') is not null
+        then 'НЕТ отката (есть только детект)'
+      else 'НЕТ — смена type у всей базы прячет позиции от повара/механика и ничем не откатывается'
+    end
+
   -- ── ГРАНТЫ: чего быть НЕ должно ─────────────────────────────────────────────
   union all select 60, 'ГРАНТЫ', 'stock_zeroing_report НЕ доступен authenticated',
     case
@@ -241,6 +280,17 @@ checks(ord, migration, object, state) as (
              (select p.oid from pg_proc p join pg_namespace n on n.oid = p.pronamespace
               where n.nspname='public' and p.proname='stock_qty_restore' limit 1), 'EXECUTE')
         then 'ПРОБЛЕМА: EXECUTE выдан authenticated'
+      else 'ок (отозван)'
+    end
+  union all select 63, 'ГРАНТЫ', 'stock_meta_* НЕ доступны authenticated/anon',
+    case
+      when to_regprocedure('public.stock_meta_restore(uuid,timestamptz,boolean,timestamptz)') is null
+        then 'функций нет'
+      when has_function_privilege('authenticated',
+             to_regprocedure('public.stock_meta_restore(uuid,timestamptz,boolean,timestamptz)'), 'EXECUTE')
+        or has_function_privilege('anon',
+             to_regprocedure('public.stock_meta_change_report(uuid,int,timestamptz,int,int)'), 'EXECUTE')
+        then 'ПРОБЛЕМА: EXECUTE выдан клиентской роли'
       else 'ок (отозван)'
     end
   union all select 62, 'ГРАНТЫ', 'stock_history закрыт от anon',
@@ -262,7 +312,10 @@ checks(ord, migration, object, state) as (
         case when to_regclass('public.stock_history') is null
           then 'применить 2026-07-30_stock_history_guard.sql, затем _guard_fix.sql, затем повторно audit_round3'
           else 'применить 2026-07-31_org_roles_preset_guard.sql (пресеты org-ролей + фикс пересменки по legacy custom)' end
-      when 'org_guard (последняя)' then 'порядок соблюдён — смотрите строки выше на «НЕТ»'
+      when 'org_guard (последняя)' then
+        case when to_regprocedure('public.stock_meta_restore(uuid,timestamptz,boolean,timestamptz)') is null
+          then 'применить 2026-08-01_zeroing_report_fixes.sql (порог существенной потери, единая семантика отчёта и отката, детект и откат пересортицы)'
+          else 'порядок соблюдён — смотрите строки выше на «НЕТ»' end
       when 'НЕТ ФУНКЦИИ' then 'триггерной функции нет — база сильно отстала, применяйте миграции с самой ранней'
       else 'применить по порядку: preset_all_roles → stock_history_guard → _guard_fix → audit_round3'
     end
