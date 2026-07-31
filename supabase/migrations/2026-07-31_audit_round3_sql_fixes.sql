@@ -10,10 +10,17 @@
 --    вызывающих и для самого себя UPDATE раньше был открыт.
 --    Фикс: отказ только на INSERT и на UPDATE, реально МЕНЯЮЩИЙ роль; после вычисления self_shift.
 --
--- 2) MEDIUM: «второй рубеж» не держал anon. `auth.uid() is null` трактовался как «доверенный
+-- 2) HIGH: «второй рубеж» не держал anon. `auth.uid() is null` трактовался как «доверенный
 --    бэкенд», а дефолтные гранты Supabase выдаются и anon — у него auth.uid() тоже null.
 --    Проверено: anon читал чужой склад и МОГ ПЕРЕЗАПИСАТЬ остатки через restore.
---    Фикс: позитивный признак бэкенда по current_user, а не отсутствие uid.
+--    Фикс: позитивный признак бэкенда is_backend_role() — НЕ по current_user (внутри
+--    SECURITY DEFINER это владелец функции) и НЕ по отсутствию uid.
+--    ДОБАВЛЕНО 2026-07-31 (round 4), обе дыры воспроизведены на PG16:
+--      • подстрочный `claims like '%"role":"service_role"%'` обходился ключом user_metadata,
+--        который пишет сам пользователь → повар получал права бэкенда. Теперь claims
+--        разбираются как jsonb и берётся только ТОП-УРОВНЕВЫЙ "role";
+--      • «нет JWT-GUC ⇒ доверяем» было fail-OPEN. Теперь доверие определяется позитивно —
+--        по привилегиям session_user (SQL Editor / psql / pg_cron продолжают работать).
 --
 -- 3) MEDIUM: changed_at = now() (время ТРАНЗАКЦИИ) → при двух правках одной позиции в одной
 --    транзакции ties: отчёт дублирует позицию (count завышает масштаб), а distinct on в restore
@@ -126,24 +133,63 @@ end $$;
 -- ── 2. Позитивный признак бэкенда (вместо «auth.uid() is null») ───────────────────
 -- ВАЖНО: НЕЛЬЗЯ смотреть current_user — внутри SECURITY DEFINER это ВЛАДЕЛЕЦ функции (postgres),
 -- а не вызывающий, поэтому такая проверка всегда возвращала бы true и открывала функцию всем
--- (проверено: anon читал чужую базу и ПЕРЕЗАПИСЫВАЛ остатки). session_user тоже не годится:
--- у PostgREST это общий authenticator для всех ролей.
--- Надёжный признак — роль из JWT, которую PostgREST выставляет НА КАЖДЫЙ запрос:
---   anon → 'anon', вход по токену → 'authenticated', сервис → 'service_role'.
--- Если JWT нет вовсе (SQL Editor, psql, pg_cron) — настройка отсутствует, это доверенный доступ.
+-- (проверено: anon читал чужую базу и ПЕРЕЗАПИСЫВАЛ остатки).
+--
+-- ДВЕ ДЫРЫ ПРЕДЫДУЩЕЙ РЕДАКЦИИ ЭТОГО ЖЕ БЛОКА (обе воспроизведены на PG16):
+--   а) `claims like '%"role":"service_role"%'` — подстрочный матч по СЫРОМУ JSON всего токена.
+--      Ключ user_metadata пишет САМ пользователь (supabase.auth.updateUser({data:{role:
+--      'service_role'}})) и он дословно попадает в access token. Обычный повар получал
+--      is_backend_role() = true, читал чужие базы через stock_zeroing_report и ПЕРЕЗАПИСЫВАЛ
+--      остатки через stock_qty_restore. Лечение: разбирать claims как jsonb и брать ТОЛЬКО
+--      ТОП-УРОВНЕВЫЙ ключ "role" (вложенные метаданные до него не дотягиваются).
+--   б) «нет ни одного GUC ⇒ доверяем» — fail-OPEN, тот же антипаттерн, что прежний
+--      `auth.uid() is null`. Лечение: доверие определяется ПОЗИТИВНО — по привилегиям
+--      session_user. session_user, в отличие от current_user, внутри SECURITY DEFINER НЕ
+--      подменяется на владельца функции, а у PostgREST это общий `authenticator`, у которого
+--      нет ни SUPERUSER, ни BYPASSRLS, ни CREATEROLE — значит клиентский путь сюда не пролезет.
+--
+-- Легитимные пути, которые обязаны продолжать работать:
+--   • Edge Function под service_role  → claims.role = 'service_role' (ветка 2), либо
+--     request.jwt.claim.role = 'service_role' (ветка 1);
+--   • SQL Editor / psql / pg_cron     → GUC-ов нет, session_user = postgres/supabase_admin,
+--     у которых есть BYPASSRLS/SUPERUSER/CREATEROLE (ветка 3).
 create or replace function public.is_backend_role()
 returns boolean
-language sql
+language plpgsql
 stable
 as $$
-  select case
-    when current_setting('request.jwt.claim.role', true) is null
-     and current_setting('request.jwt.claims',      true) is null then true          -- нет JWT: SQL Editor / psql / pg_cron
-    when coalesce(current_setting('request.jwt.claim.role', true), '') = 'service_role' then true
-    when coalesce(current_setting('request.jwt.claims', true), '') like '%"role":"service_role"%' then true
-    else false
-  end;
-$$;
+declare
+  raw_claims text := nullif(current_setting('request.jwt.claims',      true), '');
+  claim_role text := nullif(current_setting('request.jwt.claim.role',  true), '');
+  top_role   text;
+begin
+  -- 1) Отдельный GUC роли (старый путь PostgREST) — ТОЧНОЕ сравнение, не подстрока.
+  if claim_role is not null then
+    return claim_role = 'service_role';
+  end if;
+
+  -- 2) Полный JSON претензий — только ТОП-УРОВНЕВЫЙ "role". Невалидный JSON → fail-CLOSED.
+  if raw_claims is not null then
+    begin
+      top_role := (raw_claims::jsonb) ->> 'role';
+    exception when others then
+      return false;
+    end;
+    return top_role = 'service_role';
+  end if;
+
+  -- 3) PostgREST-контекста нет вовсе (SQL Editor / psql / pg_cron): доверяем ПОЗИТИВНО —
+  --    только реально привилегированной роли БД. Имена PostgREST-ролей исключены явно,
+  --    потому что authenticator ЯВЛЯЕТСЯ членом service_role (грант для SET ROLE).
+  return exists (
+    select 1 from pg_roles r
+    where r.rolname = session_user
+      and r.rolname not in ('anon', 'authenticated', 'authenticator')
+      and (r.rolsuper or r.rolbypassrls or r.rolcreaterole
+           or (to_regrole('service_role') is not null
+               and pg_has_role(r.oid, to_regrole('service_role'), 'member')))
+  );
+end $$;
 revoke all on function public.is_backend_role() from public, anon, authenticated;
 grant execute on function public.is_backend_role() to service_role;
 
