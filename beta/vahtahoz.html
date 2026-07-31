@@ -4876,7 +4876,7 @@ function mergeJournalsForExport(cloudJ){
 let _pendingSave = null;
 function offerFileSave(text, filename, title, note){
   // десктоп: share не используется, <a download> не требует свежего жеста — пишем сразу, без лишнего экрана
-  if(!saveNeedsGesture()){ triggerDownload(text, filename); return false; }
+  if(!saveNeedsGesture()){ triggerDownload(text, filename); toast(title); return false; }
   _pendingSave = { text, filename };
   openSheet(`
     <div class="font-bold text-xl mb-2">${esc(title)}</div>
@@ -4903,7 +4903,7 @@ function doPendingSave(){
 let _pendingSaveBlob = null;
 function offerFileSaveBlob(blob, filename, title, note){
   // десктоп: см. offerFileSave — экран нужен только ради жеста для navigator.share
-  if(!saveNeedsGesture()){ saveBlob(blob, filename); return false; }
+  if(!saveNeedsGesture()){ saveBlob(blob, filename); toast(title); return false; }
   _pendingSaveBlob = { blob, filename };
   openSheet(`
     <div class="font-bold text-xl mb-2">${esc(title)}</div>
