@@ -71,11 +71,33 @@ end
 $pre$;
 
 -- ── 1+2+3. Отчёт по обнулению: настраиваемый порог, семантика отката, отсев расхода ─
--- Тип возврата меняется (новые колонки), поэтому СНАЧАЛА drop по ТОЧНЫМ старым сигнатурам.
--- 2 аргумента — версия round3/guard_fix; 3 аргумента — промежуточная редакция этого файла.
-drop function if exists public.stock_zeroing_report(uuid, int);
-drop function if exists public.stock_zeroing_report(uuid, int, numeric);
-drop function if exists public.stock_zeroing_report(uuid, int, timestamptz, numeric, int, int, boolean);
+-- Тип возврата меняется (новые колонки), поэтому СНАЧАЛА drop.
+-- ИСПРАВЛЕНО 2026-08-01 (round 6): раньше дропались только ПЕРЕЧИСЛЕННЫЕ сигнатуры, и любая
+-- незнакомая перегрузка (напр. созданная более новым файлом) оставалась рядом → вызовы
+-- раннбука падают «is not unique», а верификатор — целиком. Теперь снимаются ВСЕ перегрузки
+-- обеих функций по имени; более новую редакцию файл снимает с громким WARNING.
+do $overloads$
+declare r record;
+begin
+  for r in
+    select p.oid::regprocedure::text as sig, p.prosrc as src
+    from pg_proc p
+    join pg_namespace nsp on nsp.oid = p.pronamespace
+    where nsp.nspname = 'public'
+      and p.proname in ('stock_zeroing_report', 'stock_qty_restore',
+                        'stock_meta_change_report', 'stock_meta_restore')
+    order by 1
+  loop
+    -- внутри APPLY_ALL этот файл идёт ДО audit_round6_fixes, который тут же вернёт
+    -- актуальную редакцию, поэтому там предупреждать не о чем.
+    if r.src like '%@round6%'
+       and coalesce(current_setting('vahtahoz.apply_all', true), '') <> '1' then
+      raise warning 'zeroing_report_fixes снял БОЛЕЕ НОВУЮ редакцию %. Следом обязательно примените 2026-08-01_audit_round6_fixes.sql', r.sig;
+    end if;
+    execute 'drop function if exists ' || r.sig;
+  end loop;
+end
+$overloads$;
 
 create function public.stock_zeroing_report(
   p_base            uuid,
@@ -116,8 +138,10 @@ declare
 begin
   -- Бэкенд определяем ПОЗИТИВНО: у anon auth.uid() тоже null, и при дефолтных грантах Supabase
   -- он проходил бы как «доверенный вызов» и читал чужие базы.
-  if not public.is_backend_role()
-     and not public.has_perm(p_base, 'manage')
+  -- round6: coalesce обязателен — is_backend_role() могла вернуть NULL, и тогда весь
+  -- `not ... and not ...` давал NULL, IF не срабатывал и проверка прав молча ПРОПУСКАЛАСЬ.
+  if not coalesce(public.is_backend_role(), false)
+     and not coalesce(public.has_perm(p_base, 'manage'), false)
      and not exists (select 1 from public.profiles pr where pr.id = auth.uid() and pr.is_admin) then
     raise exception 'forbidden' using errcode = '42501';
   end if;
@@ -217,10 +241,7 @@ comment on function public.stock_zeroing_report(uuid, int, timestamptz, numeric,
 -- ── 1. Откат: тот же порог, но включается ТОЛЬКО явно ───────────────────────────
 -- Добавляется 5-й аргумент, поэтому 4-аргументную версию нужно снести: иначе вызов
 -- с 3 аргументами станет неоднозначным (обе подойдут по умолчаниям) → ошибка «is not unique».
--- Второй drop — по НОВОЙ сигнатуре: без него повторный прогон падает
--- «function stock_qty_restore already exists with same argument types».
-drop function if exists public.stock_qty_restore(uuid, timestamptz, boolean, timestamptz);
-drop function if exists public.stock_qty_restore(uuid, timestamptz, boolean, timestamptz, numeric);
+-- (все перегрузки stock_qty_restore сняты блоком $overloads$ выше — round 6)
 
 create function public.stock_qty_restore(
   p_base     uuid,
@@ -237,7 +258,8 @@ as $$
 declare
   frac numeric := least(greatest(coalesce(p_max_frac, 0), 0), 1);
 begin
-  if not public.is_backend_role()
+  -- round6: coalesce — NULL из is_backend_role() означал бы «проверка пропущена».
+  if not coalesce(public.is_backend_role(), false)
      and not exists (select 1 from public.profiles pr where pr.id = auth.uid() and pr.is_admin) then
     raise exception 'forbidden' using errcode = '42501';
   end if;
@@ -292,7 +314,7 @@ comment on function public.stock_qty_restore(uuid, timestamptz, boolean, timesta
 
 -- ── 4. Пересортица: детект смены type / name / unit ──────────────────────────────
 -- Отдельная функция, а не колонки в отчёте по остаткам: зерно другое (позиция × поле).
-drop function if exists public.stock_meta_change_report(uuid, int, timestamptz, int, int);
+-- (все перегрузки stock_meta_* сняты блоком $overloads$ выше — round 6)
 
 create function public.stock_meta_change_report(
   p_base          uuid,
@@ -323,8 +345,10 @@ declare
   bwin      interval := make_interval(mins => least(greatest(coalesce(p_burst_minutes, 10), 1), 24 * 60));
   win_start timestamptz := coalesce(p_since, now() - make_interval(hours => win_hours));
 begin
-  if not public.is_backend_role()
-     and not public.has_perm(p_base, 'manage')
+  -- round6: coalesce обязателен — is_backend_role() могла вернуть NULL, и тогда весь
+  -- `not ... and not ...` давал NULL, IF не срабатывал и проверка прав молча ПРОПУСКАЛАСЬ.
+  if not coalesce(public.is_backend_role(), false)
+     and not coalesce(public.has_perm(p_base, 'manage'), false)
      and not exists (select 1 from public.profiles pr where pr.id = auth.uid() and pr.is_admin) then
     raise exception 'forbidden' using errcode = '42501';
   end if;
@@ -389,7 +413,6 @@ comment on function public.stock_meta_change_report(uuid, int, timestamptz, int,
   'не видит по определению. Откат — stock_meta_restore.';
 
 -- ── 4. Пересортица: откат type / name / unit ─────────────────────────────────────
-drop function if exists public.stock_meta_restore(uuid, timestamptz, boolean, timestamptz);
 
 create function public.stock_meta_restore(
   p_base    uuid,
@@ -404,7 +427,8 @@ set search_path to 'public'
 as $$
 begin
   -- Права ровно как у stock_qty_restore: запись в склад — только владелец или бэкенд.
-  if not public.is_backend_role()
+  -- round6: coalesce — NULL из is_backend_role() означал бы «проверка пропущена».
+  if not coalesce(public.is_backend_role(), false)
      and not exists (select 1 from public.profiles pr where pr.id = auth.uid() and pr.is_admin) then
     raise exception 'forbidden' using errcode = '42501';
   end if;

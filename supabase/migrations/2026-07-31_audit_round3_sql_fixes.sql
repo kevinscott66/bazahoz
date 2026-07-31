@@ -153,19 +153,31 @@ end $$;
 --     request.jwt.claim.role = 'service_role' (ветка 1);
 --   • SQL Editor / psql / pg_cron     → GUC-ов нет, session_user = postgres/supabase_admin,
 --     у которых есть BYPASSRLS/SUPERUSER/CREATEROLE (ветка 3).
+--
+-- ДОБАВЛЕНО 2026-08-01 (round 6), воспроизведено на PG16:
+--   в) `return top_role = 'service_role';` возвращал NULL при валидном JSON без ТОП-УРОВНЕВОГО
+--      строкового "role" (`{}`, `{"role":null}`, массив, скаляр). Вызывающие написаны как
+--      `if not is_backend_role() and not ... then raise 'forbidden'`, а `not NULL` = NULL и
+--      `IF NULL THEN` НЕ выполняется — то есть исключение не бросалось и функция отрабатывала.
+--      Fail-CLOSED из шапки не выполнялся: повар читал и ПЕРЕЗАПИСЫВАЛ чужую базу.
+--      Лечение: coalesce(..., false) на КАЖДОМ return + вызывающие тоже обёрнуты в coalesce;
+--   г) гигиена: это была единственная новая функция без `set search_path`.
 create or replace function public.is_backend_role()
 returns boolean
 language plpgsql
 stable
+set search_path to 'public'
 as $$
 declare
   raw_claims text := nullif(current_setting('request.jwt.claims',      true), '');
   claim_role text := nullif(current_setting('request.jwt.claim.role',  true), '');
   top_role   text;
 begin
+  -- round6: fail-closed, ни одна ветка не может вернуть NULL (coalesce на каждом return).
+
   -- 1) Отдельный GUC роли (старый путь PostgREST) — ТОЧНОЕ сравнение, не подстрока.
   if claim_role is not null then
-    return claim_role = 'service_role';
+    return coalesce(claim_role = 'service_role', false);
   end if;
 
   -- 2) Полный JSON претензий — только ТОП-УРОВНЕВЫЙ "role". Невалидный JSON → fail-CLOSED.
@@ -175,20 +187,22 @@ begin
     exception when others then
       return false;
     end;
-    return top_role = 'service_role';
+    return coalesce(top_role = 'service_role', false);
   end if;
 
   -- 3) PostgREST-контекста нет вовсе (SQL Editor / psql / pg_cron): доверяем ПОЗИТИВНО —
   --    только реально привилегированной роли БД. Имена PostgREST-ролей исключены явно,
   --    потому что authenticator ЯВЛЯЕТСЯ членом service_role (грант для SET ROLE).
-  return exists (
-    select 1 from pg_roles r
-    where r.rolname = session_user
-      and r.rolname not in ('anon', 'authenticated', 'authenticator')
-      and (r.rolsuper or r.rolbypassrls or r.rolcreaterole
-           or (to_regrole('service_role') is not null
-               and pg_has_role(r.oid, to_regrole('service_role'), 'member')))
-  );
+  return coalesce((
+    select exists (
+      select 1 from pg_roles r
+      where r.rolname = session_user
+        and r.rolname not in ('anon', 'authenticated', 'authenticator')
+        and (r.rolsuper or r.rolbypassrls or r.rolcreaterole
+             or (to_regrole('service_role') is not null
+                 and pg_has_role(r.oid, to_regrole('service_role'), 'member')))
+    )
+  ), false);
 end $$;
 revoke all on function public.is_backend_role() from public, anon, authenticated;
 grant execute on function public.is_backend_role() to service_role;
@@ -223,7 +237,35 @@ end $$;
 revoke all on function public.stock_history_capture() from public, anon, authenticated;
 
 -- ── 4+2+3. Отчёт: строгий ноль + отдельный статус «почти ноль» + без дублей ──────
-drop function if exists public.stock_zeroing_report(uuid, int);
+-- ИСПРАВЛЕНО 2026-08-01 (round 6): раньше здесь дропались ТОЛЬКО свои старые сигнатуры,
+-- поэтому повторный прогон этого файла ПОВЕРХ 2026-08-01_* оставлял рядом две перегрузки
+-- stock_zeroing_report и две — stock_qty_restore. Воспроизведено: вызовы раннбука падают
+-- «is not unique», а верификатор 2026-07-31_verify_applied_state.sql падает ЦЕЛИКОМ
+-- («more than one row returned by a subquery») — во время инцидента не работает диагностика.
+-- Теперь снимаются ВСЕ перегрузки по имени, поэтому после файла версия ровно одна.
+-- Если этот файл прогнали поверх более новых — будет громкое WARNING с указанием, что
+-- применить следом; молчаливого отката к старой редакции не будет.
+do $overloads$
+declare r record;
+begin
+  for r in
+    select p.oid::regprocedure::text as sig, p.prosrc as src
+    from pg_proc p
+    join pg_namespace nsp on nsp.oid = p.pronamespace
+    where nsp.nspname = 'public'
+      and p.proname in ('stock_zeroing_report', 'stock_qty_restore')
+    order by 1
+  loop
+    -- внутри APPLY_ALL этот файл идёт ДО более новых, которые тут же вернут актуальную
+    -- редакцию, поэтому там предупреждать не о чем (флаг ставит сам APPLY_ALL).
+    if (r.src like '%p_min_frac%' or r.src like '%p_max_frac%' or r.src like '%@round6%')
+       and coalesce(current_setting('vahtahoz.apply_all', true), '') <> '1' then
+      raise warning 'audit_round3 снял БОЛЕЕ НОВУЮ редакцию %. Следом обязательно примените 2026-08-01_zeroing_report_fixes.sql и 2026-08-01_audit_round6_fixes.sql', r.sig;
+    end if;
+    execute 'drop function if exists ' || r.sig;
+  end loop;
+end
+$overloads$;
 
 create or replace function public.stock_zeroing_report(p_base uuid, p_hours int default 48)
 returns table (
@@ -247,8 +289,10 @@ declare
 begin
   -- Бэкенд определяем ПОЗИТИВНО: у anon auth.uid() тоже null, и при дефолтных грантах Supabase
   -- он проходил бы как «доверенный вызов» и читал чужие базы.
-  if not public.is_backend_role()
-     and not public.has_perm(p_base, 'manage')
+  -- round6: coalesce обязателен — is_backend_role() могла вернуть NULL, и тогда весь
+  -- `not ... and not ...` давал NULL, IF не срабатывал и проверка прав молча ПРОПУСКАЛАСЬ.
+  if not coalesce(public.is_backend_role(), false)
+     and not coalesce(public.has_perm(p_base, 'manage'), false)
      and not exists (select 1 from public.profiles pr where pr.id = auth.uid() and pr.is_admin) then
     raise exception 'forbidden' using errcode = '42501';
   end if;
@@ -286,8 +330,7 @@ revoke all on function public.stock_zeroing_report(uuid, int) from public, anon,
 grant execute on function public.stock_zeroing_report(uuid, int) to service_role;
 
 -- ── 4+5. Восстановление: строгий ноль + верхняя граница окна ─────────────────────
-drop function if exists public.stock_qty_restore(uuid, timestamptz, boolean);
-
+-- (все перегрузки stock_qty_restore сняты блоком $overloads$ выше — round 6)
 create or replace function public.stock_qty_restore(
   p_base uuid,
   p_at timestamptz,
@@ -300,7 +343,8 @@ security definer
 set search_path to 'public'
 as $$
 begin
-  if not public.is_backend_role()
+  -- round6: coalesce — NULL из is_backend_role() означал бы «проверка пропущена» (см. выше).
+  if not coalesce(public.is_backend_role(), false)
      and not exists (select 1 from public.profiles pr where pr.id = auth.uid() and pr.is_admin) then
     raise exception 'forbidden' using errcode = '42501';
   end if;
