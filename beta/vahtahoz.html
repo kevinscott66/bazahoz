@@ -3106,18 +3106,23 @@ function _impFileHint(name){
    40», по факту 33, и какие семь позиций не доехали — узнать было негде. Здесь считаем это заранее.
    Склад НЕ мутируем: findStockForImport/_impAlignQtyToProduct только читают. Карточки, которые импорт
    создаст сам, моделируем в virtual — чтобы вторая строка с тем же именем оценивалась против неё,
-   как и в реальном прогоне. */
+   как и в реальном прогоне.
+   ЦЕНА: findStockForImport — полный проход по state.stock с _impTokenScore (Set на каждую позицию), и
+   preflight гонит его ЕЩЁ РАЗ для каждой строки, до диалога и синхронно. Поэтому кешируем результат
+   по (нормализованное имя | ед.): findStockForImport зависит только от них и от state.stock, а склад
+   здесь неизменен; stockNormName — trim+lowercase, и все внутренние токены имени тоже
+   регистронезависимы, так что ключ не грубее самой функции.
+   okRows: первые несколько строк, которые РЕАЛЬНО импортируются — превью в диалоге строится из них,
+   иначе заголовок «Импортировать: 33» и хвост «…и ещё 32» при 8 показанных не сходились. */
+const _IMP_PREVIEW_ROWS = 8;
 function _impPreflightUnits(rows){
   const skipped = [];   // {name, unit} — попадёт в диалог
+  const okRows = [];    // первые _IMP_PREVIEW_ROWS строк из числа принятых — для превью
   const virtual = new Map();
-  let ok = 0;
-  for(const r of rows){
-    const name = cleanNameImport(r.name);
-    const rawUnit = String(r.unit||"").trim();
-    let qty = roundQty(parseNum(r.qty));
-    let unit = _impMapUnit(r.unit);
-    if(unit==null){ skipped.push({ name, unit: rawUnit || "—" }); continue; }
-    ({ qty, unit } = _impNormalizePackQty(name, qty, unit));
+  const findCache = new Map();   // "имя|ед" -> карточка каталога или null
+  const findCached = (name, unit)=>{
+    const k = stockNormName(name) + "|" + unit;
+    if(findCache.has(k)) return findCache.get(k);
     let product = findStockForImport(name, unit);
     if(!product){
       const pack = _impPackSize(name);
@@ -3126,18 +3131,37 @@ function _impPreflightUnits(rows){
         for(const au of alts){ const cand = findStockForImport(name, au); if(cand){ product = cand; break; } }
       }
     }
+    findCache.set(k, product||null);
+    return product||null;
+  };
+  let ok = 0;
+  const accept = (r)=>{ ok++; if(okRows.length < _IMP_PREVIEW_ROWS) okRows.push(r); };
+  for(const r of rows){
+    const name = cleanNameImport(r.name);
+    const rawUnit = String(r.unit||"").trim();
+    let qty = roundQty(parseNum(r.qty));
+    let unit = _impMapUnit(r.unit);
+    if(unit==null){ skipped.push({ name, unit: rawUnit || "—" }); continue; }
+    ({ qty, unit } = _impNormalizePackQty(name, qty, unit));
+    let product = findCached(name, unit);
+    /* Карточка, которой в каталоге нет, в реальном прогоне СОЗДАЁТСЯ под единицу строки. Вторая строка
+       с тем же именем, но другой единицей, findStockForImport не найдёт (жёсткий фильтр по unit) —
+       recordReceiptRow заведёт ВТОРУЮ карточку и строку импортирует. Поэтому виртуальную карточку
+       помечаем: не сойдясь с ней по единицам, строка НЕ пропускается, а тоже импортируется. */
+    let virtualHit = false;
     if(!product){
       const vk = stockNormName(name);
-      if(virtual.has(vk)) product = virtual.get(vk);
-      else { virtual.set(vk, { name, unit, type:"product", qty:0 }); ok++; continue; }   // будет создана
+      if(virtual.has(vk)){ product = virtual.get(vk); virtualHit = true; }
+      else { virtual.set(vk, { name, unit, type:"product", qty:0 }); accept(r); continue; }   // будет создана
     }
     if(!_impAlignQtyToProduct(product, name, qty, unit)){
+      if(virtualHit){ accept(r); continue; }   // реальный прогон заведёт ВТОРУЮ карточку, а не пропустит
       skipped.push({ name, unit: `${rawUnit||unit} ≠ ${product.unit||"шт"} в базе` });
       continue;
     }
-    ok++;
+    accept(r);
   }
-  return { ok, skipped };
+  return { ok, skipped, okRows };
 }
 
 async function importReceiptsExcel(ev){
@@ -3193,19 +3217,24 @@ async function importReceiptsExcel(ev){
     const tag = m.format==="upd" ? ` (УПД${d?`, ${d}`:""})` : "";
     return `• ${m.name}: ${m.n} поз.${tag}`;
   }).join("\n");
-  const preview = valid.slice(0,8).map(r=>{
+  /* Отсев по единицам считаем ДО диалога, чтобы обещанное число совпало с фактическим. Проход тяжёлый
+     (сотни позиций каталога × тысячи строк), и раньше он шёл молча под старым «Чтение файла…» —
+     экран замирал без объяснения. Пишем честный статус и уступаем кадр, чтобы он успел отрисоваться. */
+  if(out()) out().textContent = "Проверка единиц измерения…";
+  await new Promise(r=>setTimeout(r));
+  const pre = _impPreflightUnits(valid);
+  // превью — из строк, которые ДЕЙСТВИТЕЛЬНО импортируются, иначе хвост «…и ещё N» не сходится с pre.ok
+  const preview = (pre.okRows||[]).map(r=>{
     const u = _impMapUnit(r.unit) || (String(r.unit||"").trim() || "?");
     const d = _impParseDate(r.receiptDate);
     return `• ${cleanNameImport(r.name).slice(0,48)} — ${fmtQty(roundQty(parseNum(r.qty)))} ${u}${d?` · ${d.split("-").reverse().join(".")}`:""}`;
   }).join("\n");
-  // отсев по единицам считаем ДО диалога, чтобы обещанное число совпало с фактическим
-  const pre = _impPreflightUnits(valid);
   const unitLines = pre.skipped.slice(0,5).map(x=>`• ${String(x.name||"—").slice(0,40)} — ${x.unit}`).join("\n");
   const unitBlock = pre.skipped.length
     ? `\n\nНЕ будут импортированы (единица измерения):\n${unitLines}${pre.skipped.length>5?`\n…и ещё ${pre.skipped.length-5}`:""}`
     : "";
   const go = await confirmSheet(
-    `Импортировать поступлений: ${pre.ok}${pre.skipped.length?`\nПропущено по единицам: ${pre.skipped.length}`:""}${skipped?`\nПропущено пустых строк: ${skipped}`:""}${unitBlock}\n\nФайлы:\n${filesLine}\n\n${preview}${valid.length>8?`\n…и ещё ${valid.length-8}`:""}`,
+    `Импортировать поступлений: ${pre.ok}${pre.skipped.length?`\nПропущено по единицам: ${pre.skipped.length}`:""}${skipped?`\nПропущено пустых строк: ${skipped}`:""}${unitBlock}\n\nФайлы:\n${filesLine}\n\n${preview}${pre.ok>(pre.okRows||[]).length?`\n…и ещё ${pre.ok-(pre.okRows||[]).length}`:""}`,
     { yes:"Импортировать", no:"Отмена", title:"Подтверждение импорта" }
   );
   if(!go) return;
@@ -4747,10 +4776,17 @@ async function runFilteredXlsx(){
 // <a download>+Blob НЕ срабатывает (нет менеджера загрузок) → сначала пробуем Web Share API с файлом
 // («Поделиться» → «Сохранить в Файлы»/отправить), и только затем классическое скачивание (браузеры/десктоп).
 // ВАЖНО: вызывать синхронно из обработчика клика (без await до share) — иначе iOS снимет «жест» и share упадёт.
+/* Мобильное/тач-устройство. Ровно от этого зависит И выбор share-vs-download в saveBlob, И нужен ли
+   отдельный экран «Сохранить файл» (offerFileSave*): экран существует только чтобы обновить transient
+   user activation перед navigator.share. Там, где share не используется, <a download> работает и без
+   свежего жеста, и экран — лишний клик. Общая функция, чтобы два условия не разъехались. */
+function saveNeedsGesture(){
+  return (navigator.maxTouchPoints||0) > 0 || /iphone|ipad|ipod|android/i.test(navigator.userAgent||"");
+}
 async function saveBlob(blob, filename){
   // share нужен на МОБИЛЬНЫХ/тач (там download не работает в обёртках); на десктопе/Tauri оставляем обычное
   // скачивание (иначе десктоп-веб получал бы лишний «Поделиться» вместо прямого сохранения).
-  const mobileLike = (navigator.maxTouchPoints||0) > 0 || /iphone|ipad|ipod|android/i.test(navigator.userAgent||"");
+  const mobileLike = saveNeedsGesture();
   try{
     const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
     if(mobileLike && navigator.canShare && navigator.canShare({ files:[file] })){
@@ -4787,8 +4823,9 @@ function saveXlsx(wb, filename, offer){
     const buf = X.write(wb, { type:"array", bookType:"xlsx" });
     const blob = new Blob([buf], { type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     if(offer){
-      offerFileSaveBlob(blob, filename, offer.title || "Файл готов", offer.note || "Нажмите «Сохранить файл».");
-      return "offered";
+      // "offered" ТОЛЬКО если лист действительно показан — иначе зовущий не закроет свой лист (см. 4743)
+      const shown = offerFileSaveBlob(blob, filename, offer.title || "Файл готов", offer.note || "Нажмите «Сохранить файл».");
+      return shown ? "offered" : true;
     }
     saveBlob(blob, filename);
     return true;
@@ -4838,12 +4875,21 @@ function mergeJournalsForExport(cloudJ){
    Решение: показываем шит с кнопкой, и сохранение идёт СИНХРОННО из её onclick — жест свежий. */
 let _pendingSave = null;
 function offerFileSave(text, filename, title, note){
+  // десктоп: share не используется, <a download> не требует свежего жеста — пишем сразу, без лишнего экрана
+  if(!saveNeedsGesture()){ triggerDownload(text, filename); return false; }
   _pendingSave = { text, filename };
   openSheet(`
     <div class="font-bold text-xl mb-2">${esc(title)}</div>
     <div class="text-sm opacity-80 mb-4" style="line-height:1.5">${esc(note)}</div>
     <button class="btn btn-primary w-full" onclick="doPendingSave()">Сохранить файл</button>
     <button class="btn btn-ghost w-full mt-2" onclick="_pendingSave=null;closeSheet()">Отмена</button>`);
+  /* Лист закрывают не только кнопкой: тап по фону, Esc, следующий openSheet. Без этого содержимое
+     файла (для Excel — мегабайты) висело в памяти до конца сессии, в том числе после АВАРИЙНОГО
+     экспорта «по переполнению памяти», где лишние МБ особенно некстати.
+     Ставим ТОЛЬКО если лист реально открылся: при отказе openSheet вышел раньше очистки
+     _sheetOnClose, и мы затёрли бы колбэк чужой промис-обёртки. */
+  if(!_sheetRefused) _sheetOnClose = ()=>{ _pendingSave = null; };
+  return true;
 }
 function doPendingSave(){
   const p = _pendingSave; _pendingSave = null;
@@ -4856,6 +4902,8 @@ function doPendingSave(){
    и после запроса в облако), поэтому в нативной обёртке share/download молча не срабатывали. */
 let _pendingSaveBlob = null;
 function offerFileSaveBlob(blob, filename, title, note){
+  // десктоп: см. offerFileSave — экран нужен только ради жеста для navigator.share
+  if(!saveNeedsGesture()){ saveBlob(blob, filename); return false; }
   _pendingSaveBlob = { blob, filename };
   openSheet(`
     <div class="font-bold text-xl mb-2">${esc(title)}</div>
@@ -4864,7 +4912,10 @@ function offerFileSaveBlob(blob, filename, title, note){
     <button class="btn btn-ghost w-full mt-2" onclick="_pendingSaveBlob=null;closeSheet()">Отмена</button>`);
   // лист мог не открыться (openSheet отказывает поверх экрана входа) — тогда кнопки нет и файл не
   // появился бы ВООБЩЕ; сохраняем сразу, это всё равно лучше молчания
-  if(_sheetRefused){ const p=_pendingSaveBlob; _pendingSaveBlob=null; if(p) saveBlob(p.blob, p.filename); }
+  if(_sheetRefused){ const p=_pendingSaveBlob; _pendingSaveBlob=null; if(p) saveBlob(p.blob, p.filename); return false; }
+  // закрыли лист тапом по фону / Esc / следующим openSheet — не держим Blob в памяти (см. offerFileSave)
+  _sheetOnClose = ()=>{ _pendingSaveBlob = null; };
+  return true;
 }
 function doPendingSaveBlob(){
   const p = _pendingSaveBlob; _pendingSaveBlob = null;
@@ -5192,25 +5243,35 @@ function importData(ev){
                   note: "Перенос исходного остатка", createdAt: found.createdAt||new Date().toISOString()
                 });
               }
-              /* Дедуп по ID партии. Раньше сравнивались (qty|expiry|location|note) — и ДВЕ реально
-                 разные партии «25 кг, без срока, Склад А» (два мешка) сливались в одну: половина
-                 остатка исчезала молча, ровно в операции, которую пользователь считает безопасной
-                 («Объединить»). От повторного импорта того же файла хватает id: он в файле есть и
-                 не меняется. Партии БЕЗ id (руками правленый/очень старый бэкап) — прежняя логика
-                 по подписи, там id сравнивать не с чем. */
+              /* Дедуп партий в ДВА рубежа.
+                 (1) по id — нормальный бэкап: id в файле есть и не меняется, повторный импорт узнаёт партию.
+                 (2) СЧЁТНЫЙ по подписи (qty|expiry|location|note) — второй рубеж, обязателен.
+                     Полагаться на один только id нельзя: validateImport → sanitizeBatches делает
+                     id: safeId(b.id), а safeId при отсутствующем/битом id ЧЕКАНИТ НОВЫЙ uid при каждом
+                     чтении файла. Значит для руками-правленого/очень старого/битого бэкапа id при
+                     каждом импорте разный, дедуп по id мимо — и три «Объединить» подряд давали
+                     2→4→6 партий, 50→100→150 кг, то есть склад раздувался без границы.
+                     Но и безусловный дедуп по подписи (как было до этого) неверен: он склеивал ДВЕ
+                     реально разные партии «25 кг, без срока, Склад А» (два мешка) в одну и молча терял
+                     половину остатка. Поэтому СЧЁТ: сколько партий с такой подписью уже лежит
+                     локально — ровно столько же одинаковых из файла пропускаем, остальные добавляем.
+                     Первый импорт двух одинаковых мешков даёт оба; повторный не добавляет ничего. */
               const sig = b => `${roundQty(b.qty||0)}|${b.expiry||""}|${b.location||""}|${b.note||""}`;
               const existingIds = new Set(found.batches.map(b=>b.id).filter(Boolean));
-              const existingSig = new Set(found.batches.filter(b=>!b.id).map(sig));
+              const sigLeft = new Map();   // подпись -> сколько таких партий УЖЕ лежит локально
+              found.batches.forEach(b=>{ const s=sig(b); sigLeft.set(s, (sigLeft.get(s)||0)+1); });
               for(const b of src.batches){
-                if(b.id){ if(existingIds.has(b.id)) continue; }
-                else if(existingSig.has(sig(b))) continue;
+                if(b.id && existingIds.has(b.id)) continue;
+                const s = sig(b);
+                const n = sigLeft.get(s)||0;
+                if(n>0){ sigLeft.set(s, n-1); continue; }   // такая партия уже есть — не двоим
                 // id партии СОХРАНЯЕМ (если он есть) — иначе повторный импорт снова не узнает её
                 found.batches.push({
                   id: b.id || uid(), qty: roundQty(b.qty||0),
                   expiry: b.expiry||"", location: b.location||"",
                   note: b.note||"", createdAt: b.createdAt||new Date().toISOString()
                 });
-                if(b.id) existingIds.add(b.id); else existingSig.add(sig(b));
+                if(b.id) existingIds.add(b.id);
               }
               syncItemFromBatches(found);
             } else if(hasBatches(found)){
