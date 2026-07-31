@@ -49,20 +49,79 @@ ratehit as (
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
   where n.nspname = 'public' and p.proname = 'auth_rate_hit'
 ),
+-- ── ТРИГГЕРЫ: проверяем по СУТИ, а не по имени ───────────────────────────────────
+-- Имя триггера произвольно (`create trigger <любое имя> ... execute function <нужная>`),
+-- а инвариант, который нас волнует, — что на таблице висит РАБОЧИЙ row-триггер, вызывающий
+-- нужную функцию. Проверка по жёсткому имени давала и ложное «НЕТ — КРИТИЧНО» (стенд, где
+-- тот же триггер назван иначе → зря пугает владельца), и ложное «есть» в двух реальных дырах:
+--   • `alter table ... disable trigger` (tgenabled='D') — защита снята полностью, объект на месте;
+--   • триггер пересоздан с урезанным набором событий (напр. только `before insert`).
+-- Поэтому ищем по pg_trigger.tgfoid → pg_proc и дополнительно смотрим tgenabled и tgtype.
+-- Биты tgtype: 1=ROW, 2=BEFORE, 4=INSERT, 8=DELETE, 16=UPDATE, 32=TRUNCATE, 64=INSTEAD OF.
+--   ранг-гарды  = 1+2+4+8+16 = 31 (BEFORE обязателен: канонизация флагов NEW.* возможна только в BEFORE)
+--   аудит склада= 1+  8+16   = 25 (AFTER UPDATE/DELETE; бит BEFORE не требуем — важны события)
+trg_want(tbl, fn, mask, ev, hint) as (
+  values
+    ('base_members', 'enforce_base_member_write', 31,
+     'BEFORE INSERT/UPDATE/DELETE FOR EACH ROW (биты 31)', '2026-07-07_base_member_rank_trigger.sql'),
+    ('stock_items',  'stock_history_capture',     25,
+     'AFTER UPDATE/DELETE FOR EACH ROW (биты 25)',         '2026-07-30_stock_history_guard.sql'),
+    ('org_roles',    'enforce_org_role_write',    31,
+     'BEFORE INSERT/UPDATE/DELETE FOR EACH ROW (биты 31)', '2026-07-31_org_roles_preset_guard.sql')
+),
+trg_found as (
+  select w.tbl, w.fn, w.mask, w.ev, w.hint, g.tgname, g.tgenabled, g.tgtype
+  from trg_want w
+  left join lateral (
+    select t.tgname::text as tgname, t.tgenabled as tgenabled, t.tgtype::int as tgtype
+    from pg_trigger t
+    join pg_class c      on c.oid = t.tgrelid
+    join pg_namespace cn on cn.oid = c.relnamespace
+    join pg_proc pp      on pp.oid = t.tgfoid
+    join pg_namespace pn on pn.oid = pp.pronamespace
+    where not t.tgisinternal
+      and cn.nspname = 'public' and c.relname  = w.tbl
+      and pn.nspname = 'public' and pp.proname = w.fn
+    -- если подходящих триггеров несколько — показываем ЛУЧШИЙ (включённый, с полной маской),
+    -- иначе один сломанный дубль маскировал бы рабочий и наоборот
+    order by (t.tgenabled = 'D'), ((t.tgtype::int & w.mask) <> w.mask), t.tgname
+    limit 1
+  ) g on true
+),
+trg_state as (
+  select tbl,
+    case
+      when tgname is null then
+        'НЕТ — на public.' || tbl || ' нет триггера с функцией public.' || fn || '() — применить ' || hint
+      when tgenabled = 'D' then
+        'НЕТ — ОТКЛЮЧЁН: триггер ' || tgname || ' есть, но tgenabled=D, защиты нет — alter table public.' || tbl || ' enable trigger ' || tgname
+      when tgenabled = 'R' then
+        'НЕТ — триггер ' || tgname || ' работает только в replica-сессиях (tgenabled=R)'
+      when (tgtype & mask) <> mask then
+        'НЕПОЛНЫЙ — ' || tgname || ': tgtype=' || tgtype || ', а нужно ' || ev
+      else 'есть (' || tgname || ')'
+    end as state
+  from trg_found
+),
 checks(ord, migration, object, state) as (
   -- ── 2026-07-30_base_member_preset_all_roles.sql ──────────────────────────────
   select 10, 'preset_all_roles', 'enforce_base_member_write (версия)', (select v from enforce_ver)
 
+  -- ── 2026-07-07_base_member_rank_trigger.sql ─────────────────────────────────
+  -- Сам ТРИГГЕР, а не только функция: проверять версию enforce_base_member_write без него
+  -- бессмысленно — функцию никто не вызовет. Это линчпин ранговой модели: RLS members_insert/
+  -- members_update пропускают любого с can_manage_base, а ранг-гард («роль строго ниже своей»)
+  -- и канонизацию флагов даёт ТОЛЬКО этот триггер. Без него site_manager вставляет
+  -- base_members{role:'worker', can_manage:true} — а верификатор рапортовал бы «всё ок».
+  -- Каноническое имя — trg_base_member_write, но ищем по функции (см. trg_want выше).
+  union all select 11, 'base_member_rank_trigger', 'ранг-гард base_members (триггер → enforce_base_member_write)',
+    (select state from trg_state where tbl = 'base_members')
+
   -- ── 2026-07-30_stock_history_guard.sql ──────────────────────────────────────
   union all select 20, 'stock_history_guard', 'таблица public.stock_history',
     case when to_regclass('public.stock_history') is null then 'НЕТ' else 'есть' end
-  union all select 21, 'stock_history_guard', 'триггер stock_history_trg на stock_items',
-    case when exists (
-      select 1 from pg_trigger t
-      where t.tgname = 'stock_history_trg'
-        and t.tgrelid = to_regclass('public.stock_items')
-        and not t.tgisinternal
-    ) then 'есть' else 'НЕТ' end
+  union all select 21, 'stock_history_guard', 'аудит склада (триггер → stock_history_capture)',
+    (select state from trg_state where tbl = 'stock_items')
   union all select 22, 'stock_history_guard', 'CHECK stock_items_qty_nonneg',
     coalesce((
       select case when c.convalidated then 'есть (провалидирован)'
@@ -151,13 +210,9 @@ checks(ord, migration, object, state) as (
     ) then 'есть' else 'НЕТ' end
 
   -- ── 2026-07-31_org_roles_preset_guard.sql ───────────────────────────────────
-  union all select 47, 'org_roles_guard', 'триггер org_roles_guard на org_roles',
-    case when exists (
-      select 1 from pg_trigger t
-      where t.tgname = 'org_roles_guard'
-        and t.tgrelid = to_regclass('public.org_roles')
-        and not t.tgisinternal
-    ) then 'есть' else 'НЕТ — org-роль можно завести с пустыми флагами (начальник не увидит склад)' end
+  -- без него org-роль заводится с пустыми флагами (начальник не увидит склад)
+  union all select 47, 'org_roles_guard', 'страж org_roles (триггер → enforce_org_role_write)',
+    (select state from trg_state where tbl = 'org_roles')
   union all select 48, 'org_roles_guard', 'enforce_base_member_write: legacy custom не блокирует пересменку',
     case
       when not exists (select 1 from enforce) then 'НЕТ ФУНКЦИИ'

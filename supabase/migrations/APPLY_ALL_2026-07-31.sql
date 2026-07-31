@@ -623,10 +623,17 @@ select '2026-07-30 per-IP rate-limit (auth_rate + auth_rate_hit)' as status;
 --    вызывающих и для самого себя UPDATE раньше был открыт.
 --    Фикс: отказ только на INSERT и на UPDATE, реально МЕНЯЮЩИЙ роль; после вычисления self_shift.
 --
--- 2) MEDIUM: «второй рубеж» не держал anon. `auth.uid() is null` трактовался как «доверенный
+-- 2) HIGH: «второй рубеж» не держал anon. `auth.uid() is null` трактовался как «доверенный
 --    бэкенд», а дефолтные гранты Supabase выдаются и anon — у него auth.uid() тоже null.
 --    Проверено: anon читал чужой склад и МОГ ПЕРЕЗАПИСАТЬ остатки через restore.
---    Фикс: позитивный признак бэкенда по current_user, а не отсутствие uid.
+--    Фикс: позитивный признак бэкенда is_backend_role() — НЕ по current_user (внутри
+--    SECURITY DEFINER это владелец функции) и НЕ по отсутствию uid.
+--    ДОБАВЛЕНО 2026-07-31 (round 4), обе дыры воспроизведены на PG16:
+--      • подстрочный `claims like '%"role":"service_role"%'` обходился ключом user_metadata,
+--        который пишет сам пользователь → повар получал права бэкенда. Теперь claims
+--        разбираются как jsonb и берётся только ТОП-УРОВНЕВЫЙ "role";
+--      • «нет JWT-GUC ⇒ доверяем» было fail-OPEN. Теперь доверие определяется позитивно —
+--        по привилегиям session_user (SQL Editor / psql / pg_cron продолжают работать).
 --
 -- 3) MEDIUM: changed_at = now() (время ТРАНЗАКЦИИ) → при двух правках одной позиции в одной
 --    транзакции ties: отчёт дублирует позицию (count завышает масштаб), а distinct on в restore
@@ -739,24 +746,63 @@ end $$;
 -- ── 2. Позитивный признак бэкенда (вместо «auth.uid() is null») ───────────────────
 -- ВАЖНО: НЕЛЬЗЯ смотреть current_user — внутри SECURITY DEFINER это ВЛАДЕЛЕЦ функции (postgres),
 -- а не вызывающий, поэтому такая проверка всегда возвращала бы true и открывала функцию всем
--- (проверено: anon читал чужую базу и ПЕРЕЗАПИСЫВАЛ остатки). session_user тоже не годится:
--- у PostgREST это общий authenticator для всех ролей.
--- Надёжный признак — роль из JWT, которую PostgREST выставляет НА КАЖДЫЙ запрос:
---   anon → 'anon', вход по токену → 'authenticated', сервис → 'service_role'.
--- Если JWT нет вовсе (SQL Editor, psql, pg_cron) — настройка отсутствует, это доверенный доступ.
+-- (проверено: anon читал чужую базу и ПЕРЕЗАПИСЫВАЛ остатки).
+--
+-- ДВЕ ДЫРЫ ПРЕДЫДУЩЕЙ РЕДАКЦИИ ЭТОГО ЖЕ БЛОКА (обе воспроизведены на PG16):
+--   а) `claims like '%"role":"service_role"%'` — подстрочный матч по СЫРОМУ JSON всего токена.
+--      Ключ user_metadata пишет САМ пользователь (supabase.auth.updateUser({data:{role:
+--      'service_role'}})) и он дословно попадает в access token. Обычный повар получал
+--      is_backend_role() = true, читал чужие базы через stock_zeroing_report и ПЕРЕЗАПИСЫВАЛ
+--      остатки через stock_qty_restore. Лечение: разбирать claims как jsonb и брать ТОЛЬКО
+--      ТОП-УРОВНЕВЫЙ ключ "role" (вложенные метаданные до него не дотягиваются).
+--   б) «нет ни одного GUC ⇒ доверяем» — fail-OPEN, тот же антипаттерн, что прежний
+--      `auth.uid() is null`. Лечение: доверие определяется ПОЗИТИВНО — по привилегиям
+--      session_user. session_user, в отличие от current_user, внутри SECURITY DEFINER НЕ
+--      подменяется на владельца функции, а у PostgREST это общий `authenticator`, у которого
+--      нет ни SUPERUSER, ни BYPASSRLS, ни CREATEROLE — значит клиентский путь сюда не пролезет.
+--
+-- Легитимные пути, которые обязаны продолжать работать:
+--   • Edge Function под service_role  → claims.role = 'service_role' (ветка 2), либо
+--     request.jwt.claim.role = 'service_role' (ветка 1);
+--   • SQL Editor / psql / pg_cron     → GUC-ов нет, session_user = postgres/supabase_admin,
+--     у которых есть BYPASSRLS/SUPERUSER/CREATEROLE (ветка 3).
 create or replace function public.is_backend_role()
 returns boolean
-language sql
+language plpgsql
 stable
 as $$
-  select case
-    when current_setting('request.jwt.claim.role', true) is null
-     and current_setting('request.jwt.claims',      true) is null then true          -- нет JWT: SQL Editor / psql / pg_cron
-    when coalesce(current_setting('request.jwt.claim.role', true), '') = 'service_role' then true
-    when coalesce(current_setting('request.jwt.claims', true), '') like '%"role":"service_role"%' then true
-    else false
-  end;
-$$;
+declare
+  raw_claims text := nullif(current_setting('request.jwt.claims',      true), '');
+  claim_role text := nullif(current_setting('request.jwt.claim.role',  true), '');
+  top_role   text;
+begin
+  -- 1) Отдельный GUC роли (старый путь PostgREST) — ТОЧНОЕ сравнение, не подстрока.
+  if claim_role is not null then
+    return claim_role = 'service_role';
+  end if;
+
+  -- 2) Полный JSON претензий — только ТОП-УРОВНЕВЫЙ "role". Невалидный JSON → fail-CLOSED.
+  if raw_claims is not null then
+    begin
+      top_role := (raw_claims::jsonb) ->> 'role';
+    exception when others then
+      return false;
+    end;
+    return top_role = 'service_role';
+  end if;
+
+  -- 3) PostgREST-контекста нет вовсе (SQL Editor / psql / pg_cron): доверяем ПОЗИТИВНО —
+  --    только реально привилегированной роли БД. Имена PostgREST-ролей исключены явно,
+  --    потому что authenticator ЯВЛЯЕТСЯ членом service_role (грант для SET ROLE).
+  return exists (
+    select 1 from pg_roles r
+    where r.rolname = session_user
+      and r.rolname not in ('anon', 'authenticated', 'authenticator')
+      and (r.rolsuper or r.rolbypassrls or r.rolcreaterole
+           or (to_regrole('service_role') is not null
+               and pg_has_role(r.oid, to_regrole('service_role'), 'member')))
+  );
+end $$;
 revoke all on function public.is_backend_role() from public, anon, authenticated;
 grant execute on function public.is_backend_role() to service_role;
 
@@ -997,8 +1043,8 @@ select '2026-07-31 round3: legacy org-roles unblocked, positive backend check, t
 --    с can_view_stock=false проходит has_perm(...,'view_stock')=false → склад пуст, хотя
 --    can_see_type пропускает все типы. Edge Function (manage-user) пресеты выставляет,
 --    но строки, заведённые ДО неё, и любой другой путь записи — нет.
---    Фикс: триггер-пресет (значения 1-в-1 с PRESETS манифеста manage-user) + разовая
---    нормализация существующих строк.
+--    Фикс: триггер-пресет (значения 1-в-1 с PRESETS манифеста manage-user) + УЗКАЯ разовая
+--    нормализация существующих строк (только can_view_stock, только у active — см. п.7).
 -- 2) MEDIUM — тот же класс бага, что «пересменка падает на legacy org-роли» (round 3):
 --    enforce_base_member_write до сих пор отклоняет ЛЮБОЙ UPDATE строки с НЕИЗВЕСТНОЙ ролью
 --    (role_rank=0, напр. legacy 'custom'): handover_shift внутри делает
@@ -1008,6 +1054,36 @@ select '2026-07-31 round3: legacy org-roles unblocked, positive backend check, t
 --    могут случайно вернуть): назначать/менять/снимать может только вызывающий с рангом СТРОГО
 --    выше роли строки; неизвестные и базовые роли в org_roles отклоняются (место worker'а —
 --    base_members).
+--
+-- ДОБАВЛЕНО 2026-07-31 (round 4) — четыре дыры в первой редакции ЭТОГО ЖЕ файла,
+-- все воспроизведены на локальном PG16 при возвращённом гранте
+-- `grant insert,update,delete on org_roles to authenticated` (заявленная модель угроз):
+-- 4) HIGH, РЕГРЕССИЯ п.2: послабление для rank-0 строк открыло правку ФЛАГОВ у legacy-строки.
+--    site_manager делал `update base_members set can_manage=true, can_edit_stock=true`
+--    по строке role='custom' (ранговый гард её пропускает: role_rank('custom')=0 < crank=2,
+--    блок пресетов её не покрывает) → у владельца строки появлялся has_perm('manage'),
+--    дальше user_id переписывался на постороннего (RLS сверяет только base_id).
+--    Фикс: у строки с ролью ВНЕ base_roles разрешено менять ТОЛЬКО active — ровно то,
+--    что нужно пересменке. Флаги, user_id, base_id, role — отказ.
+-- 5) HIGH: enforce_org_role_write не запрещал САМОНАЗНАЧЕНИЕ и не проверял ТЕРРИТОРИЮ.
+--    site_manager базы A вставлял СЕБЕ org_roles(role='accounting', party_id=null) и получал
+--    view_stock/import во ВСЕХ базах ВСЕХ партий. manage-user/index.ts территорию проверяет
+--    (canGrant), SQL-страж, заявленный как его зеркало, проверку терял.
+--    Фикс: запрет NEW.user_id = auth.uid() и территориальные правила 1-в-1 с canGrant.
+-- 6) HIGH: UPDATE без смены роли не валидировался вообще — по строке с ролью вне списка
+--    (legacy 'custom' или worker в org_roles) свободно ставились can_manage/can_edit_stock/
+--    can_import, а user_id и party_id подменялись на любые; org accounting сам себе ставил
+--    can_manage=true глобально.
+--    Фикс: роль валидируется и пресет применяется на ЛЮБОМ INSERT/UPDATE; смена user_id и
+--    party_id существующей строки запрещена; строки с ролью вне списка клиенту недоступны
+--    на UPDATE/DELETE вовсе (их правит владелец/бэкенд).
+-- 7) MEDIUM: разовая нормализация приводила к ПОЛНОМУ пресету ВСЕ строки, включая намеренно
+--    урезанные и уволенных (active=false): урезанный party_chief получал
+--    can_manage/can_edit_stock/can_import, хотя шапка обещала починку только can_view_stock.
+--    Фикс: нормализация поднимает ТОЛЬКО can_view_stock и ТОЛЬКО у active-строк;
+--    остальные флаги не трогаются. В конце файла — отчёт, что именно изменено.
+-- 8) LOW: self_shift в enforce_base_member_write не сравнивал base_id — своя строка «переезжала»
+--    в другую базу с сохранением прав мимо ранговых проверок. Фикс: NEW.base_id = OLD.base_id.
 --
 -- Пресеты (единый источник — PRESETS в supabase/functions/manage-user/index.ts):
 --   party_chief / director / general_director: всё true (view/edit stock+tasks, manage, import)
@@ -1027,8 +1103,11 @@ begin
 end $$;
 
 -- ── 1. enforce_base_member_write: неизвестная роль не блокирует деактивацию ───────
--- Отличие от версии round 3 — ровно одно условие: отказ по role_rank(NEW.role)=0 теперь
--- только на INSERT или при реальной смене роли (симметрично отказу org-ролей строкой ниже).
+-- Отличия от версии round 3:
+--   • отказ по role_rank(NEW.role)=0 — только на INSERT или при реальной смене роли;
+--   • у строки с ролью ВНЕ base_roles (legacy 'custom', org-роль из v134) разрешено менять
+--     ТОЛЬКО active: иначе послабление выше превращалось в канал выдачи прав (п.4 шапки);
+--   • self_shift требует ещё и NEW.base_id = OLD.base_id (п.8 шапки).
 create or replace function public.enforce_base_member_write()
 returns trigger
 language plpgsql
@@ -1062,6 +1141,7 @@ begin
   if TG_OP = 'UPDATE'
      and OLD.user_id = caller
      and NEW.user_id = OLD.user_id
+     and NEW.base_id = OLD.base_id
      and NEW.role is not distinct from OLD.role
      and NEW.can_manage is not distinct from OLD.can_manage
      and NEW.can_view_stock is not distinct from OLD.can_view_stock
@@ -1074,6 +1154,22 @@ begin
   if not (NEW.role = any(base_roles))
      and (TG_OP = 'INSERT' or (TG_OP = 'UPDATE' and NEW.role is distinct from OLD.role)) then
     raise exception 'base_member: роль % назначается в org_roles, не в базе', NEW.role using errcode = '42501';
+  end if;
+  -- Строка, чья роль НЕ входит в base_roles (legacy 'custom', org-роль из v134), пресетом
+  -- не канонизируется — значит через неё нельзя давать права. Разрешаем ровно то, ради чего
+  -- сделано послабление выше: смену active (пересменка/деактивация). Всё остальное — отказ.
+  if TG_OP = 'UPDATE'
+     and not (coalesce(OLD.role, '') = any(base_roles))
+     and (   NEW.base_id        is distinct from OLD.base_id
+          or NEW.user_id        is distinct from OLD.user_id
+          or NEW.role           is distinct from OLD.role
+          or NEW.can_manage     is distinct from OLD.can_manage
+          or NEW.can_view_stock is distinct from OLD.can_view_stock
+          or NEW.can_edit_stock is distinct from OLD.can_edit_stock
+          or NEW.can_view_tasks is distinct from OLD.can_view_tasks
+          or NEW.can_edit_tasks is distinct from OLD.can_edit_tasks) then
+    raise exception 'base_member: у строки с ролью % (не базовой) можно менять только active', OLD.role
+      using errcode = '42501';
   end if;
   if self_shift and OLD.active is true and NEW.active is false and OLD.can_manage then
     select count(*) into mgrs from base_members
@@ -1103,7 +1199,33 @@ begin
   return OLD;
 end $$;
 
--- ── 2. Страж + пресеты org_roles ─────────────────────────────────────────────────
+-- ── 2. Разовая нормализация — ДО создания триггера ───────────────────────────────
+-- Порядок важен: триггер ниже применяет ПОЛНЫЙ пресет на любой UPDATE, поэтому нормализация
+-- идёт при снятом триггере — иначе она подняла бы и can_manage/can_edit_stock/can_import
+-- у намеренно урезанных строк (это и была дыра п.7 шапки).
+-- Чиним РОВНО заявленное — «начальник/директор/бухгалтер не видит склад», то есть только
+-- can_view_stock. can_import НЕ трогаем: это отдельное право (импорт номенклатуры), его
+-- отсутствие складом не мешает, а массовая раздача — эскалация сверх заявленного.
+-- Строки уволенных (active=false) не трогаем вовсе.
+drop trigger if exists org_roles_guard on public.org_roles;
+
+drop table if exists _org_roles_normalized_20260731;
+create temp table _org_roles_normalized_20260731 as
+with norm as (
+  update public.org_roles o
+     set can_view_stock = true
+   where o.active
+     and o.role in ('party_chief','director','general_director','accounting')
+     and coalesce(o.can_view_stock, false) is distinct from true
+  returning o.user_id, o.role, o.party_id, o.can_view_stock, o.can_manage, o.can_import
+)
+select user_id, role, party_id,
+       can_view_stock as "стало can_view_stock",
+       can_manage     as "can_manage (не трогали)",
+       can_import     as "can_import (не трогали)"
+from norm;
+
+-- ── 3. Страж + пресеты org_roles ─────────────────────────────────────────────────
 create or replace function public.enforce_org_role_write()
 returns trigger
 language plpgsql
@@ -1113,29 +1235,87 @@ as $$
 declare
   caller uuid := auth.uid();
   crank int := 0;
+  caller_global boolean := false;
+  caller_parties uuid[] := '{}'::uuid[];
   org_ok constant text[] := array['party_chief','director','general_director','accounting'];
+  global_roles constant text[] := array['director','general_director','accounting'];
 begin
-  -- Страж рангов — только для клиентских записей; бэкенд (Edge Function/SQL Editor) не ограничиваем,
-  -- но ПРЕСЕТЫ ниже применяются ко ВСЕМ путям записи: роль = пресет прав, «пустых» строк не бывает.
+  -- Страж — только для клиентских записей; бэкенд (Edge Function под service_role → auth.uid()
+  -- пуст) и владелец (is_admin) не ограничиваются. ПРЕСЕТЫ ниже применяются ко ВСЕМ путям
+  -- записи: роль = пресет прав, «пустых» строк не бывает.
   if caller is not null
      and not exists (select 1 from profiles where id = caller and is_admin) then
+
     select greatest(
       coalesce((select max(role_rank(o.role)) from org_roles o    where o.user_id = caller and o.active), 0),
       coalesce((select max(role_rank(m.role)) from base_members m where m.user_id = caller and m.active and m.can_manage), 0)
     ) into crank;
-    if (TG_OP = 'INSERT' or (TG_OP = 'UPDATE' and NEW.role is distinct from OLD.role))
-       and not (NEW.role = any(org_ok)) then
+
+    -- территория вызывающего — зеркало callerCaps() в manage-user/index.ts:
+    --   глобальный охват даёт ТОЛЬКО director/general_director/accounting с can_manage и party_id IS NULL;
+    --   партийный охват — party_chief своей партии и те же глобальные роли, ограниченные партией.
+    select coalesce(bool_or(o.can_manage and o.party_id is null and o.role = any(global_roles)), false),
+           coalesce(array_agg(o.party_id) filter (
+             where o.party_id is not null
+               and (o.role = 'party_chief' or (o.can_manage and o.role = any(global_roles)))
+           ), '{}'::uuid[])
+      into caller_global, caller_parties
+      from org_roles o
+     where o.user_id = caller and o.active;
+
+    -- (а) САМОНАЗНАЧЕНИЕ: org-роль себе не выписывают и свою не правят — иначе site_manager
+    --     одной базы получал accounting по всей оргструктуре.
+    if coalesce(NEW.user_id, OLD.user_id) = caller then
+      raise exception 'org_role: нельзя назначать/менять org-роль самому себе' using errcode = '42501';
+    end if;
+
+    -- (б) РОЛЬ валидируется на ЛЮБОЙ записи, а не только при её смене. Строки с ролью вне
+    --     списка (legacy 'custom', базовые роли) клиенту недоступны совсем — их правит
+    --     владелец/бэкенд; иначе через них раздавались права мимо пресетов и рангов.
+    if TG_OP in ('INSERT','UPDATE') and not (NEW.role = any(org_ok)) then
       raise exception 'org_role: роль % не назначается в org_roles', NEW.role using errcode = '42501';
     end if;
+    if TG_OP in ('UPDATE','DELETE') and not (coalesce(OLD.role, '') = any(org_ok)) then
+      raise exception 'org_role: строку с ролью % правит только владелец', OLD.role using errcode = '42501';
+    end if;
+
+    -- (в) КЛЮЧЕВЫЕ ПОЛЯ существующей строки не переписываются: подмена user_id перевешивала
+    --     чужую строку на себя, подмена party_id расширяла территорию.
+    if TG_OP = 'UPDATE'
+       and (NEW.user_id is distinct from OLD.user_id or NEW.party_id is distinct from OLD.party_id) then
+      raise exception 'org_role: смена user_id/party_id существующей строки запрещена' using errcode = '42501';
+    end if;
+
+    -- (г) РАНГИ — строго ниже своего, и по старой, и по новой роли.
     if TG_OP in ('UPDATE','DELETE') and role_rank(OLD.role) >= crank then
       raise exception 'org_role: нельзя менять/снимать роль % (ранг не ниже вашего)', OLD.role using errcode = '42501';
     end if;
     if TG_OP in ('INSERT','UPDATE') and role_rank(NEW.role) >= crank then
       raise exception 'org_role: нельзя назначать роль % (ранг не ниже вашего)', NEW.role using errcode = '42501';
     end if;
+
+    -- (д) ТЕРРИТОРИЯ — зеркало canGrant() в manage-user/index.ts:
+    --     party_chief выдаётся в КОНКРЕТНУЮ партию (глобально или в свою),
+    --     director/general_director/accounting — только вызывающим с глобальным охватом.
+    if TG_OP in ('INSERT','UPDATE')
+       and not (case when NEW.role = 'party_chief'
+                     then NEW.party_id is not null and (caller_global or NEW.party_id = any(caller_parties))
+                     else caller_global end) then
+      raise exception 'org_role: роль % с партией % вне вашей территории', NEW.role, coalesce(NEW.party_id::text, 'все')
+        using errcode = '42501';
+    end if;
+    if TG_OP in ('UPDATE','DELETE')
+       and not (case when OLD.role = 'party_chief'
+                     then OLD.party_id is not null and (caller_global or OLD.party_id = any(caller_parties))
+                     else caller_global end) then
+      raise exception 'org_role: изменяемая строка (роль %, партия %) вне вашей территории', OLD.role, coalesce(OLD.party_id::text, 'все')
+        using errcode = '42501';
+    end if;
   end if;
+
   if TG_OP = 'DELETE' then return OLD; end if;
-  -- Пресеты — значения 1-в-1 с PRESETS в manage-user/index.ts (единый источник семантики ролей)
+  -- Пресеты — значения 1-в-1 с PRESETS в manage-user/index.ts (единый источник семантики ролей).
+  -- Применяются на КАЖДОМ INSERT/UPDATE: «частично урезанных» org-строк не бывает.
   if NEW.role in ('party_chief','director','general_director') then
     NEW.can_view_stock := true; NEW.can_edit_stock := true;
     NEW.can_view_tasks := true; NEW.can_edit_tasks := true;
@@ -1149,37 +1329,19 @@ begin
 end $$;
 revoke all on function public.enforce_org_role_write() from public, anon, authenticated;
 
-drop trigger if exists org_roles_guard on public.org_roles;
 create trigger org_roles_guard
   before insert or update or delete on public.org_roles
   for each row execute function public.enforce_org_role_write();
 
--- ── 3. Разовая нормализация существующих строк ───────────────────────────────────
--- Это и есть лечение «начальник не видит склад»: legacy-строки с пустыми/false флагами
--- приводятся к пресетам ролей. Триггер выше применит пресеты сам — UPDATE лишь его дергает.
-update public.org_roles
-   set active = active   -- no-op поле; флаги проставит триггер
- where role in ('party_chief','director','general_director')
-   and (coalesce(can_view_stock,false) is distinct from true
-     or coalesce(can_edit_stock,false) is distinct from true
-     or coalesce(can_view_tasks,false) is distinct from true
-     or coalesce(can_edit_tasks,false) is distinct from true
-     or coalesce(can_manage,false)    is distinct from true
-     or coalesce(can_import,false)    is distinct from true);
-
-update public.org_roles
-   set active = active
- where role = 'accounting'
-   and (coalesce(can_view_stock,false) is distinct from true
-     or coalesce(can_edit_stock,true)  is distinct from false
-     or coalesce(can_view_tasks,true)  is distinct from false
-     or coalesce(can_edit_tasks,true)  is distinct from false
-     or coalesce(can_manage,true)      is distinct from false
-     or coalesce(can_import,false)     is distinct from true);
-
 commit;
 
-select '2026-07-31 org_roles: preset trigger + rank guard + normalization; base_members: unknown-role fix' as status;
+-- ── 4. Отчёт по нормализации (последний результат — он и виден в SQL Editor) ──────
+-- Временная таблица живёт до конца сессии; повторный прогон файла её пересоздаёт.
+select '2026-07-31 org_roles: preset trigger + rank/territory guard + narrow normalization; base_members: unknown-role fix' as status,
+       (select count(*) from _org_roles_normalized_20260731) as "нормализовано строк (только can_view_stock)",
+       n.*
+  from (select 1) d
+  left join _org_roles_normalized_20260731 n on true;
 
 -- ─────────────────────────── диагностика ───────────────────────────
 -- 2026-07-31 — ДИАГНОСТИКА: что из миграций уже применено на этой базе.
@@ -1233,20 +1395,79 @@ ratehit as (
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
   where n.nspname = 'public' and p.proname = 'auth_rate_hit'
 ),
+-- ── ТРИГГЕРЫ: проверяем по СУТИ, а не по имени ───────────────────────────────────
+-- Имя триггера произвольно (`create trigger <любое имя> ... execute function <нужная>`),
+-- а инвариант, который нас волнует, — что на таблице висит РАБОЧИЙ row-триггер, вызывающий
+-- нужную функцию. Проверка по жёсткому имени давала и ложное «НЕТ — КРИТИЧНО» (стенд, где
+-- тот же триггер назван иначе → зря пугает владельца), и ложное «есть» в двух реальных дырах:
+--   • `alter table ... disable trigger` (tgenabled='D') — защита снята полностью, объект на месте;
+--   • триггер пересоздан с урезанным набором событий (напр. только `before insert`).
+-- Поэтому ищем по pg_trigger.tgfoid → pg_proc и дополнительно смотрим tgenabled и tgtype.
+-- Биты tgtype: 1=ROW, 2=BEFORE, 4=INSERT, 8=DELETE, 16=UPDATE, 32=TRUNCATE, 64=INSTEAD OF.
+--   ранг-гарды  = 1+2+4+8+16 = 31 (BEFORE обязателен: канонизация флагов NEW.* возможна только в BEFORE)
+--   аудит склада= 1+  8+16   = 25 (AFTER UPDATE/DELETE; бит BEFORE не требуем — важны события)
+trg_want(tbl, fn, mask, ev, hint) as (
+  values
+    ('base_members', 'enforce_base_member_write', 31,
+     'BEFORE INSERT/UPDATE/DELETE FOR EACH ROW (биты 31)', '2026-07-07_base_member_rank_trigger.sql'),
+    ('stock_items',  'stock_history_capture',     25,
+     'AFTER UPDATE/DELETE FOR EACH ROW (биты 25)',         '2026-07-30_stock_history_guard.sql'),
+    ('org_roles',    'enforce_org_role_write',    31,
+     'BEFORE INSERT/UPDATE/DELETE FOR EACH ROW (биты 31)', '2026-07-31_org_roles_preset_guard.sql')
+),
+trg_found as (
+  select w.tbl, w.fn, w.mask, w.ev, w.hint, g.tgname, g.tgenabled, g.tgtype
+  from trg_want w
+  left join lateral (
+    select t.tgname::text as tgname, t.tgenabled as tgenabled, t.tgtype::int as tgtype
+    from pg_trigger t
+    join pg_class c      on c.oid = t.tgrelid
+    join pg_namespace cn on cn.oid = c.relnamespace
+    join pg_proc pp      on pp.oid = t.tgfoid
+    join pg_namespace pn on pn.oid = pp.pronamespace
+    where not t.tgisinternal
+      and cn.nspname = 'public' and c.relname  = w.tbl
+      and pn.nspname = 'public' and pp.proname = w.fn
+    -- если подходящих триггеров несколько — показываем ЛУЧШИЙ (включённый, с полной маской),
+    -- иначе один сломанный дубль маскировал бы рабочий и наоборот
+    order by (t.tgenabled = 'D'), ((t.tgtype::int & w.mask) <> w.mask), t.tgname
+    limit 1
+  ) g on true
+),
+trg_state as (
+  select tbl,
+    case
+      when tgname is null then
+        'НЕТ — на public.' || tbl || ' нет триггера с функцией public.' || fn || '() — применить ' || hint
+      when tgenabled = 'D' then
+        'НЕТ — ОТКЛЮЧЁН: триггер ' || tgname || ' есть, но tgenabled=D, защиты нет — alter table public.' || tbl || ' enable trigger ' || tgname
+      when tgenabled = 'R' then
+        'НЕТ — триггер ' || tgname || ' работает только в replica-сессиях (tgenabled=R)'
+      when (tgtype & mask) <> mask then
+        'НЕПОЛНЫЙ — ' || tgname || ': tgtype=' || tgtype || ', а нужно ' || ev
+      else 'есть (' || tgname || ')'
+    end as state
+  from trg_found
+),
 checks(ord, migration, object, state) as (
   -- ── 2026-07-30_base_member_preset_all_roles.sql ──────────────────────────────
   select 10, 'preset_all_roles', 'enforce_base_member_write (версия)', (select v from enforce_ver)
 
+  -- ── 2026-07-07_base_member_rank_trigger.sql ─────────────────────────────────
+  -- Сам ТРИГГЕР, а не только функция: проверять версию enforce_base_member_write без него
+  -- бессмысленно — функцию никто не вызовет. Это линчпин ранговой модели: RLS members_insert/
+  -- members_update пропускают любого с can_manage_base, а ранг-гард («роль строго ниже своей»)
+  -- и канонизацию флагов даёт ТОЛЬКО этот триггер. Без него site_manager вставляет
+  -- base_members{role:'worker', can_manage:true} — а верификатор рапортовал бы «всё ок».
+  -- Каноническое имя — trg_base_member_write, но ищем по функции (см. trg_want выше).
+  union all select 11, 'base_member_rank_trigger', 'ранг-гард base_members (триггер → enforce_base_member_write)',
+    (select state from trg_state where tbl = 'base_members')
+
   -- ── 2026-07-30_stock_history_guard.sql ──────────────────────────────────────
   union all select 20, 'stock_history_guard', 'таблица public.stock_history',
     case when to_regclass('public.stock_history') is null then 'НЕТ' else 'есть' end
-  union all select 21, 'stock_history_guard', 'триггер stock_history_trg на stock_items',
-    case when exists (
-      select 1 from pg_trigger t
-      where t.tgname = 'stock_history_trg'
-        and t.tgrelid = to_regclass('public.stock_items')
-        and not t.tgisinternal
-    ) then 'есть' else 'НЕТ' end
+  union all select 21, 'stock_history_guard', 'аудит склада (триггер → stock_history_capture)',
+    (select state from trg_state where tbl = 'stock_items')
   union all select 22, 'stock_history_guard', 'CHECK stock_items_qty_nonneg',
     coalesce((
       select case when c.convalidated then 'есть (провалидирован)'
@@ -1335,13 +1556,9 @@ checks(ord, migration, object, state) as (
     ) then 'есть' else 'НЕТ' end
 
   -- ── 2026-07-31_org_roles_preset_guard.sql ───────────────────────────────────
-  union all select 47, 'org_roles_guard', 'триггер org_roles_guard на org_roles',
-    case when exists (
-      select 1 from pg_trigger t
-      where t.tgname = 'org_roles_guard'
-        and t.tgrelid = to_regclass('public.org_roles')
-        and not t.tgisinternal
-    ) then 'есть' else 'НЕТ — org-роль можно завести с пустыми флагами (начальник не увидит склад)' end
+  -- без него org-роль заводится с пустыми флагами (начальник не увидит склад)
+  union all select 47, 'org_roles_guard', 'страж org_roles (триггер → enforce_org_role_write)',
+    (select state from trg_state where tbl = 'org_roles')
   union all select 48, 'org_roles_guard', 'enforce_base_member_write: legacy custom не блокирует пересменку',
     case
       when not exists (select 1 from enforce) then 'НЕТ ФУНКЦИИ'
