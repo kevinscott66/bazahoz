@@ -258,9 +258,9 @@ begin
   loop
     -- внутри APPLY_ALL этот файл идёт ДО более новых, которые тут же вернут актуальную
     -- редакцию, поэтому там предупреждать не о чем (флаг ставит сам APPLY_ALL).
-    if (r.src like '%p_min_frac%' or r.src like '%p_max_frac%' or r.src like '%@round6%')
+    if (r.src like '%p_min_frac%' or r.src like '%p_max_frac%' or r.src like '%@round6%' or r.src like '%@round9%')
        and coalesce(current_setting('vahtahoz.apply_all', true), '') <> '1' then
-      raise warning 'audit_round3 снял БОЛЕЕ НОВУЮ редакцию %. Следом обязательно примените 2026-08-01_zeroing_report_fixes.sql и 2026-08-01_audit_round6_fixes.sql', r.sig;
+      raise warning 'audit_round3 снял БОЛЕЕ НОВУЮ редакцию %. Следом обязательно примените 2026-08-01_zeroing_report_fixes.sql, 2026-08-01_audit_round6_fixes.sql и 2026-08-01_handover_round9_fixes.sql', r.sig;
     end if;
     execute 'drop function if exists ' || r.sig;
   end loop;
