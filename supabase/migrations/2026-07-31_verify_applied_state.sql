@@ -53,6 +53,21 @@ checks(ord, migration, object, state) as (
   -- ── 2026-07-30_base_member_preset_all_roles.sql ──────────────────────────────
   select 10, 'preset_all_roles', 'enforce_base_member_write (версия)', (select v from enforce_ver)
 
+  -- ── 2026-07-07_base_member_rank_trigger.sql ─────────────────────────────────
+  -- Сам ТРИГГЕР, а не только функция: проверять версию enforce_base_member_write без него
+  -- бессмысленно — функцию никто не вызовет. Это линчпин ранговой модели: RLS members_insert/
+  -- members_update пропускают любого с can_manage_base, а ранг-гард («роль строго ниже своей»)
+  -- и канонизацию флагов даёт ТОЛЬКО этот триггер. Без него site_manager вставляет
+  -- base_members{role:'worker', can_manage:true} — а верификатор рапортовал бы «всё ок».
+  union all select 11, 'base_member_rank_trigger', 'триггер trg_base_member_write на base_members',
+    case when exists (
+      select 1 from pg_trigger t
+      where t.tgname = 'trg_base_member_write'
+        and t.tgrelid = to_regclass('public.base_members')
+        and not t.tgisinternal
+    ) then 'есть'
+    else 'НЕТ — КРИТИЧНО: ранг-гард base_members отключён, применить 2026-07-07_base_member_rank_trigger.sql' end
+
   -- ── 2026-07-30_stock_history_guard.sql ──────────────────────────────────────
   union all select 20, 'stock_history_guard', 'таблица public.stock_history',
     case when to_regclass('public.stock_history') is null then 'НЕТ' else 'есть' end
