@@ -411,7 +411,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v238";
+const APP_BUILD = "v239";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -5398,7 +5398,10 @@ function renderMore(){
   if(profiles.list.length>1 && !restricted && isOwner) data.push(row("Общий каталог баз","mergeCatalogs()"));
   data.push(row("Журнал операций","openJournalSheet()"));
 
+  data.push(row("Память телефона","openStorageSheet()",{ sub:"сколько занимают базы" }));
+
   const about = [
+    row("Проверить обновление","checkForUpdate()",{ sub:"сборка "+APP_BUILD }),
     row("О программе","openAboutSheet()"),
     row("Помощь и частые вопросы","openFaqSheet()"),
     row("Конфиденциальность","openPrivacySheet()"),
@@ -5475,6 +5478,68 @@ async function sendBroadcast(){
   toast("Отправка…");
   try{ const d=await cloudCallFn("broadcast",{subject:s,body:b}); toast(`Отправлено: ${d.sent||0} из ${d.total||0}`); }
   catch(e){ toast("Не удалось: "+(e.message||"проверьте интернет")); }
+}
+/* Сколько места занято на телефоне. Причина появления: у человека на вахте не переключалась база,
+   и понять «почему» было нечем — сообщение про память есть, а цифр нет. Считаем по ключам:
+   активная база (STORE_KEY), снимки остальных (slotKey), задачи и служебные ключи. */
+function storageReport(){
+  const out = { bases:[], service:0, total:0, live:0 };
+  let keys=[]; try{ keys=Object.keys(localStorage); }catch(_){ return out; }
+  const sizeOf = k => { try{ const v=localStorage.getItem(k); return v? (k.length+v.length)*2 : 0; }catch(_){ return 0; } };  // UTF-16: 2 байта на символ
+  for(const k of keys){ out.total += sizeOf(k); }
+  out.live = sizeOf(STORE_KEY);
+  for(const p of profiles.list){
+    const isActive = p.id===profiles.activeId;
+    out.bases.push({ name:p.name||"без имени", active:isActive, bytes: isActive ? out.live : sizeOf(slotKey(p.id)) });
+  }
+  out.service = Math.max(0, out.total - out.bases.reduce((s,b)=>s+b.bytes,0));
+  return out;
+}
+function fmtBytes(n){ return n>=1048576 ? (n/1048576).toFixed(1)+" МБ" : Math.round(n/1024)+" КБ"; }
+function openStorageSheet(){
+  const r = storageReport();
+  // Телефоны дают около 5 МБ на сайт — это не наш выбор, а ограничение браузера, поэтому и порог такой.
+  const LIMIT = 5*1024*1024;
+  const pct = Math.min(100, Math.round(r.total/LIMIT*100));
+  const rows = r.bases.sort((a,b)=>b.bytes-a.bytes).map(b=>`
+    <div class="flex items-center justify-between py-1 border-b border-white/5">
+      <div class="truncate">${esc(b.name)}${b.active?' <span class="text-xs opacity-60">(открыта)</span>':""}</div>
+      <div class="text-sm opacity-80" style="white-space:nowrap">${fmtBytes(b.bytes)}</div>
+    </div>`).join("");
+  openSheet(`
+    <div class="font-bold text-xl mb-3">Память телефона</div>
+    <div class="text-sm opacity-70 mb-2">Занято ${fmtBytes(r.total)} из примерно ${fmtBytes(LIMIT)} — это ${pct}%.
+      Когда места не хватает, база не переключается и новые записи не сохраняются.</div>
+    <div class="mb-3">${rows}
+      <div class="flex items-center justify-between py-1 opacity-70">
+        <div>Служебные данные</div><div class="text-sm" style="white-space:nowrap">${fmtBytes(r.service)}</div>
+      </div>
+    </div>
+    ${pct>=80?`<div class="text-sm" style="color:var(--danger);margin-bottom:10px">Места почти нет. Сделайте резервную копию и удалите базы, которые больше не нужны.</div>`:""}
+    <div class="grid grid-cols-2 gap-2">
+      <button class="btn btn-ghost" onclick="closeSheet();openBackupSheet()">Резервная копия</button>
+      <button class="btn btn-ghost" onclick="closeSheet();openProfilesSheet()">Базы на устройстве</button>
+    </div>`);
+}
+/* Проверить обновление вручную. Понадобилось после случая на вахте: исправление было выкачено,
+   а телефон продолжал работать на старой сборке (слабая сеть — служебный обработчик отдавал
+   версию из кэша), и человек упирался в уже исправленную ошибку. */
+async function checkForUpdate(){
+  if(!cloudOnline()){ toast("Нет интернета — обновление проверим позже"); return; }
+  toast("Проверяю обновление…");
+  try{
+    // Кэш-бастер: без него телефон может получить ту же версию из кэша границы Cloudflare.
+    const r = await fetch(location.pathname + "?upd=" + Date.now(), { cache:"no-store" });
+    const txt = await r.text();
+    const m = txt.match(/const APP_BUILD = "([^"]+)"/);
+    const remote = m && m[1];
+    if(!remote){ toast("Не удалось проверить обновление"); return; }
+    if(remote === APP_BUILD){ toast("Установлена свежая сборка " + APP_BUILD); return; }
+    if(!await confirmSheet(`Есть новая сборка ${remote} (сейчас ${APP_BUILD}). Обновить сейчас? Данные на телефоне не пострадают.`,
+                           { yes:"Обновить", no:"Позже", title:"Обновление" })) return;
+    try{ const reg = await navigator.serviceWorker.getRegistration(); if(reg) await reg.update(); }catch(_){}
+    setTimeout(()=>location.reload(), 400);
+  }catch(e){ console.warn("checkForUpdate", e); toast("Не удалось проверить обновление"); }
 }
 function openAboutSheet(){ openSheet(`
   <div class="font-bold text-xl mb-3">О программе</div>
@@ -8687,8 +8752,26 @@ async function cloudPull(cid){
       return;
     }
   }
-  // защита: не затирать НЕсинхронизированные локальные правки облачными данными
-  if(cloud.pushPending || localStorage.getItem(cloudDirtyKey(cid))){ cloudMaybePush(); return; }
+  /* защита: не затирать НЕсинхронизированные локальные правки облачными данными.
+     ИСКЛЮЧЕНИЕ — локально пусто. Реальный случай на вахте: база открылась пустой (снимок на
+     телефоне не сохранился), а метка «есть несинхронизированное» осталась. Дальше замкнутый круг:
+     pull не идёт, потому что метка, а push не идёт, потому что защита от обнуления не выпускает
+     пустой склад в общую базу. Человек видел пустую базу и не мог ничего сделать.
+     Когда локально нет НИ позиций, НИ журналов, ни надгробий — защищать нечего, грузим облако. */
+  if(cloud.pushPending || localStorage.getItem(cloudDirtyKey(cid))){
+    const _emptyLocal = (()=>{
+      try{
+        if((state.stock||[]).length) return false;
+        for(const k of JOURNAL_KEYS){ if((state.journals?.[k]||[]).length) return false; }
+        if((state.delJr||[]).length) return false;
+        for(const k of STOCK_TYPE_KEYS){ if((state.delLoc?.[k]||[]).length || (state.delCat?.[k]||[]).length) return false; }
+        return true;
+      }catch(_){ return false; }
+    })();
+    if(!(_emptyLocal && !cloud.pushPending)){ cloudMaybePush(); return; }
+    console.warn("cloudPull: локально пусто при метке несинхронизированного — грузим из облака");
+    try{ localStorage.removeItem(cloudDirtyKey(cid)); }catch(_){}
+  }
   const perm = activeMember();
   cloud.applying=true;
   setSyncStatus("syncing","Загрузка из облака…");
