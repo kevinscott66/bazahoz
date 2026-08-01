@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Начиная с Android 12 (API 31) `android:allowBackup="false"` выключает только выгрузку
+  в облако. Перенос на новое устройство (D2D, «скопировать данные со старого телефона»)
+  идёт по отдельному пути и правилами allowBackup НЕ управляется — им управляет этот файл.
+  Поэтому одного allowBackup мало: без раздела <device-transfer> склад бригады и живая
+  сессия Supabase так же поехали бы на чужой аппарат, только не через Drive, а по кабелю.
+
+  Исключаем все домены, а не «лишние»: наружу нечему уходить вовсе. Домен `root` —
+  это корень внутреннего хранилища приложения, где WebView держит `app_webview/Default/
+  Local Storage` (в архиве бэкапа он и виден как `apps/<пакет>/r/app_webview/...`),
+  то есть именно ту базу, ради которой всё и делается.
+
+  Раздел <cloud-backup> дублирует allowBackup намеренно: если кто-то когда-нибудь вернёт
+  allowBackup="true" (это значение по умолчанию в шаблоне Capacitor, оно возвращается само
+  при пересоздании папки android), на Android 12+ данные всё равно не уедут.
+
+  Копия данных у бригады остаётся: облачная база (Supabase) и выгрузка из самого приложения.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+        <exclude domain="device_root" />
+        <exclude domain="device_file" />
+        <exclude domain="device_database" />
+        <exclude domain="device_sharedpref" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+        <exclude domain="device_root" />
+        <exclude domain="device_file" />
+        <exclude domain="device_database" />
+        <exclude domain="device_sharedpref" />
+    </device-transfer>
+</data-extraction-rules>
