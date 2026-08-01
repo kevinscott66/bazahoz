@@ -411,7 +411,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v234";
+const APP_BUILD = "v235";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -760,6 +760,10 @@ function ensureProfiles(){
   return p;
 }
 let profiles = ensureProfiles();
+/* Дубликат слота активной базы, оставшийся от прежних сборок, здесь НЕ удаляем: если предыдущее
+   переключение оборвалось между записью STORE_KEY и saveProfiles, этот слот — единственная копия
+   данных, а STORE_KEY уже содержит чужие. Он рассосётся сам: switchProfile перезапишет его при
+   уходе с базы и убирает слот той базы, на которую перешли. */
 const activeProfile = () => profiles.list.find(x=>x.id===profiles.activeId) || profiles.list[0];
 const activeProfileName = () => (activeProfile()?.name || "База");
 
@@ -781,30 +785,79 @@ function switchProfile(toId, fromAutoLink){
   // авто-привязка к облаку при входе = ИНИЦИАЛИЗАЦИЯ (вход в свою базу), не «смена базы пользователем» → роль-гард не применяем.
   // Пользовательское переключение — под гардом (явно, без завязки на тайминг activeCloudId).
   if(!fromAutoLink && roleBaseLocked()){ toast("Переключение баз недоступно для вашей роли"); return; }
+  const prevActive = profiles.activeId;
+  const prevLive = (()=>{ try{ return localStorage.getItem(STORE_KEY); }catch(_){ return null; } })();
+  /* Байты ЦЕЛЕВОЙ базы читаем ПЕРВЫМИ и держим в памяти. Дальше её слот можно временно удалить,
+     чтобы освободить место, и в любой момент вернуть на диск. Это и есть лечение жалобы
+     «перешёл на 3 Западную, обратно — „Не удалось переключить базу“»: на телефоне localStorage
+     обычно 5 МБ на весь origin, а хранили мы каждую базу ДВАЖДЫ — живой STORE_KEY плюс её же
+     слот, который прежний код после переключения не убирал. Две базы среднего размера упирались
+     в потолок ровно на обратном переключении, quota-ошибка падала в общий catch, и человек
+     получал безымянное «Не удалось» без единой подсказки, что делать. */
+  let raw = null;
+  try{ raw = localStorage.getItem(slotKey(toId)); }catch(_){}
+  const snap = (()=>{ try{ return JSON.stringify(state); }catch(e){ console.error("switchProfile: снимок", e); return null; } })();
+  if(snap === null){ toast("Не удалось переключить базу"); return; }
+
+  let freedTarget = false;                                   // сняли ли слот целевой базы ради места
+  /* Вернуть снятый слот на место. По байтам это всегда возможно — мы пишем ровно то, что только что
+     удалили. Но если запись всё-таки не прошла, единственная копия целевой базы остаётся в памяти
+     переменной raw, и молчать тут нельзя: заводим повторные попытки, пока вкладка жива. */
+  const restoreTarget = ()=>{
+    if(!freedTarget || raw == null) return true;
+    for(let i=0;i<3;i++){ try{ localStorage.setItem(slotKey(toId), raw); return true; }catch(_){} }
+    const bytes = raw, key = slotKey(toId);
+    let left = 20;
+    const t = setInterval(()=>{
+      try{ localStorage.setItem(key, bytes); clearInterval(t); toast("Данные базы восстановлены в памяти телефона"); }
+      catch(_){ if(--left<=0) clearInterval(t); }
+    }, 3000);
+    _quotaBlock("⛔ На телефоне нет места: данные второй базы держатся только в оперативной памяти. НЕ закрывайте приложение — сделайте экспорт прямо сейчас");
+    return false;
+  };
+
+  // 1) снимок активной базы (самые свежие данные — из памяти) в её слот
   try{
-    const prevActive = profiles.activeId;
-    const prevLive = localStorage.getItem(STORE_KEY);   // «живые» байты ДО подмены — для отката
-    // 1) снимок активной базы (самые свежие данные — из памяти) в её слот
-    localStorage.setItem(slotKey(profiles.activeId), JSON.stringify(state));
-    // 2) целевую базу делаем «живой» (STORE_KEY)
-    const raw = localStorage.getItem(slotKey(toId));
-    localStorage.setItem(STORE_KEY, raw || JSON.stringify(freshProfileState()));
-    // 3) фиксируем активную и перезагружаемся — нормализация прогонится на новых данных
-    profiles.activeId = toId;
-    if(!saveProfiles(profiles)){
-      // PROFILES_KEY не записан: activeId остался СТАРЫМ, а STORE_KEY уже содержит данные
-      // ЦЕЛЕВОЙ базы. Без отката после reload старая база показывала бы чужие данные, а если
-      // она облачная — отправила бы их в push под своим cloudId. Возвращаем как было.
-      profiles.activeId = prevActive;
-      if(prevLive != null){ try{ localStorage.setItem(STORE_KEY, prevLive); }catch(_){} }
-      try{ toast("Не удалось переключить базу — данные не тронуты"); }catch(_){}
+    localStorage.setItem(slotKey(prevActive), snap);
+  }catch(e){
+    if(!isQuotaErr(e)){ console.error("switchProfile: слот активной", e); toast("Не удалось переключить базу"); return; }
+    // места нет: слот целевой базы всё равно станет живым — освобождаем его и пробуем снова
+    try{ localStorage.removeItem(slotKey(toId)); freedTarget = true; }catch(_){}
+    try{
+      localStorage.setItem(slotKey(prevActive), snap);
+    }catch(e2){
+      restoreTarget();
+      _quotaBlock("⛔ Не хватило места на телефоне — база НЕ переключена, данные обеих баз целы");
       return;
     }
-    location.reload();
-  }catch(e){
-    console.error("switchProfile", e);
-    try{ toast("Не удалось переключить базу"); }catch(_){}
   }
+  // 2) целевую базу делаем «живой» (STORE_KEY)
+  try{
+    localStorage.setItem(STORE_KEY, raw || JSON.stringify(freshProfileState()));
+  }catch(e){
+    restoreTarget();
+    if(isQuotaErr(e)) _quotaBlock("⛔ Не хватило места на телефоне — база НЕ переключена, данные обеих баз целы");
+    else { console.error("switchProfile: STORE_KEY", e); toast("Не удалось переключить базу — данные не тронуты"); }
+    return;
+  }
+  // 3) фиксируем активную и перезагружаемся — нормализация прогонится на новых данных
+  profiles.activeId = toId;
+  if(!saveProfiles(profiles)){
+    // PROFILES_KEY не записан: activeId остался СТАРЫМ, а STORE_KEY уже содержит данные
+    // ЦЕЛЕВОЙ базы. Без отката после reload старая база показывала бы чужие данные, а если
+    // она облачная — отправила бы их в push под своим cloudId. Возвращаем как было.
+    profiles.activeId = prevActive;
+    if(prevLive != null){ try{ localStorage.setItem(STORE_KEY, prevLive); }catch(_){} }
+    restoreTarget();
+    try{ toast("Не удалось переключить базу — данные не тронуты"); }catch(_){}
+    return;
+  }
+  /* Слот целевой базы больше не нужен: её данные теперь ЖИВЫЕ в STORE_KEY, а по модели хранения
+     слот держит только НЕактивные базы. Убираем дубликат — это половина занимаемого базой места,
+     и именно она возвращается человеку на следующем переключении. Делаем последним шагом, после
+     удачного saveProfiles: до него слот ещё нужен для отката. */
+  try{ localStorage.removeItem(slotKey(toId)); }catch(_){}
+  location.reload();
 }
 async function addProfile(){
   if(roleBaseLocked()){ toast("Создание баз недоступно для вашей роли"); return; }
