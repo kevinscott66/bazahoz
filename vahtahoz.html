@@ -363,7 +363,10 @@
       <a role="button" tabindex="0" onclick="openTermsSheet()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTermsSheet()}" style="color:#8fe3ea;cursor:pointer">Условия</a> и
       <a role="button" tabindex="0" onclick="openPrivacySheet()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openPrivacySheet()}" style="color:#8fe3ea;cursor:pointer">Политику конфиденциальности</a></div>
     <!-- текст подставляется из APP_BUILD_LABEL при старте (единый источник версии) -->
-    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px">сборка v216</div>
+    <!-- Номер подставляет скрипт из APP_BUILD_LABEL. В разметке он пустой намеренно:
+         зашитая строка отставала от сборки (висела v216 при v243), а поддержка просит
+         людей называть именно это число — лучше пусто, чем неверно. -->
+    <div id="buildLabel" style="font-size:11px;opacity:.4;margin-top:10px"></div>
   </div>
 </div>
 
@@ -411,7 +414,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v243";
+const APP_BUILD = "v245";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -5538,18 +5541,67 @@ async function sendBroadcast(){
 /* Сколько места занято на телефоне. Причина появления: у человека на вахте не переключалась база,
    и понять «почему» было нечем — сообщение про память есть, а цифр нет. Считаем по ключам:
    активная база (STORE_KEY), снимки остальных (slotKey), задачи и служебные ключи. */
+/* РАЗБИВКА «служебных данных». Раньше это была одна строка с числом — на телефоне владельца
+   она показывала 2.3 МБ из 5.5 занятых, и по ней нельзя было понять ни что это, ни что с этим
+   делать. Считаем по группам, потому что группы ведут себя по-разному: снимки синхронизации
+   восстанавливаются сами, «остатки удалённых баз» не восстанавливаются никогда и никому не
+   видны, а сессия весит десятки байт и трогать её бессмысленно. */
+function _knownCids(){
+  const s = new Set();
+  for(const p of profiles.list){ if(p.cloudId) s.add(p.cloudId); if(p.fromCloudId) s.add(p.fromCloudId); }
+  return s;
+}
 function storageReport(){
-  const out = { bases:[], service:0, total:0, live:0 };
+  const out = { bases:[], groups:{sync:0,tasks:0,session:0,other:0}, junk:{slots:0,sync:0,dupe:0,keys:[]},
+                service:0, total:0, live:0 };
   let keys=[]; try{ keys=Object.keys(localStorage); }catch(_){ return out; }
   const sizeOf = k => { try{ const v=localStorage.getItem(k); return v? (k.length+v.length)*2 : 0; }catch(_){ return 0; } };  // UTF-16: 2 байта на символ
-  for(const k of keys){ out.total += sizeOf(k); }
+  const slotIds = new Set(profiles.list.map(p=>p.id));
+  const cids = _knownCids();
+  const SIG = NS+"vahtahoz_sig_", DIRTY = NS+"vahtahoz_dirty_", SLOT = STORE_KEY+"::";
+  const TASKS_SET = new Set([TASKS_KEY, TASKS_DIRTY, TASKS_OWNER]);
+  const SESS_SET  = new Set([NS+"vahtahoz_sess", NS+"vahtahoz_auth", GATES_KEY,
+                             NS+"vahtahoz_cloud_owner", NS+"vahtahoz_onboarded"]);
+  for(const k of keys){
+    const b = sizeOf(k); out.total += b;
+    if(k===STORE_KEY) continue;                                  // активная база — отдельной строкой ниже
+    if(k.startsWith(SLOT)){
+      // Слот базы, которой нет в списке: открыть её нечем, выгрузить нечем — она недостижима.
+      if(!slotIds.has(k.slice(SLOT.length))){ out.junk.slots += b; out.junk.keys.push(k); }
+      continue;                                                  // свои слоты посчитаны как базы
+    }
+    if(k.startsWith(SIG) || k.startsWith(DIRTY)){
+      const isSig = k.startsWith(SIG);
+      const rest = isSig ? k.slice(SIG.length) : k.slice(DIRTY.length);
+      const kind = isSig ? rest.slice(0, rest.indexOf("_")) : "";
+      const cid  = isSig ? rest.slice(rest.indexOf("_")+1) : rest;
+      if(kind==="tasks"){ out.groups.tasks += b; continue; }      // подписи задач — к задачам
+      if(!cids.has(cid)){ out.junk.sync += b; out.junk.keys.push(k); continue; }
+      if(_dupeAllowedKey(cid, kind)){ out.junk.dupe += b; out.junk.keys.push(k); continue; }
+      out.groups.sync += b; continue;
+    }
+    if(TASKS_SET.has(k)){ out.groups.tasks += b; continue; }
+    if(SESS_SET.has(k)){ out.groups.session += b; continue; }
+    out.groups.other += b;                                       // список баз, флаги, всё прочее
+  }
   out.live = sizeOf(STORE_KEY);
   for(const p of profiles.list){
     const isActive = p.id===profiles.activeId;
     out.bases.push({ name:p.name||"без имени", active:isActive, bytes: isActive ? out.live : sizeOf(slotKey(p.id)) });
   }
-  out.service = Math.max(0, out.total - out.bases.reduce((s,b)=>s+b.bytes,0));
+  out.service = out.groups.sync+out.groups.tasks+out.groups.session+out.groups.other
+              + out.junk.slots+out.junk.sync+out.junk.dupe;
   return out;
+}
+// allowed-снимок, побайтово равный основному (наследство сборок до v245, см. saveAllowedSig).
+// Читается только ограниченной по типам ролью, и там его отсутствие — штатное состояние.
+function _dupeAllowedKey(cid, kind){
+  const base = kind==="stockAllowed" ? "stock" : kind==="jrAllowed" ? "jr" : null;
+  if(!base) return false;
+  try{
+    const a = localStorage.getItem(`${NS}vahtahoz_sig_${kind}_${cid}`);
+    return !!a && a === localStorage.getItem(`${NS}vahtahoz_sig_${base}_${cid}`);
+  }catch(_){ return false; }
 }
 function fmtBytes(n){ return n>=1048576 ? (n/1048576).toFixed(1)+" МБ" : Math.round(n/1024)+" КБ"; }
 function openStorageSheet(){
@@ -5557,6 +5609,20 @@ function openStorageSheet(){
   // Телефоны дают около 5 МБ на сайт — это не наш выбор, а ограничение браузера, поэтому и порог такой.
   const LIMIT = 5*1024*1024;
   const pct = Math.min(100, Math.round(r.total/LIMIT*100));
+  const free = r.junk.slots + r.junk.sync + r.junk.dupe;
+  // Строки внутри «служебных»: показываем только заметные (от 20 КБ) — иначе список из десятка
+  // строк по 40 байт прячет ту единственную, из-за которой на телефоне кончилось место.
+  const svc = [
+    ["Снимки синхронизации", r.groups.sync, "нужны, чтобы в облако уходило только изменённое"],
+    ["Задачи и расписание",  r.groups.tasks, ""],
+    ["Вход и настройки",     r.groups.session + r.groups.other, ""],
+    ["Остатки удалённых баз", r.junk.slots, "недоступны из приложения — можно удалить"],
+    ["Лишние служебные снимки", r.junk.sync + r.junk.dupe, "восстановятся при синхронизации"],
+  ].filter(x=>x[1] >= 20*1024).map(x=>`
+    <div class="flex items-start justify-between py-1 pl-3 text-sm opacity-60">
+      <div class="truncate">· ${x[0]}${x[2]?`<div class="text-xs opacity-70">${x[2]}</div>`:""}</div>
+      <div style="white-space:nowrap">${fmtBytes(x[1])}</div>
+    </div>`).join("");
   const rows = r.bases.sort((a,b)=>b.bytes-a.bytes).map(b=>`
     <div class="flex items-center justify-between py-1 border-b border-white/5">
       <div class="truncate">${esc(b.name)}${b.active?' <span class="text-xs opacity-60">(открыта)</span>':""}</div>
@@ -5567,15 +5633,46 @@ function openStorageSheet(){
     <div class="text-sm opacity-70 mb-2">Занято ${fmtBytes(r.total)} из примерно ${fmtBytes(LIMIT)} — это ${pct}%.
       Когда места не хватает, база не переключается и новые записи не сохраняются.</div>
     <div class="mb-3">${rows}
-      <div class="flex items-center justify-between py-1 opacity-70">
+      <div class="flex items-center justify-between py-1 opacity-70 border-t border-white/10 mt-1 pt-2">
         <div>Служебные данные</div><div class="text-sm" style="white-space:nowrap">${fmtBytes(r.service)}</div>
       </div>
+      ${svc}
     </div>
+    ${free>0?`<div class="text-sm" style="margin-bottom:10px">Можно освободить <b>${fmtBytes(free)}</b> без потери рабочих данных.</div>
+      <button class="btn btn-primary w-full mb-2" onclick="freeStorageJunk()">Освободить ${fmtBytes(free)}</button>`:""}
     ${pct>=80?`<div class="text-sm" style="color:var(--danger);margin-bottom:10px">Места почти нет. Сделайте резервную копию и удалите базы, которые больше не нужны.</div>`:""}
     <div class="grid grid-cols-2 gap-2">
       <button class="btn btn-ghost" onclick="closeSheet();openBackupSheet()">Резервная копия</button>
       <button class="btn btn-ghost" onclick="closeSheet();openProfilesSheet()">Базы на устройстве</button>
     </div>`);
+}
+/* Уборка. Удаляем ТОЛЬКО то, отсутствие чего доказуемо ничего не стоит:
+   — снимки синхронизации баз, которых нет в списке (база удалена, снимки остались);
+   — allowed-снимки, побайтово равные основным (см. saveAllowedSig);
+   — слоты баз, которых нет в списке: открыть, переключить или выгрузить их нечем,
+     они не видны ни в одном экране и не попадают в резервную копию.
+   Слоты — единственное здесь, что не восстановится, поэтому про них спрашиваем отдельно
+   и называем размер. Рабочие снимки живых баз не трогаем: без них следующая синхронизация
+   гонит в облако весь склад и весь журнал — на вахтовом интернете это десятки минут. */
+async function freeStorageJunk(){
+  const r = storageReport();
+  const cache = r.junk.sync + r.junk.dupe;
+  if(r.junk.slots > 0){
+    const ok = await confirmSheet(
+      `Будет удалено ${fmtBytes(r.junk.slots)} остатков баз, которых больше нет в списке на этом телефоне. `+
+      `Открыть или выгрузить их приложение не может — они не видны ни на одном экране и не входят в резервную копию. `+
+      `Восстановить их после удаления будет нельзя.` +
+      (cache ? `\n\nЗаодно уберём ${fmtBytes(cache)} служебных снимков — они восстановятся сами при следующей синхронизации.` : ""),
+      { yes:"Удалить", no:"Отмена", title:"Освободить место" });
+    if(!ok) return;
+  }
+  let freed = 0;
+  for(const k of r.junk.keys){
+    try{ const v = localStorage.getItem(k); localStorage.removeItem(k); freed += v ? (k.length+v.length)*2 : 0; }catch(_){}
+  }
+  _jrSigCache = null;                       // снимок журнала мог быть среди удалённых
+  toast(freed ? `Освобождено ${fmtBytes(freed)}` : "Лишнего не нашлось");
+  closeSheet(); openStorageSheet();
 }
 /* Проверить обновление вручную. Понадобилось после случая на вахте: исправление было выкачено,
    а телефон продолжал работать на старой сборке (слабая сеть — служебный обработчик отдавал
@@ -5602,8 +5699,10 @@ function openAboutSheet(){ openSheet(`
   <div class="text-sm space-y-2" style="line-height:1.5">
     <div><b>ВахтаХоз</b> — складской учёт для вахтовых объектов. Работает офлайн (PWA), синхронизируется с облаком.</div>
     <div class="opacity-70">Сборка ${APP_BUILD} · офлайн PWA</div>
-    <div class="opacity-70">Правообладатель: ООО «Разведчик».</div>
-    <div class="opacity-70">Сайт и поддержка: <a href="https://vahta.razvedchick.ru" style="color:var(--accent)">vahta.razvedchick.ru</a></div>
+    <div class="opacity-70">Правообладатель: ООО «Разведчик». Владелец и разработчик — Павлович Александр Кириллович.</div>
+    <div class="opacity-70">Сайт: <a href="https://razvedchick.ru" style="color:var(--accent)">razvedchick.ru</a></div>
+    <div class="opacity-70">Поддержка: <a href="mailto:support@razvedchick.ru" style="color:var(--accent)">support@razvedchick.ru</a></div>
+    <div class="opacity-70">Рабочая почта: <a href="https://email.razvedchick.ru/" style="color:var(--accent)">email.razvedchick.ru</a></div>
   </div>`); }
 function openFaqSheet(){ const q=(t,a)=>`<details class="border-b border-white/5"><summary class="font-semibold">${t}</summary><div class="text-sm opacity-80 pb-2" style="line-height:1.5">${a}</div></details>`;
   openSheet(`<div class="font-bold text-xl mb-3">Помощь и частые вопросы</div>
@@ -5614,25 +5713,35 @@ function openFaqSheet(){ const q=(t,a)=>`<details class="border-b border-white/5
   ${q("Как передать смену?","Управляющий базой: «Аккаунт и база → Работники и роли → Передать смену». Нужен интернет.")}
   ${q("Почему меня не видно в другой базе?","Доступ к базам выдаёт начальник участка или партии. Каждый видит только свои базы.")}
   ${q("Забыл пароль","Заранее привяжите личную почту: «Ещё → Резервная почта». Тогда на экране входа «Забыли пароль?» → введёте логин → код придёт на эту почту → введёте код и новый пароль. Без привязанной почты сброс делает начальник.")}
+  ${q("Не приходит код восстановления","Проверьте папку «Спам»: письмо приходит с нашего сервера, отправитель — ВахтаХоз. Код живёт ограниченное время — если просрочен, запросите новый. Писем нет совсем: скорее всего, в профиле указан другой адрес, тогда пароль сбрасывает начальник участка.")}
+  ${q("Где рабочая почта","Ящик логин@razvedchick.ru открывается на email.razvedchick.ru. Логин тот же, что и здесь, пароль — тот, что выдали вместе с доступом. Смена пароля в приложении почтовый не меняет.")}
+  ${q("Перехожу на новый телефон","Сначала на старом дождитесь связи и убедитесь, что обмен прошёл, сделайте резервную копию. Затем на новом откройте vahta.razvedchick.ru и войдите своим логином. Старый телефон очищайте только после того, как проверите остатки на новом.")}
+  ${q("Куда писать, если ничего не помогло","support@razvedchick.ru. Укажите логин, название базы, номер сборки (внизу экрана входа), телефон и браузер, и что именно делали. Подробнее — на razvedchick.ru/support. Пароль в письме присылать не нужно: поддержка его никогда не спрашивает.")}
   </div>`); }
 function openPrivacySheet(){ openSheetOverGate(`<div class="font-bold text-xl mb-3">Политика конфиденциальности</div>
   <div class="text-sm space-y-2" style="line-height:1.6;max-height:70vh;overflow-y:auto">
-   <p>Оператор персональных данных — ООО «Разведчик» (далее «Оператор»).</p>
-   <p><b>Какие данные обрабатываются.</b> Логин, роль, принадлежность к базе и вводимые данные складского учёта (наименования, количества, места, сроки, журналы). Пароль хранится в виде необратимого хэша.</p>
-   <p><b>Цель.</b> Работа складского учёта, синхронизация между устройствами и сотрудниками, восстановление доступа.</p>
-   <p><b>Хранение.</b> На защищённом сервере и локально на устройстве (для офлайн-работы). Доступ ограничен ролью пользователя.</p>
-   <p><b>Передача третьим лицам.</b> Не осуществляется, кроме поставщика серверной инфраструктуры и случаев, предусмотренных законом.</p>
-   <p><b>Ваши права.</b> Запрос, исправление и удаление данных — через начальника участка или Оператора.</p>
-   <p class="opacity-60">Редакция от июля 2026 г.</p>
+   <p>Оператор персональных данных — ООО «Разведчик» (далее «Оператор»). Владелец и разработчик — Павлович Александр Кириллович.</p>
+   <p><b>Какие данные обрабатываются.</b> Логин, отображаемое имя, роль, принадлежность к базам и вводимые данные складского учёта (наименования, количества, места, сроки, журналы). Пароль хранится в виде необратимого хэша — восстановить его нельзя, поддержка его не видит. Резервный адрес почты — если вы указали его сами, только для кода восстановления. Содержимое рабочего почтового ящика, если он вам выдан.</p>
+   <p><b>Цель.</b> Работа складского учёта, синхронизация между устройствами и сотрудниками, разграничение доступа к базам, восстановление доступа, ответ на обращение в поддержку.</p>
+   <p><b>Хранение.</b> На защищённом сервере и локально на устройстве (для офлайн-работы). Данные на устройстве доступны всякому, у кого есть доступ к разблокированному телефону, — защищайте его кодом или отпечатком.</p>
+   <p><b>Аналитика.</b> Счётчиков посещений, рекламных систем и сторонних скриптов нет ни в приложении, ни на сайте.</p>
+   <p><b>Передача третьим лицам.</b> Не осуществляется, кроме поставщика серверной инфраструктуры и случаев, предусмотренных законом. Данные не продаются и не используются для профилирования.</p>
+   <p><b>Ваши права.</b> Запрос, исправление и удаление данных — через начальника участка или Оператора: support@razvedchick.ru.</p>
+   <p>Полная редакция — <a href="https://razvedchick.ru/privacy" style="color:var(--accent)">razvedchick.ru/privacy</a>.</p>
+   <p class="opacity-60">Редакция от 1 августа 2026 г.</p>
   </div>`); }
 function openTermsSheet(){ openSheetOverGate(`<div class="font-bold text-xl mb-3">Условия использования</div>
   <div class="text-sm space-y-2" style="line-height:1.6;max-height:70vh;overflow-y:auto">
-   <p>Приложение «ВахтаХоз» предоставляется ООО «Разведчик» для служебного учёта на вахтовых объектах.</p>
-   <p>Доступ выдаётся уполномоченным лицом. Учётные данные личные; передача их третьим лицам запрещена.</p>
+   <p>Приложение «ВахтаХоз» предоставляется ООО «Разведчик» (далее «Оператор») для служебного учёта на вахтовых объектах. Владелец и разработчик — Павлович Александр Кириллович.</p>
+   <p>Доступ выдаётся уполномоченным лицом организации — начальником участка или партии. Самостоятельной регистрации нет. Учётные данные личные; передача их третьим лицам запрещена.</p>
+   <p>Выданный пароль следует сменить при первом входе, а в профиле указать резервную почту — без неё восстановить доступ самостоятельно нельзя.</p>
+   <p>Вместе с доступом может выдаваться рабочий почтовый ящик на домене razvedchick.ru. Ящик служебный и принадлежит организации: при прекращении работы доступ к нему прекращается.</p>
    <p>Пользователь отвечает за достоверность вводимых данных и за сохранность доступа к своему устройству.</p>
-   <p>Приложение поставляется «как есть»; Оператор не отвечает за убытки от неверно введённых данных или утери устройства. Регулярно делайте резервные копии.</p>
-   <p>Продолжая использование, вы принимаете настоящие Условия и Политику конфиденциальности.</p>
-   <p class="opacity-60">Редакция от июля 2026 г.</p>
+   <p><b>Работа без связи.</b> Операции сохраняются на устройстве и уходят на сервер, когда появится сеть. До этого момента они существуют только на этом телефоне: утеря, поломка, сброс или очистка данных браузера означает их утерю, и Оператор восстановить их не может. Делайте резервные копии — особенно перед выездом и перед массовыми операциями.</p>
+   <p>Приложение поставляется «как есть»; Оператор не отвечает за убытки от неверно введённых данных, за утерю несинхронизированных записей и за перерывы из-за отсутствия связи на объекте.</p>
+   <p>Данные складского учёта принадлежат организации, которой выдан доступ.</p>
+   <p>Продолжая использование, вы принимаете настоящие Условия и Политику конфиденциальности. Полная редакция — <a href="https://razvedchick.ru/terms" style="color:var(--accent)">razvedchick.ru/terms</a>.</p>
+   <p class="opacity-60">Редакция от 1 августа 2026 г.</p>
   </div>`); }
 /* ---------- Excel / CSV экспорт ---------- */
 function ensureXlsx(){
@@ -8931,9 +9040,10 @@ async function cloudPull(cid){
       saveStockSig(cid, pulledStSig, pulledVals);
       // allowed-снимки = то, что RLS реально отдал этой роли (иначе type-restricted
       // delete ждёт stockAllowed с push и после pull удаления не уходят в облако)
-      saveSyncSig(cid, "stockAllowed", pulledStSig);
+      const _restricted = allowedTypeKeys().length < STOCK_TYPE_KEYS.length;
+      saveAllowedSig(cid, "stockAllowed", pulledStSig, _restricted);
       saveSyncSig(cid,"jr",pulledJSig);
-      saveSyncSig(cid,"jrAllowed",pulledJSig);
+      saveAllowedSig(cid,"jrAllowed",pulledJSig,_restricted);
     }catch(_){}
     // исправления сверки (только у редакторов) — помечаем к выгрузке, чтобы облако тоже обновилось
     if(_reconChanged){ markDirty(cid); }
@@ -8994,6 +9104,23 @@ function saveSyncSig(cid, kind, map){
     console.warn("saveSyncSig: снимок подписей не сохранён ("+kind+")", e);
     if(isQuotaErr(e)) _quotaBlock();
   }
+}
+/* Allowed-снимок читает РОВНО одна роль — ограниченная по типам (Механик/Повар): только она
+   рискует снести из облака чужие типы, и только у неё эти снимки участвуют в решении (см.
+   prevAllowed/prevJrAllowed в cloudPushNow). У всех остальных он побайтово повторял основной
+   снимок — и это была не мелочь: замер на базе вахтового размера (278 позиций, 3500 записей
+   журнала) дал jr 403 КБ и ровно столько же jrAllowed, то есть около 450 КБ на базу впустую.
+   При двух базах на телефоне это почти пятая часть всей памяти, которую браузер даёт сайту (5 МБ),
+   и ровно она доводила до «Данные не сохранены». Полному доступу снимок не пишем, старый удаляем.
+   СОВМЕСТИМОСТЬ. Ключ и формат не меняются. Отсутствие ключа — состояние, которое код умел и
+   раньше (haveAllowed=false): так выглядит база, ни разу не выгружавшаяся ограниченной ролью,
+   поэтому старая сборка из кэша ведёт себя ровно как всегда.
+   ЦЕНА, ЧЕСТНО. Если роль СТАНЕТ ограниченной, первый push после этого удалит из облака только
+   то, что сам успел записать в allowed-снимок; остальные удаления уедут следующим циклом — id
+   остаются в prevSig, надгробия в state.delJr. Сдвиг на один цикл, а не потеря. */
+function saveAllowedSig(cid, kind, map, restricted){
+  if(restricted){ saveSyncSig(cid, kind, map); return; }
+  try{ localStorage.removeItem(`${NS}vahtahoz_sig_${kind}_${cid}`); }catch(_){}
 }
 // счётчики позиций склада ПО ТИПАМ — чтобы suspectWipe работал и для ограниченных ролей (Механик/Повар):
 // сравниваем с ожиданием ПО ДОСТУПНЫМ типам (per-type корректно даже если снимок от прежней, более широкой роли).
@@ -9328,7 +9455,7 @@ async function cloudPushNow(){
         Object.keys(curSig).forEach(id=>{ mergedSig[id]=curSig[id]; });
         del.forEach(id=>{ delete mergedSig[id]; });
         saveStockSig(cid, mergedSig);
-        saveSyncSig(cid, "stockAllowed", curSig);
+        saveAllowedSig(cid, "stockAllowed", curSig, _typeRestricted);
         // разрешение ИСПОЛЬЗОВАНО: склад уехал в облако, снимок пересчитан. Снимаем сразу здесь (а не в конце
         // push-а) — дальше идут настройки/журналы, их сбой не должен оставлять защиту выключенной.
         if(_wipeOk){ cloud._wipeOverride=null; cloud._wipePending=null; }
@@ -9398,7 +9525,7 @@ async function cloudPushNow(){
         Object.keys(curJSig).forEach(id=>{ mergedJ[id]=curJSig[id]; });
         jrToDel.forEach(id=>{ delete mergedJ[id]; });
         saveSyncSig(cid,"jr",mergedJ);
-        saveSyncSig(cid,"jrAllowed",curJSig);
+        saveAllowedSig(cid,"jrAllowed",curJSig,_typeRestricted);
       } else if(jrToDel.length){
         // wipe-защита пропустила выгрузку (журнал локально «опустел»), но ЯВНЫЕ надгробия всё равно
         // доставляем: пользователь удалил последние записи — они должны уйти и из облака.

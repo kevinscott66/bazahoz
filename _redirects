@@ -6,3 +6,9 @@
 # 200 — это перезапись, а не перенаправление: адрес в браузере остаётся прежним.
 /vahtahoz.html       /vahtahoz       200
 /beta/vahtahoz.html  /beta/vahtahoz  200
+
+# Короткий адрес почты: его называют людям на объекте вслух, и он должен работать
+# с любого нашего домена. На апексе то же самое делает правило Cloudflare, здесь —
+# чтобы ссылка жила и на vahta.razvedchick.ru.
+/mail                https://email.razvedchick.ru/  301
+/mail/*              https://email.razvedchick.ru/  301

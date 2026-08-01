@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ВахтаХоз — складской учёт для вахтовых объектов</title>
+<meta name="description" content="Склад, задачи и журнал движений на телефоне бригадира. Работает без связи: операции сохраняются на устройстве и уходят в общую базу, когда сеть появится.">
+<meta name="theme-color" content="#0b1220">
+<link rel="canonical" href="https://razvedchick.ru/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="ВахтаХоз — складской учёт для вахтовых объектов">
+<meta property="og:description" content="Склад, задачи и журнал движений на телефоне бригадира. Работает без связи.">
+<meta property="og:url" content="https://razvedchick.ru/">
+<meta property="og:locale" content="ru_RU">
+<link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'><rect width='48' height='48' rx='11' fill='%23111827'/><g transform='translate(24 24) scale(.74) translate(-24 -24)' fill='none' stroke='%235ec8d4' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><path d='M9 16.5h30v22a3 3 0 0 1-3 3H12a3 3 0 0 1-3-3z'/><path d='M7 8.5h34a2 2 0 0 1 2 2v6H5v-6a2 2 0 0 1 2-2z'/><path d='M16.5 26.5l5.5 5.5 10-10'/></g></svg>">
+<link rel="stylesheet" href="/site.css">
+<style>
+  /* Первый экран — «порог»: только имя, одно действие и три факта.
+     Всё остальное уезжает ниже линии сгиба намеренно: человек на объекте
+     заходит работать, а не читать. */
+  .gate{padding:clamp(52px,10vw,96px) 0 clamp(40px,7vw,64px)}
+  .gate h1{margin-bottom:16px}
+  .gate .btns{margin:30px 0 26px}
+  .facts{display:flex; gap:8px; flex-wrap:wrap}
+  .mark{margin:0 0 22px}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">К содержанию</a>
+
+<header class="bar">
+  <div class="wrap">
+    <a class="nm" href="/">
+      <svg width="24" height="24" viewBox="0 0 48 48" aria-hidden="true">
+        <rect width="48" height="48" rx="11" fill="#101b2e"/>
+        <g transform="translate(24 24) scale(.74) translate(-24 -24)" fill="none" stroke="#5ec8d4" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 16.5h30v22a3 3 0 0 1-3 3H12a3 3 0 0 1-3-3z"/><path d="M7 8.5h34a2 2 0 0 1 2 2v6H5v-6a2 2 0 0 1 2-2z"/><path d="M16.5 26.5l5.5 5.5 10-10"/>
+        </g>
+      </svg>
+      <span class="wm">ВахтаХоз</span>
+    </a>
+    <nav aria-label="Разделы сайта">
+      <a href="/support">Поддержка</a>
+      <a href="https://email.razvedchick.ru/">Почта</a>
+      <a href="/start">Подключить</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="gate">
+    <div class="wrap">
+      <svg class="mark" width="56" height="56" viewBox="0 0 48 48" role="img" aria-label="Знак ВахтаХоз">
+        <rect width="48" height="48" rx="11" fill="#101b2e"/>
+        <g transform="translate(24 24) scale(.74) translate(-24 -24)" fill="none" stroke="#5ec8d4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 16.5h30v22a3 3 0 0 1-3 3H12a3 3 0 0 1-3-3z"/><path d="M7 8.5h34a2 2 0 0 1 2 2v6H5v-6a2 2 0 0 1 2-2z"/><path d="M16.5 26.5l5.5 5.5 10-10"/>
+        </g>
+      </svg>
+      <p class="eyebrow">Складской учёт на вахте</p>
+      <h1>Связь пропала —<br>работа не встала</h1>
+      <p class="lede">Склад, задачи и журнал движений на телефоне бригадира.
+         Операции пишутся на устройство сразу и уходят в общую базу отряда,
+         когда сеть появится.</p>
+      <div class="btns">
+        <a class="btn btn-1" href="https://vahta.razvedchick.ru/vahtahoz">Войти</a>
+        <a class="btn btn-2" href="#how">Как это устроено</a>
+      </div>
+      <div class="facts">
+        <span class="chip"><span class="dot" aria-hidden="true"></span>сервис работает</span>
+        <span class="chip">без установки</span>
+        <span class="chip">телефон и компьютер</span>
+        <span class="chip">выгрузка в Excel</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="wrap">
+      <p class="eyebrow">Как проходит операция</p>
+      <h2>Запись не ждёт сеть</h2>
+      <p class="lede" style="margin-bottom:26px">Кладовщик отмечает выдачу там, где он стоит: в боксе,
+         на площадке, в кунге. Интернет нужен не для записи, а только для того, чтобы её увидели остальные.</p>
+
+      <div class="flow">
+        <div class="step">
+          <b>01 · телефон</b>
+          <span>Приход, выдача, списание, перемещение между базами</span>
+        </div>
+        <div class="arr" aria-hidden="true">
+          <svg width="26" height="10" viewBox="0 0 26 10" fill="none" stroke="currentColor" stroke-width="1.4">
+            <path d="M0 5h22M18 1l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="step">
+          <b>02 · память устройства</b>
+          <span>Запись сохранена сразу, даже если сети нет вообще</span>
+        </div>
+        <div class="arr" aria-hidden="true">
+          <svg width="26" height="10" viewBox="0 0 26 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="3 3">
+            <path d="M0 5h22M18 1l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="step">
+          <b>03 · общая база</b>
+          <span>Накопленное уходит в облако само, когда связь появилась</span>
+        </div>
+        <div class="arr" aria-hidden="true">
+          <svg width="26" height="10" viewBox="0 0 26 10" fill="none" stroke="currentColor" stroke-width="1.4">
+            <path d="M0 5h22M18 1l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="step">
+          <b>04 · остальные</b>
+          <span>Начальник участка и смена видят актуальные остатки</span>
+        </div>
+      </div>
+      <p class="flow-cap">пунктир — участок, который может ждать часами; на работу кладовщика это не влияет</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">Что внутри</p>
+      <h2>Характеристики</h2>
+      <dl class="spec">
+        <div><dt>Учёт</dt><dd>Остатки по базам, единицы измерения, минимальный запас с предупреждением, поиск по наименованию</dd></div>
+        <div><dt>Движение</dt><dd>Приход, выдача под работника, списание, перемещение между базами — с журналом: кто, что, когда, сколько</dd></div>
+        <div><dt>Задачи</dt><dd>Наряды на смену с исполнителем, сроком и отметкой о выполнении</dd></div>
+        <div><dt>Без связи</dt><dd>Полный цикл работы офлайн. Из аккаунта не выбрасывает: можно работать сутками без интернета</dd></div>
+        <div><dt>Роли</dt><dd>Начальник участка, кладовщик, работник. Права раздаются по базам, пересменка — сменой признака активности</dd></div>
+        <div><dt>Обмен</dt><dd>Выгрузка склада и журнала в Excel, загрузка номенклатуры из таблицы, резервная копия базы файлом</dd></div>
+        <div><dt>Установка</dt><dd>Не требуется. Открывается по ссылке в браузере; можно добавить значок на главный экран телефона</dd></div>
+        <div><dt>Почта</dt><dd>Рабочий ящик <span class="mono">логин@razvedchick.ru</span> на нашем сервере — выдаётся вместе с доступом</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">Доступ</p>
+      <h2>Учётные записи заводит начальник участка</h2>
+      <div class="note">
+        <p>Самостоятельной регистрации нет — и это осознанно. База отряда закрыта, посторонний
+           не заведёт себе доступ сам. Логин и первый пароль называет тот, кто отвечает за базу.</p>
+      </div>
+      <div class="rows">
+        <div class="item"><span class="n">01</span><p>Начальник участка создаёт работника в приложении и передаёт ему логин с паролем.</p></div>
+        <div class="item"><span class="n">02</span><p>Вместе с доступом заводится почтовый ящик <span class="mono">логин@razvedchick.ru</span> с тем же паролем. Он открывается в разделе <a href="https://email.razvedchick.ru/">Почта</a>.</p></div>
+        <div class="item"><span class="n">03</span><p>Работник открывает <span class="mono">vahta.razvedchick.ru</span> и входит. Пароль стоит сменить в профиле, там же указывается запасная почта — по ней восстанавливают доступ, если пароль забыт.</p></div>
+      </div>
+      <div class="btns" style="margin-top:26px">
+        <a class="btn btn-1" href="https://vahta.razvedchick.ru/vahtahoz">Войти в ВахтаХоз</a>
+        <a class="btn btn-2" href="/start">Подключить свой объект</a>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">Если что-то пошло не так</p>
+      <h2>Поддержка</h2>
+      <p class="muted" style="max-width:62ch">Не принимает пароль, не сходятся остатки, сменился телефон, не открывается
+         почта — частые случаи разобраны на <a href="/support">странице поддержки</a> по шагам.
+         Если там ответа нет, напишите на <a href="mailto:support@razvedchick.ru">support@razvedchick.ru</a>
+         и укажите номер сборки — он подписан внизу экрана входа.</p>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="cols">
+      <a href="/support">Поддержка</a>
+      <a href="https://email.razvedchick.ru/">Почта Разведчик</a>
+      <a href="/start">Подключить объект</a>
+      <a href="/terms">Условия использования</a>
+      <a href="/privacy">Политика конфиденциальности</a>
+      <a href="mailto:support@razvedchick.ru">support@razvedchick.ru</a>
+    </div>
+    <p class="who">ООО «Разведчик» · владелец и разработчик — Павлович Александр Кириллович</p>
+  </div>
+</footer>
+</body>
+</html>
