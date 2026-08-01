@@ -26,7 +26,14 @@
   .light{ --accent:#0E7C86; --accent-press:#0A6068; --accent-weak:#E1F0F1; --on-accent:#ffffff; --border-strong:#c9c9c4; }
   body{ font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif; padding-bottom:env(safe-area-inset-bottom); }
   .safe-top{ padding-top:env(safe-area-inset-top); }
-  .safe-bot{ padding-bottom:calc(88px + env(safe-area-inset-bottom)); }
+  /* Резерв под «домашнюю» полоску iPhone. Полная безопасная зона там 34 точки, и панель отдавала их
+     целиком: на экранах, где под ней пусто (например «Задачи» без задач), эта полоса читалась как
+     провал — владелец видел это как «кнопки уползли выше», хотя панель стояла вплотную к низу
+     (замеры с телефона: низ панели 873 при высоте страницы 873). Оставляем 12 точек — полоска
+     жеста в них укладывается, а пустота под подписями почти исчезает. Где безопасной зоны нет
+     (Android, десктоп) выражение даёт 0, как и было. */
+  :root{ --nav-safe: max(env(safe-area-inset-bottom) - 22px, 0px); }
+  .safe-bot{ padding-bottom:calc(88px + var(--nav-safe)); }
   /* Динамический вьюпорт iOS. 100vh (класс .min-h-screen на <body>) — это БОЛЬШОЙ вьюпорт, как если бы
      панель браузера была скрыта; когда она видна, 100vh НЕ уменьшается. Из-за этого даже короткий экран
      оказывался на ~100px выше видимой области → появлялась лишняя прокрутка → Safari начинал прятать/
@@ -275,7 +282,7 @@
 
 <!-- Bottom navigation -->
 <nav id="navbar" class="fixed bottom-0 left-0 right-0 border-t border-white/10 bg-gray-950/95 backdrop-blur"
-     style="padding-bottom:env(safe-area-inset-bottom)">
+     style="padding-bottom:var(--nav-safe)">
   <div class="max-w-[640px] mx-auto flex">
     <button class="nav-btn active" data-nav="dashboard" aria-label="Дашборд"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5L12 3l9 7.5V20a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1v-9.5z"/></svg><span>Дашборд</span></button>
     <button class="nav-btn" data-nav="tasks" aria-label="Задачи"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg><span>Задачи</span></button>
@@ -298,6 +305,16 @@
 
 <!-- Toast -->
 <div id="toast" role="status" aria-live="polite" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[80] hidden px-4 py-3 rounded-xl bg-gray-800 text-white text-sm shadow-xl" style="max-width:90vw;text-align:center;overflow-wrap:break-word;word-break:break-word"></div>
+
+<!-- Экран загрузки. Стоит в разметке (а не рисуется скриптом) и виден с первого кадра: интерфейс
+     успевает отрисоваться раньше, чем облако скажет, кто вошёл, и человек видел лишнее — пять кнопок
+     навигации вместо четырёх, разделы, которых у него нет. Снимается там, где состав уже окончателен:
+     показан вход, либо роли пришли, либо истёк предохранитель (см. hideSplash). -->
+<div id="splash" style="position:fixed;inset:0;z-index:95;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(120% 90% at 50% 0%, #1e293b 0%, #0b1220 60%);transition:opacity .2s">
+  <div style="font-size:56px;line-height:1;margin-bottom:10px">📦</div>
+  <div style="font-size:26px;font-weight:800;letter-spacing:.3px">ВахтаХоз</div>
+  <div style="font-size:13px;opacity:.6;margin-top:8px">Загрузка…</div>
+</div>
 
 <!-- Полноэкранный вход (показывается при первом заходе без сессии; интерфейс скрыт) -->
 <div id="loginGate" class="hidden" style="position:fixed;inset:0;z-index:90;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:28px;background:radial-gradient(120% 90% at 50% 0%, #1e293b 0%, #0b1220 60%);">
@@ -362,7 +379,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v227";
+const APP_BUILD = "v228";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -1523,6 +1540,40 @@ function nav(view){
   if(view==="more" && cloud.session?.access_token){
     cloudRefreshRecoveryProfile().finally(()=>render());
   } else render();
+}
+
+/* ---------- Экран загрузки ----------
+   Убирается ровно там, где дальше показывать уже нечего лишнего: либо человек видит вход, либо роли
+   с сервера получены и состав кнопок окончателен. Предохранитель на 7 секунд обязателен: на вахте
+   интернета может не быть вовсе, а бэкенд на холодную просыпается десятками секунд — без него
+   приложение вставало бы намертво на заставке при живых локальных данных. */
+let _splashTimer = null;
+function hideSplash(){
+  const s = document.getElementById("splash"); if(!s) return;
+  clearTimeout(_splashTimer); _splashTimer = null;
+  s.style.opacity = "0"; s.style.pointerEvents = "none";
+  setTimeout(()=>{ try{ s.remove(); }catch(_){} }, 220);
+}
+_splashTimer = setTimeout(hideSplash, 7000);
+
+/* Подсказка о составе кнопок с прошлого запуска. Роли живут только в памяти и приезжают по сети,
+   поэтому офлайн и на медленной связи их «ещё нет» — а показывать в это время лишние разделы нельзя.
+   Это ТОЛЬКО про внешний вид: данные закрыты политиками на сервере, и как только настоящие роли
+   приходят, cloudGateTasks пересчитывает всё заново. Помним вместе с id пользователя — телефон
+   передают следующей смене, и чужой раскладке тут делать нечего. */
+const GATES_KEY = NS+"vahtahoz_gates";
+function saveGateHints(t,k){
+  try{
+    const s = loadCloudSess(); const u = s && s.user && s.user.id; if(!u) return;
+    localStorage.setItem(GATES_KEY, JSON.stringify({u, t:!!t, k:!!k}));
+  }catch(_){}
+}
+function loadGateHints(){
+  try{
+    const h = JSON.parse(localStorage.getItem(GATES_KEY)||"null"); if(!h) return null;
+    const s = loadCloudSess(); const u = s && s.user && s.user.id;
+    return (u && h.u===u) ? h : null;
+  }catch(_){ return null; }
 }
 
 /* ---------- Sheet ---------- */
@@ -7675,6 +7726,7 @@ async function cloudInit(){
       else showLoginGate();
     }
   }catch(e){ console.warn("cloudInit", e); }
+  finally{ hideSplash(); }   // роли уже пришли (или сессии нет вовсе) — состав кнопок окончателен
 }
 /* ---- Полноэкранный логин-гейт ---- */
 /* ---------- Восстановление пароля по почте (Supabase recovery) ----------
@@ -7849,6 +7901,7 @@ function openSetNewPassword(token){
 }
 function showLoginGate(){
   const g = document.getElementById("loginGate"); if(!g) return;
+  hideSplash();   // вход закрывает интерфейс сам — держать поверх него ещё и заставку незачем
   // Открытый лист лежит ВЫШЕ гейта (.sheet z-index 100 против 90 — сделано ради юр-страниц до входа),
   // поэтому при принудительном разлогине (истекла сессия, удалили аккаунт) карточка позиции или список
   // участников оставались видимыми и интерактивными поверх экрана входа. Телефон передают следующему —
@@ -9264,15 +9317,21 @@ function cloudLoginPrompt(){
 }
 /* прячем «Задачи», если у пользователя нет права смотреть задачи на активной облачной базе */
 function cloudGateTasks(){
-  const hideTasks = isRestrictedUser();   // та же проверка прав, единый источник
+  /* Пока роли не приехали (холодный старт, офлайн), но сессия есть — берём раскладку прошлого
+     запуска. Иначе на первых кадрах показывались разделы, которых у человека нет, и кнопка потом
+     исчезала на глазах. Как только cloud.ready — считаем по настоящим правам и запоминаем. */
+  const known = cloud.ready || !loadCloudSess();
+  const hints = known ? null : loadGateHints();
+  const hideTasks = hints ? hints.t : isRestrictedUser();   // та же проверка прав, единый источник
   const tb = document.querySelector('#navbar .nav-btn[data-nav="tasks"]');
   if(tb) tb.style.display = hideTasks ? "none" : "";
   if(hideTasks && currentView==="tasks") nav("dashboard");
   // Кухня — только повар/управляющие
-  const hideKitchen = !canSeeKitchen();
+  const hideKitchen = hints ? hints.k : !canSeeKitchen();
   const kb = document.querySelector('#navbar .nav-btn[data-nav="kitchen"]');
   if(kb) kb.style.display = hideKitchen ? "none" : "";
   if(hideKitchen && currentView==="kitchen") nav("dashboard");
+  if(known) saveGateHints(hideTasks, hideKitchen);
 }
 // перечитать ТОЛЬКО свои членства (active/права) — чтобы возврат/снятие со смены подхватились без перезахода
 async function cloudRefreshMyMembership(){
@@ -9476,7 +9535,7 @@ nav("dashboard");
 // (интерфейс под ним не виден, без мелькания). Вход обязателен — режима «без облака» больше нет.
 (function gateEarly(){
   try{
-    if(checkRecoveryLink()) return;   // пришли по ссылке сброса пароля → экран нового пароля, не гейт
+    if(checkRecoveryLink()){ hideSplash(); return; }   // пришли по ссылке сброса пароля → экран нового пароля, не гейт
     if(!localStorage.getItem(NS+"vahtahoz_sess")) showLoginGate();   // нет своей сессии → гейт (тот же ключ, что и в cloudInit)
   }catch(e){}
 })();
