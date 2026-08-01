@@ -414,7 +414,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v251";
+const APP_BUILD = "v252";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -8487,7 +8487,10 @@ async function requestPasswordReset(){
       if(!/^\d{6}$/.test(code)){ e2.textContent="Код — 6 цифр"; return; }
       if(pw.length<8){ e2.textContent="Пароль не короче 8 символов"; return; }
       const g=document.getElementById("rcGo"); g.disabled=true; g.textContent="Сохранение…";
-      try{ await cloudCallFnPublic("confirm_reset",{username,code,new_password:pw}); closeSheet(); toast("Пароль изменён — войдите с новым"); }
+      /* Свой лист закрываем ДО предупреждения: warnMailUnsynced открывает тот же единственный
+         лист, и порядок «предупредить, потом закрыть» стёр бы предупреждение (см. runFilteredXlsx). */
+      try{ const d=await cloudCallFnPublic("confirm_reset",{username,code,new_password:pw}); closeSheet();
+           await warnMailUnsynced(d, username); toast("Пароль изменён — войдите с новым"); }
       catch(ex){ g.disabled=false; g.textContent="Сменить пароль"; e2.textContent=_recErr(String(ex.message||"Ошибка")); }
     };
   };

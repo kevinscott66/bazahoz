@@ -338,9 +338,20 @@ Deno.serve(async (req) => {
       if (weak) { await floorPad(); return json({ error: weak }, 400); }
       return await fail();
     }
+    // Пароль почтового ящика синхронизируем ТАК ЖЕ, как в reset_password. Без этого
+    // самостоятельное восстановление разводило пароли: приложение пускало по новому, а ящик
+    // <логин>@razvedchick.ru продолжал требовать СТАРЫЙ — тот самый, который человек забыл
+    // (проверено 02.08.2026 на тестовом аккаунте: вход в приложение ОК, IMAP с новым паролем
+    // «AUTHENTICATIONFAILED», со старым — ОК). А если резервная почта и есть этот ящик, то
+    // умирал и сам путь восстановления: в следующий раз код прислать уже некуда.
+    // Источник истины для локальной части — РЕАЛЬНЫЙ auth-email, а не profiles.username.
+    const { data: tu2 } = await admin.auth.admin.getUserById(u.id);
+    const mm = /^([a-z0-9_]+)@razvedchick\.ru$/i.exec(tu2?.user?.email || "");
+    const mailOk2 = mm ? await provisionMail(mm[1].toLowerCase(), newPassword) : true;
     // Сессии намеренно не сбрасываем (нет повторного входа на доверенных устройствах).
     await floorPad();   // тот же пол и на успехе — чтобы «успех» не выделялся по времени
-    return json({ ok: true });
+    // mail_synced — ДОБАВЛЕННОЕ поле; старые сборки его не читают и не ломаются.
+    return json({ ok: true, mail_synced: mailOk2 });
   }
 
   // ── дальше — ТОЛЬКО с валидным токеном ─────────────────────────────────────────
