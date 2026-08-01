@@ -411,7 +411,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v242";
+const APP_BUILD = "v243";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -3141,10 +3141,30 @@ function defaultCategoryForType(type){
   if(type!=="product") return "";
   return (state.categories.product||[]).includes("Прочие продукты") ? "Прочие продукты" : ((state.categories.product||[])[0] || "");
 }
-function findStockByName(name, type, unit){
+/* Индекс склада «тип|имя». findStockByName фильтрует ВЕСЬ склад на каждый вызов, а зовут её из
+   циклов по журналу и по ledger-ключам: на базе владельца это тысячи проходов по 3082 карточкам
+   на КАЖДОМ pull. Порядок внутри корзины — порядок state.stock, поэтому pool[0]/same[0] те же. */
+function buildStockNameIndex(){
+  const m = new Map();
+  for(const s of (state.stock||[])){
+    const k = s.type+"|"+stockNormName(s.name);
+    if(!m.has(k)) m.set(k, []);
+    m.get(k).push(s);
+  }
+  return m;
+}
+function stockNameIndexAdd(idx, s){
+  if(!idx || !s) return;
+  const k = s.type+"|"+stockNormName(s.name);
+  if(!idx.has(k)) idx.set(k, []);
+  idx.get(k).push(s);
+}
+// idx (buildStockNameIndex) необязателен и работает только вместе с явным type — без него всё как раньше
+function findStockByName(name, type, unit, idx){
   const n = stockNormName(name);
   if(!n) return null;
-  const pool = type
+  const pool = (idx && type) ? (idx.get(type+"|"+n) || [])
+    : type
     ? state.stock.filter(s=> s.type===type && stockNormName(s.name)===n)
     : state.stock.filter(s=> allowedTypeKeys().includes(s.type) && stockNormName(s.name)===n);
   if(!pool.length) return null;
@@ -3209,12 +3229,23 @@ function journalStockType(product, fallback){
   const t = (product && product.type) || fallback || "product";
   return (typeof STOCK_TYPE_KEYS!=="undefined" && STOCK_TYPE_KEYS.includes(t)) ? t : "product";
 }
-function journalRefScore(it){
+// Сколько записей журнала ссылается на карточку. refs — необязательный готовый счётчик
+// (buildJournalRefCounts): без него это полный проход по журналу на КАЖДЫЙ вызов, а вызывают
+// из компаратора сортировки — на базе с сотнями дублей это те же миллионы итераций.
+function journalRefScore(it, refs){
+  if(refs) return refs.get(it.id) || 0;
   let n = 0;
   for(const kind of JOURNAL_KEYS){
     for(const op of (state.journals[kind]||[])) if(op && op.productId===it.id) n++;
   }
   return n;
+}
+function buildJournalRefCounts(){
+  const m = new Map();
+  for(const kind of JOURNAL_KEYS){
+    for(const op of (state.journals[kind]||[])) if(op && op.productId) m.set(op.productId, (m.get(op.productId)||0) + 1);
+  }
+  return m;
 }
 /* Индекс журнала для сверки. Раньше ledgerQtyForProduct прогонял ВЕСЬ журнал по КАЖДОЙ позиции:
    на базе владельца это 3082 × 6000 ≈ 18 млн итераций — секунды на десктопе и замерший экран
@@ -3288,6 +3319,7 @@ function relinkJournalOpsToCanonical(){
   // (на базе владельца — десятки миллионов сравнений), стало один проход по складу
   const byId = new Map();
   for(const s of (state.stock||[])) byId.set(s.id, s);
+  const byName = buildStockNameIndex();   // тот же приём для поиска по имени: состав склада здесь не меняется
   for(const kind of JOURNAL_KEYS){
     for(const op of (state.journals[kind]||[])){
       const name = (op.productName||"").trim();
@@ -3295,7 +3327,7 @@ function relinkJournalOpsToCanonical(){
       let canon = op.productId ? (byId.get(op.productId) || null) : null;
       // без stockType — как ledger/ensure: «product» (не any-type → не цеплять tool и плодить product)
       const preferType = (op.stockType && STOCK_TYPE_KEYS.includes(op.stockType)) ? op.stockType : "product";
-      if(!canon) canon = findStockByName(name, preferType, op.unit);
+      if(!canon) canon = findStockByName(name, preferType, op.unit, byName);
       if(!canon) continue;
       if(op.productId!==canon.id || op.productName!==canon.name){
         op.productId = canon.id;
@@ -3317,9 +3349,10 @@ function mergeDuplicateStockByName(){
     groups.get(key).push(s);
   }
   let merged = 0;
+  const _refs = buildJournalRefCounts();   // один проход по журналу на всё слияние, а не на каждое сравнение
   for(const items of groups.values()){
     if(items.length < 2) continue;
-    items.sort((a,b)=> (journalRefScore(b)*1e6 + totalQtyOf(b)) - (journalRefScore(a)*1e6 + totalQtyOf(a)));
+    items.sort((a,b)=> (journalRefScore(b,_refs)*1e6 + totalQtyOf(b)) - (journalRefScore(a,_refs)*1e6 + totalQtyOf(a)));
     const primary = items[0];
     for(const dup of items.slice(1)){
       if(hasBatches(dup)){
@@ -3371,6 +3404,7 @@ function ensureProductsFromJournalLedger(){
   let created = 0;
   const ledgers = ledgerByNormName();
   const stockIds = new Set((state.stock||[]).map(s=>s.id));
+  const byName = buildStockNameIndex();   // созданные ниже карточки докладываем в индекс (stockNameIndexAdd)
   for(const [key, ledger] of ledgers){
     if(!(ledger > 0)) continue;
     // typ::name::unit — name может содержать «::», unit всегда последний сегмент
@@ -3379,7 +3413,7 @@ function ensureProductsFromJournalLedger(){
     const wantU = (i2>i1) ? key.slice(i2+2) : "шт";
     const n = (i1>=0 && i2>i1) ? key.slice(i1+2, i2) : (i1>=0 ? key.slice(i1+2) : key);
     const type = STOCK_TYPE_KEYS.includes(typ) ? typ : "product";
-    if(findStockByName(n, type, wantU)) continue;
+    if(findStockByName(n, type, wantU, byName)) continue;
     let sampleName = "", sampleUnit = wantU;
     outer: for(const kind of JOURNAL_KEYS){
       for(const op of (state.journals[kind]||[])){
@@ -3395,6 +3429,7 @@ function ensureProductsFromJournalLedger(){
     p.qty = ledger;
     state.stock.push(p);
     stockIds.add(p.id);
+    stockNameIndexAdd(byName, p);   // следующий ledger-ключ с тем же именем должен видеть созданную карточку
     try{ propagateName(type, p.name, p.unit); }catch(e){}
     for(const kind of JOURNAL_KEYS){
       for(const op of (state.journals[kind]||[])){
@@ -9033,6 +9068,10 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
     const cloudById = await fetchCloudStockByIds(cid, tok, ids);
     if(!Object.keys(cloudById).length) return;
     const snap = loadSyncSig(cid,"stockVals");   // {id: qty} на момент последнего синка
+    /* Карточку под каждую строку искали перебором state.stock: полная выгрузка базы владельца —
+       3082 × 3082 ≈ 9 млн сравнений прямо во время синка на телефоне. Цикл синхронный и состав
+       state.stock не меняет (правит только поля найденных карточек), поэтому индекс строим один раз. */
+    const _byId = new Map((state.stock||[]).map(s=>[s.id,s]));
     let localChanged=false, conflictBatched=0;
     for(const r of upsert){
       const cr=cloudById[r.id]; if(!cr) continue;                          // в облаке нет — новая позиция
@@ -9046,13 +9085,13 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
           const _cb=cloudBatchesOnce(cr); const _cq=qtyFromCloudBatches(_cb, cloudQty);
           r.qty = _cq;
           if(_cb) r.batches = _cb;
-          const it=state.stock.find(s=>s.id===r.id);
+          const it=_byId.get(r.id);
           if(it){ it.qty=_cq; if(_cb) it.batches=_cb.map(b=>({...b})); localChanged=true; }
           applyCloudBatchAggregates(r, it, _cb);   // qty/срок/место — производные от партий; ДО подписи
           curSig[r.id]=_sigOf(r);
         } else if(cloudQty !== (Number(r.qty)||0)){
           r.qty = cloudQty; curSig[r.id]=_sigOf(r);
-          const it=state.stock.find(s=>s.id===r.id); if(it && Number(it.qty)!==cloudQty){ it.qty=cloudQty; localChanged=true; }
+          const it=_byId.get(r.id); if(it && Number(it.qty)!==cloudQty){ it.qty=cloudQty; localChanged=true; }
         }
         continue;
       }
@@ -9067,7 +9106,7 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
         const _cb=cloudBatchesOnce(cr); const _cq=qtyFromCloudBatches(_cb, cloudQty);
         r.qty = _cq;
         if(_cb) r.batches = _cb;
-        const it=state.stock.find(s=>s.id===r.id);
+        const it=_byId.get(r.id);
         if(it){ it.qty=_cq; if(_cb) it.batches = _cb.map(b=>({...b})); localChanged=true; }
         applyCloudBatchAggregates(r, it, _cb);   // qty/срок/место — производные от партий; ДО подписи
         curSig[r.id]=_sigOf(r);
@@ -9075,7 +9114,7 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
       }
       const merged = Math.max(0, roundQty((Number(r.qty)||0) + cloudQty - snapQty));   // 3-way CRDT-счётчик
       r.qty = merged; curSig[r.id]=_sigOf(r);                              // упсертим merged; снимок = merged (local сойдётся с cloud)
-      const it=state.stock.find(s=>s.id===r.id); if(it && Number(it.qty)!==merged){ it.qty=merged; localChanged=true; }
+      const it=_byId.get(r.id); if(it && Number(it.qty)!==merged){ it.qty=merged; localChanged=true; }
     }
     if(localChanged){ const _w=cloud.applying; cloud.applying=true; try{ saveState(); }finally{ cloud.applying=_w; } try{ render(); }catch(_){} }
     if(conflictBatched){ try{ toast(`Расхождение остатков по ${conflictBatched} позиц. с партиями — проверьте вручную и при необходимости сверьте экспортом`); }catch(_){} }
@@ -9085,6 +9124,7 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
     try{
       const ids = upsert.map(r=>r.id); if(!ids.length) return;
       const cloudById = await fetchCloudStockByIds(cid, tok, ids);
+      const _byId = new Map((state.stock||[]).map(s=>[s.id,s]));   // тот же индекс, что и в основном пути
       let localChanged=false;
       for(const r of upsert){
         const cr=cloudById[r.id]; if(!cr) continue;
@@ -9094,7 +9134,7 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
         const _cq = qtyFromCloudBatches(_useCb ? _cb : null, cloudQty);
         r.qty = _cq;
         if(_useCb) r.batches = _cb;
-        const it=state.stock.find(s=>s.id===r.id);
+        const it=_byId.get(r.id);
         if(it){
           it.qty=_cq;
           if(_cb && (((Array.isArray(it.batches)&&it.batches.length) || _cb.length) > 0)) it.batches=_cb.map(b=>({...b}));
