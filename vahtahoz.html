@@ -411,7 +411,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v240";
+const APP_BUILD = "v241";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -8187,7 +8187,16 @@ function openSetNewPassword(token){
         method:"PUT", headers:{ apikey:CLOUD_CFG.anon, Authorization:`Bearer ${token}`, "Content-Type":"application/json" },
         body: JSON.stringify({ password: pw })
       });
-      if(!r.ok) throw new Error("expired");
+      if(!r.ok){
+        /* Не всякий отказ здесь — «ссылка устарела». При включённой проверке паролей по базам
+           утечек сервер отвечает 422 с английским текстом, и прежнее сообщение отправляло
+           человека запрашивать новую ссылку по кругу — с тем же паролем и тем же отказом. */
+        let msg = "";
+        try{ const d = await r.json(); msg = String((d && (d.msg || d.message || d.error_description || d.error)) || ""); }catch(_){}
+        if(/known to be weak|pwned|breach|compromis/i.test(msg)) throw new Error("Пароль слишком простой — он есть в утечках. Придумайте другой");
+        if(/password/i.test(msg) && /at least|too short|length/i.test(msg)) throw new Error("Пароль не короче 8 символов");
+        throw new Error("expired");
+      }
       _sheetOnClose = null;   // успех: закрытие шита не должно повторно дёргать exitRecoveryMode
       closeSheet(); toast("Пароль изменён — войдите с новым");
       exitRecoveryMode();   // сброс _recoveryMode + гейт + отложенный cloudInit (online-листенеры)

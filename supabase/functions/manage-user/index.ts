@@ -82,6 +82,15 @@ async function rateOk(admin: any, req: Request, purpose: string, windowSecs: num
     return data !== false;
   } catch (e) { console.warn("rateOk", e); return failOpen; }
 }
+// GoTrue отвечает по-английски («Password is known to be weak…» при включённой проверке
+// по базам утечек, «Password should be at least…» при коротком). Для вахты это тупик: владелец
+// видит «не удалось» и жмёт ту же кнопку с тем же паролем. Переводим в понятную причину.
+function weakPwdMsg(e: any): string | null {
+  const m = String(e?.message || "");
+  if (/known to be weak|pwned|breach|compromis/i.test(m)) return "Пароль слишком простой — он есть в утечках. Придумайте другой";
+  if (/at least|too short|length/i.test(m) && /password/i.test(m)) return "Пароль не короче 8 символов";
+  return null;
+}
 // отправка кода письмом через наш почтовый сервер (/sendcode на VPS, секрет = MAIL_BROADCAST_SECRET)
 async function sendCode(to: string, code: string, purpose: "bind" | "reset"): Promise<boolean> {
   const url = Deno.env.get("MAIL_SENDCODE_URL"); const secret = Deno.env.get("MAIL_BROADCAST_SECRET");
@@ -321,7 +330,14 @@ Deno.serve(async (req) => {
     });
     if (verr || vres !== "ok") return await fail();
     const { error: pwErr } = await admin.auth.admin.updateUserById(u.id, { password: newPassword });
-    if (pwErr) { console.error("confirm_reset updateUser", pwErr); return await fail(); }
+    if (pwErr) {
+      console.error("confirm_reset updateUser", pwErr);
+      // Код УЖЕ проверен и погашен — про слабый пароль можно сказать прямо: перебор логинов
+      // сюда не доходит, а иначе человек упирается в «invalid» и не понимает, что менять.
+      const weak = weakPwdMsg(pwErr);
+      if (weak) { await floorPad(); return json({ error: weak }, 400); }
+      return await fail();
+    }
     // Сессии намеренно не сбрасываем (нет повторного входа на доверенных устройствах).
     await floorPad();   // тот же пол и на успехе — чтобы «успех» не выделялся по времени
     return json({ ok: true });
@@ -422,7 +438,7 @@ Deno.serve(async (req) => {
     if (cerr || !cu?.user) {
       const dup = /registered|already|exists|duplicate/i.test(cerr?.message || "");
       console.error("createUser", cerr);
-      return json({ error: dup ? "Логин уже занят, выберите другой" : "Не удалось создать логин" }, 400);
+      return json({ error: dup ? "Логин уже занят, выберите другой" : (weakPwdMsg(cerr) || "Не удалось создать логин") }, 400);
     }
     const newId = cu.user.id;
     const { error: perr } = await admin.from("profiles").upsert({ id: newId, username });
@@ -463,7 +479,7 @@ Deno.serve(async (req) => {
     });
     if (cerr || !cu?.user) {
       const dup = /registered|already|exists|duplicate/i.test(cerr?.message || "");
-      return json({ error: dup ? "Логин уже занят, выберите другой" : "Не удалось создать логин" }, 400);
+      return json({ error: dup ? "Логин уже занят, выберите другой" : (weakPwdMsg(cerr) || "Не удалось создать логин") }, 400);
     }
     const newId = cu.user.id;
     const { error: perr } = await admin.from("profiles").upsert({ id: newId, username });
@@ -577,7 +593,7 @@ Deno.serve(async (req) => {
       if (tcaps.rank >= caps.rank) return json({ error: "Нельзя сменить пароль тому, кто равен или выше вас" }, 403);
     }
     const { error } = await admin.auth.admin.updateUserById(targetId, { password });
-    if (error) { console.error("reset pwd", error); return json({ error: "Не удалось сменить пароль" }, 400); }
+    if (error) { console.error("reset pwd", error); return json({ error: weakPwdMsg(error) || "Не удалось сменить пароль" }, 400); }
     // синхронизируем пароль почтового ящика: локальная часть РЕАЛЬНОГО auth-email (источник истины),
     // а не profiles.username — они могут разойтись. Ящик существует только для домена @razvedchick.ru.
     const { data: tu } = await admin.auth.admin.getUserById(targetId);
