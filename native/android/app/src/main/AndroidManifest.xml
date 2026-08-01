@@ -1,8 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Системный бэкап выключен. `allowBackup="true"` стоял здесь не по решению, а как
+         значение по умолчанию из шаблона Capacitor, и цена у него конкретная: проверено
+         на эмуляторе API 34 (`bmgr backupnow`) — в архив уходит каталог
+         `app_webview/Default/Local Storage`, то есть localStorage со складом бригады
+         и с живой сессией Supabase, плюс куки. На настоящем телефоне этот архив
+         отправляется в ЛИЧНЫЙ Google Drive владельца телефона (автобэкап) и разворачивается
+         на новом аппарате — вместе с сессией, то есть вход в чужую базу переезжает
+         сам собой, без пароля. Учёт отряда в личном облаке кладовщика — не то, на что
+         кто-то соглашался.
+         Резервная копия у бригады при этом никуда не девается: облачная база и выгрузка
+         из приложения. Кому база нужна ТОЛЬКО на телефоне (локальная база без облака) —
+         для того и сделана выгрузка; системный бэкап такую базу всё равно не спасал:
+         он идёт лишь при зарядке и Wi-Fi, раз в сутки, с лимитом и молча отключается,
+         если у человека нет аккаунта Google.
+         На Android 12+ одного этого атрибута мало — см. @xml/data_extraction_rules. -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
