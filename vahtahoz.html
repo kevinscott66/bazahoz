@@ -411,7 +411,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v237";
+const APP_BUILD = "v238";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -1997,8 +1997,9 @@ function filterChipState(){
     else if(stockExpiryFilter==="soon") parts.push("Скоро");
     else if(stockExpiryFilter==="exp14") parts.push("Сроки ≤14 дн.");
     if(STOCK_TYPE_KEYS.includes(stockTab)){
-      const t = visibleStockTypes().find(x=>x.key===stockTab);
-      if(t && visibleStockTypes().length>1) parts.push(t.short);   // роль с одним типом — это не «фильтр»
+      const _vt = visibleStockTypes();
+      const t = _vt.find(x=>x.key===stockTab);
+      if(t && _vt.length>1) parts.push(t.short);   // роль с одним типом — это не «фильтр»
     }
     if(stockCat) parts.push(stockCat);
     return { on:parts.length>0, n:parts.length, red:c.expired,
@@ -2246,8 +2247,9 @@ function fitHeaderGreeting(){
   const t = headerTexts();
   box.style.display = ""; g.style.display = ""; d.style.display = "";   // меряем в показанном виде
   const fits = el => el.scrollWidth <= el.clientWidth + 1;              // .truncate: не влезло → scrollWidth больше
+  // у приветствия короткого варианта нет (в отличие от даты) — не влезло, значит прячем
   g.textContent = t.greet;
-  if(!fits(g)){ g.textContent = t.greet; if(!fits(g)) g.style.display = "none"; }
+  if(!fits(g)) g.style.display = "none";
   d.textContent = t.dateFull;
   if(!fits(d)){ d.textContent = t.dateShort; if(!fits(d)) d.style.display = "none"; }
   if(g.style.display==="none" && d.style.display==="none") box.style.display = "none";
@@ -2270,7 +2272,14 @@ function renderHeader(){
   try{ fitHeaderGreeting(); }catch(_){}
 }
 // поворот экрана / изменение окна меняют остаток строки — перемеряем (render() тут звать не нужно)
-try{ window.addEventListener("resize", ()=>{ try{ fitHeaderGreeting(); }catch(_){} }); }catch(_){}
+/* Через rAF: на Android появление экранной клавиатуры сыплет resize пачками, а внутри
+   fitHeaderGreeting чередуются запись стилей и чтение scrollWidth — каждый такой замер
+   заставляет браузер пересчитывать раскладку. Схлопываем пачку в один замер за кадр. */
+let _fitHdrPending = false;
+try{ window.addEventListener("resize", ()=>{
+  if(_fitHdrPending) return; _fitHdrPending = true;
+  requestAnimationFrame(()=>{ _fitHdrPending = false; try{ fitHeaderGreeting(); }catch(_){} });
+}); }catch(_){}
 
 /* ---------- Dashboard ---------- */
 function dismissOnboarding(){ try{ localStorage.setItem(NS+"vahtahoz_onboarded","1"); }catch(_){} render(); }
@@ -2279,12 +2288,15 @@ function renderDashboard(){
   const today = todayStr();
   const todayTasks = state.tasks.filter(t=>!t.done && t.due===today);
   const overdueTasks = state.tasks.filter(t=>!t.done && t.due && t.due<today);
+  // считаем ОДИН раз до фильтра: allowedTypeKeys() внутри дёргает activeMember() → поиски по
+  // profiles.list и cloud.members, а тут это выполнялось на каждую позицию склада (см. _lowAllowed ниже)
+  const _expAllowed = allowedTypeKeys();
   const expiringSoon = state.stock.filter(s=>{
     // ВСЕ доступные роли типы, а не только продукты: плитка ведёт на список склада, где чипы
     // «⛔ Просрочка»/«⏰ Скоро» считают все типы, и подсветка срока в stockRow тоже.
     // Просроченная хозхимия давала плитку 0 при чипе «Просрочка (2)» — счётчик противоречил экрану,
     // на который сам же ведёт, и по нему принимают решения.
-    if(!allowedTypeKeys().includes(s.type) || !s.expiry) return false;
+    if(!_expAllowed.includes(s.type) || !s.expiry) return false;
     if(!inStock(s)) return false; // позиции без остатка не считаем «истекающими»
     // окно ≤14 дней (включая просрочку) — единое со списком склада (фильтры «Просрочка»+«Скоро»)
     const d = daysLeft(s.expiry); return d!==null && d<=14;
@@ -2719,7 +2731,7 @@ function renderStock(){
   v.innerHTML = `
     ${modeTabs}
     <div class="grid grid-cols-3 gap-2">
-      ${visibleStockTypes().map(t=>`<button class="btn btn-ghost" onclick="openStockEdit(null,'${t.key}')">＋ ${t.addLabel}</button>`).join("")}
+      ${_visTypes.map(t=>`<button class="btn btn-ghost" onclick="openStockEdit(null,'${t.key}')">＋ ${t.addLabel}</button>`).join("")}
     </div>
 
     <input class="input" id="stockSearchInp" placeholder="Поиск по складу…" value="${esc(stockSearch)}" autocomplete="off" />
@@ -2757,7 +2769,9 @@ function renderStockList(){
   if(!box) return;
   let list = state.stock.slice();
   if(STOCK_TYPE_KEYS.includes(stockTab)) list = list.filter(s=>s.type===stockTab);
-  else list = list.filter(s=>allowedTypeKeys().includes(s.type));   // «Все» = только типы, доступные роли
+  // allowedTypeKeys() считаем ДО фильтра: этот рендер идёт на каждый набранный в поиске символ,
+  // а внутри функции — аллокация массива и два линейных поиска (профиль + участник базы)
+  else { const _at = allowedTypeKeys(); list = list.filter(s=>_at.includes(s.type)); }   // «Все» = только типы, доступные роли
   if(stockCat) list = list.filter(s=>s.category===stockCat);
   if(stockExpiryFilter==="expired") list = list.filter(s=>inStock(s) && s.expiry && daysLeft(s.expiry)<0);
   else if(stockExpiryFilter==="soon") list = list.filter(s=>{ if(!inStock(s)) return false; const d=s.expiry?daysLeft(s.expiry):null; return d!==null && d>=0 && d<=14; });
@@ -4521,7 +4535,7 @@ function stockRow(it){
           ${batchPanel}
         </div>
       </div>
-      <div class="grid grid-cols-${out?"1":"2"} gap-2 mt-3">
+      <div class="grid ${out?"":"grid-cols-2"} gap-2 mt-3">
         <button class="btn btn-success" onclick="quickAdjust('${it.id}',+1)">＋ Приход${out?" (вернуть в наличие)":""}</button>
         ${out?"":`<button class="btn btn-danger" onclick="quickAdjust('${it.id}',-1)">− Расход…</button>`}
       </div>
@@ -7408,7 +7422,7 @@ async function memberRemove(uid){
 }
 /* общие поля/валидация форм создания аккаунта и назначения ролей (устраняет дубль в 3 формах) */
 const _loginFieldHTML = (prefix, label)=>`<div><div class="text-sm opacity-70 mb-1">${label}</div>
-  <input class="input" id="${prefix}u" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="напр. petrov" /></div>`;
+  <input class="input" id="${prefix}u" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="напр. petrov" /></div>`;
 const _pwdFieldHTML = (prefix)=>`<div><div class="text-sm opacity-70 mb-1">Пароль (не короче 8 символов)</div>
   <input class="input" id="${prefix}p" type="password" autocomplete="new-password" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="придумайте пароль" /></div>`;
 const _hintFieldHTML = (prefix, tail)=>`<div class="text-xs opacity-60 mt-2">${tail}Логин: <span id="${prefix}Hint">…${LOGIN_DOMAIN}</span>. Передайте работнику логин${prefix==='ae'?"":" и пароль"}.</div>`;
@@ -9192,9 +9206,14 @@ async function cloudPushNow(){
       }
       // === ЖУРНАЛЫ (дельта upsert; удаление — только явное, под порогом архива) ===
       // как склад: пушим только типы, видимые роли (иначе RLS-403 → push в retry, sync залипает)
+      /* Тип позиции ищем по индексу, а не state.stock.find на каждую запись: журналов четыре,
+         в каждом до JOURNAL_LOCAL_CAP записей, склад бывает на тысячи позиций — линейный поиск
+         давал десятки миллионов сравнений и подвешивал экран прямо во время синхронизации. */
+      const _typeById = new Map();
+      for(const x of state.stock){ if(x && x.id && !_typeById.has(x.id)) _typeById.set(x.id, x.type); }
       const _jrType = (op)=>{
         if(op && STOCK_TYPE_KEYS.includes(op.stockType)) return op.stockType;
-        if(op && op.productId){ const s=state.stock.find(x=>x.id===op.productId); if(s && s.type) return s.type; }
+        if(op && op.productId){ const t=_typeById.get(op.productId); if(t) return t; }
         return "product";
       };
       const jrows=[]; const curJSig={};
@@ -9619,8 +9638,10 @@ function cloudLoginPrompt(){
     <div class="font-bold text-xl mb-1">${ico("cloud",20)} Вход в облако</div>
     <div class="text-sm opacity-70 mb-3">Синхронизация склада/журналов между телефонами в реальном времени.</div>
     <div class="space-y-3">
-      <input class="input" id="clEmail" type="email" autocomplete="username" placeholder="Логин (email)" />
-      <input class="input" id="clPwd" type="password" autocomplete="current-password" placeholder="Пароль" />
+      <!-- набор атрибутов тот же, что у основного экрана входа (lgEmail/lgPwd): без autocapitalize
+           iOS делает первую букву логина заглавной, и вход молча не проходит -->
+      <input class="input" id="clEmail" type="email" inputmode="email" enterkeyhint="next" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username" placeholder="Логин (email)" />
+      <input class="input" id="clPwd" type="password" enterkeyhint="go" autocomplete="current-password" placeholder="Пароль" />
       <div class="flex gap-2 pt-1">
         <button class="btn btn-ghost flex-1" data-close>Отмена</button>
         <button class="btn btn-primary flex-1" id="clGo">Войти</button>
