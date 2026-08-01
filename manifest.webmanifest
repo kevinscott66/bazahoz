@@ -10,7 +10,7 @@
   "theme_color": "#111827",
   "lang": "ru",
   "icons": [
-    { "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='42' fill='%23111827'/><text x='96' y='130' font-size='108' text-anchor='middle'>📦</text></svg>", "sizes": "192x192", "type": "image/svg+xml", "purpose": "any maskable" },
-    { "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='112' fill='%23111827'/><text x='256' y='350' font-size='288' text-anchor='middle'>📦</text></svg>", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any maskable" }
+    { "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'><rect width='48' height='48' rx='11' fill='%23111827'/><g transform='translate(24 24) scale(.74) translate(-24 -24)' fill='none' stroke='%235ec8d4' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><path d='M9 16.5h30v22a3 3 0 0 1-3 3H12a3 3 0 0 1-3-3z'/><path d='M7 8.5h34a2 2 0 0 1 2 2v6H5v-6a2 2 0 0 1 2-2z'/><path d='M16.5 26.5l5.5 5.5 10-10'/></g></svg>", "sizes": "192x192", "type": "image/svg+xml", "purpose": "any maskable" },
+    { "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'><rect width='48' height='48' rx='11' fill='%23111827'/><g transform='translate(24 24) scale(.74) translate(-24 -24)' fill='none' stroke='%235ec8d4' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><path d='M9 16.5h30v22a3 3 0 0 1-3 3H12a3 3 0 0 1-3-3z'/><path d='M7 8.5h34a2 2 0 0 1 2 2v6H5v-6a2 2 0 0 1 2-2z'/><path d='M16.5 26.5l5.5 5.5 10-10'/></g></svg>", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any maskable" }
   ]
 }
