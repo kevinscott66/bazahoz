@@ -25,6 +25,21 @@ mkdir -p dist/beta
 cp vahtahoz.html      dist/vahtahoz
 cp beta/vahtahoz.html dist/beta/vahtahoz
 
+# --- Сайт (razvedchick.ru) ----------------------------------------------------
+# Страницы сайта, в отличие от оболочки, кладутся С расширением: 308 на чистый
+# адрес им не мешает (их не прекэширует sw.js), а Pages сам отдаёт /support
+# из support.html. Ссылки на сайте ведут на короткие адреса.
+# Сайт и приложение живут в одном проекте Pages, но на разных доменах:
+# razvedchick.ru — сайт, vahta.razvedchick.ru — приложение. Разделение доменов
+# принципиально: localStorage и кэш офлайна привязаны к origin, и перенос
+# приложения на другой адрес оставил бы людей с пустой базой.
+cp site/index.html   dist/index.html
+cp site/support.html dist/support.html
+cp site/start.html   dist/start.html
+cp site/terms.html   dist/terms.html
+cp site/privacy.html dist/privacy.html
+cp site/site.css     dist/site.css
+
 # Остальное — как есть.
 cp sw.js manifest.webmanifest supabase.js xlsx.js dist/
 cp beta/sw.js beta/manifest.webmanifest beta/supabase.js beta/xlsx.js dist/beta/ 2>/dev/null || true

@@ -45,3 +45,42 @@
 
 /beta/vahtahoz.html
   Content-Type: text/html; charset=utf-8
+
+# ── Сайт razvedchick.ru ───────────────────────────────────────────────────────
+# Политика содержимого задаётся ТОЛЬКО страницам сайта, не приложению: у оболочки
+# свой набор встроенных стилей и скриптов, и общий CSP её сломает — это отдельная
+# работа с проверкой на живом телефоне.
+# Здесь же CSP почти ничего не стоит: страницы статические, единственный внешний
+# адрес — функция приёма заявки. 'unsafe-inline' оставлен осознанно (встроенный
+# стиль и один скрипт на /start), но сторонние домены для скриптов закрыты —
+# именно они и опасны. form-action 'none': ни одна форма никуда не отправляется
+# обычным submit, заявка уходит через fetch.
+/
+  Cache-Control: no-cache
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://sb.razvedchick.ru; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
+
+/index.html
+  Cache-Control: no-cache
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://sb.razvedchick.ru; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
+
+/support*
+  Cache-Control: no-cache
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://sb.razvedchick.ru; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
+
+/start*
+  Cache-Control: no-cache
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://sb.razvedchick.ru; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
+
+/terms*
+  Cache-Control: no-cache
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
+
+/privacy*
+  Cache-Control: no-cache
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
+
+# Один общий файл стилей на все страницы. no-cache, а не длинный срок: имени с
+# версией у него нет, и после правки дизайна страница не должна ехать со старым
+# оформлением.
+/site.css
+  Cache-Control: no-cache

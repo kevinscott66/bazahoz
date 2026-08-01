@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Поддержка ВахтаХоз — вход, синхронизация, данные</title>
+<meta name="description" content="Что делать, если не входит, не синхронизируется, пропали остатки или сменился телефон. Порядок действий и адрес поддержки.">
+<meta name="theme-color" content="#0b1220">
+<link rel="canonical" href="https://razvedchick.ru/support">
+<meta name="robots" content="index,follow">
+<link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'><rect width='48' height='48' rx='11' fill='%23111827'/><g transform='translate(24 24) scale(.74) translate(-24 -24)' fill='none' stroke='%235ec8d4' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><path d='M9 16.5h30v22a3 3 0 0 1-3 3H12a3 3 0 0 1-3-3z'/><path d='M7 8.5h34a2 2 0 0 1 2 2v6H5v-6a2 2 0 0 1 2-2z'/><path d='M16.5 26.5l5.5 5.5 10-10'/></g></svg>">
+<link rel="stylesheet" href="/site.css">
+<style>
+  .head{padding:44px 0 34px}
+  .head h1{max-width:16ch}
+  .toc{display:flex; flex-wrap:wrap; gap:8px; margin:22px 0 0}
+  .toc a{font:12px/1 var(--mono); letter-spacing:.06em; color:var(--dim); text-decoration:none;
+         border:1px solid var(--line); background:var(--surf); padding:9px 12px; border-radius:8px}
+  .toc a:hover{border-color:var(--acc); color:var(--acc2)}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">К содержанию</a>
+
+<header class="bar">
+  <div class="wrap">
+    <a class="nm" href="/">
+      <svg width="24" height="24" viewBox="0 0 48 48" aria-hidden="true">
+        <rect width="48" height="48" rx="11" fill="#101b2e"/>
+        <g transform="translate(24 24) scale(.74) translate(-24 -24)" fill="none" stroke="#5ec8d4" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 16.5h30v22a3 3 0 0 1-3 3H12a3 3 0 0 1-3-3z"/><path d="M7 8.5h34a2 2 0 0 1 2 2v6H5v-6a2 2 0 0 1 2-2z"/><path d="M16.5 26.5l5.5 5.5 10-10"/>
+        </g>
+      </svg>
+      <span class="wm">ВахтаХоз</span>
+    </a>
+    <nav aria-label="Разделы сайта">
+      <a href="/support" aria-current="page">Поддержка</a>
+      <a href="https://email.razvedchick.ru/">Почта</a>
+      <a href="/start">Подключить</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="head">
+    <div class="wrap">
+      <p class="eyebrow">Поддержка</p>
+      <h1>Что делать, если не работает</h1>
+      <p class="lede">Ниже — порядок действий по частым случаям. Если ни один не подошёл,
+         в конце страницы адрес, куда писать, и что приложить к письму.</p>
+      <nav class="toc" aria-label="Разделы страницы">
+        <a href="#login">Вход и пароль</a>
+        <a href="#sync">Синхронизация</a>
+        <a href="#data">Данные и копии</a>
+        <a href="#device">Смена телефона</a>
+        <a href="#mail">Почта</a>
+        <a href="#write">Написать нам</a>
+      </nav>
+    </div>
+  </section>
+
+  <section id="login">
+    <div class="wrap">
+      <p class="eyebrow">Раздел 01</p>
+      <h2>Вход и пароль</h2>
+      <div class="qa">
+        <details>
+          <summary>Не принимает логин или пароль</summary>
+          <div class="a">
+            <ol>
+              <li>Проверьте раскладку и лишний пробел в конце — телефон часто дописывает его сам.</li>
+              <li>Логин пишется без домена и без <span class="mono">@</span>: так, как его назвал начальник участка.</li>
+              <li>Если пароль меняли недавно — попробуйте предыдущий: смена могла не уйти на сервер из-за связи.</li>
+              <li>Не помогло — <b>«Забыли пароль?»</b> на экране входа. Работает, если в профиле привязана запасная почта.</li>
+              <li>Почта не привязана — сброс делает начальник участка в разделе «Работники и роли».</li>
+            </ol>
+          </div>
+        </details>
+        <details>
+          <summary>Не приходит код восстановления</summary>
+          <div class="a">
+            <p>Код уходит на ту почту, которая указана в профиле как запасная. Проверьте папку
+               «Спам». Письмо приходит с нашего сервера, отправитель — <span class="mono">ВахтаХоз</span>.</p>
+            <p>Код живёт ограниченное время. Если он уже просрочен, запросите новый, а не вводите старый.
+               Если писем нет совсем — вероятно, в профиле указан другой адрес; тогда пароль сбрасывает начальник участка.</p>
+          </div>
+        </details>
+        <details>
+          <summary>Выбросило из аккаунта прямо на объекте</summary>
+          <div class="a">
+            <p>Штатно этого происходить не должно: отсутствие связи из аккаунта не выбрасывает,
+               работать можно сутками офлайн. Если всё же выбросило — войдите заново тем же логином;
+               данные, которые уже были на устройстве, останутся.</p>
+            <p>Случай нештатный: сообщите нам, приложив номер сборки и примерное время. Это помогает найти причину.</p>
+          </div>
+        </details>
+        <details>
+          <summary>Как сменить пароль и привязать запасную почту</summary>
+          <div class="a">
+            <p>В приложении: <b>«Ещё → Профиль»</b> — смена пароля, и <b>«Ещё → Резервная почта»</b> —
+               привязка личного адреса. Второе стоит сделать сразу, до выезда: без привязанной почты
+               самостоятельно восстановить доступ нельзя.</p>
+          </div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section id="sync">
+    <div class="wrap">
+      <p class="eyebrow">Раздел 02</p>
+      <h2>Синхронизация и офлайн</h2>
+      <div class="qa">
+        <details>
+          <summary>Работает ли без интернета</summary>
+          <div class="a">
+            <p>Да. Приход, выдача, списание, перемещение и задачи сохраняются на устройстве сразу.
+               В облако они уходят автоматически, как только появится сеть. Сессия офлайн не сбрасывается.</p>
+          </div>
+        </details>
+        <details>
+          <summary>Коллега внёс операцию, а я её не вижу</summary>
+          <div class="a">
+            <ol>
+              <li>Проверьте, что у вас есть сеть, и откройте приложение заново — обмен идёт при запуске и во время работы.</li>
+              <li>У коллеги операция могла ещё не уйти: она лежит на его телефоне, пока он не поймает связь.</li>
+              <li>Убедитесь, что вы оба смотрите одну базу — вверху экрана указано, какая база выбрана.</li>
+            </ol>
+          </div>
+        </details>
+        <details>
+          <summary>Меня не видно в другой базе</summary>
+          <div class="a">
+            <p>Доступ к базам выдаёт начальник участка или партии — каждый видит только свои.
+               Попросите добавить вас в нужную базу в разделе «Аккаунт и база → Работники и роли».</p>
+          </div>
+        </details>
+        <details>
+          <summary>Вход стал долгим</summary>
+          <div class="a">
+            <p>Первый вход после долгого перерыва может занять несколько секунд — сервер «просыпается».
+               Дальше вход мгновенный. Если долгим стал каждый вход — напишите нам.</p>
+          </div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section id="data">
+    <div class="wrap">
+      <p class="eyebrow">Раздел 03</p>
+      <h2>Данные, копии и Excel</h2>
+      <div class="note warn">
+        <p><b>Правило вахты:</b> делайте резервную копию перед выездом и перед любой массовой
+           операцией — загрузкой номенклатуры из таблицы, чисткой склада, передачей смены.
+           Копия — это файл на вашем устройстве, его не отнимет ни связь, ни сервер.</p>
+      </div>
+      <div class="qa">
+        <details>
+          <summary>Как сделать резервную копию</summary>
+          <div class="a">
+            <p><b>«Данные → Резервная копия»</b> — приложение сохранит файл. Отправьте его себе на почту
+               или в мессенджер: тогда копия переживёт и потерю телефона.</p>
+          </div>
+        </details>
+        <details>
+          <summary>Как выгрузить в Excel</summary>
+          <div class="a">
+            <p><b>«Данные → Экспорт в Excel»</b>. В файле <span class="mono">.xlsx</span> — склад и журналы.
+               Выгрузка работает и без интернета.</p>
+          </div>
+        </details>
+        <details>
+          <summary>Что будет с данными, если сбросить телефон</summary>
+          <div class="a">
+            <p>Всё, что успело уйти в облако, вернётся после входа на новом устройстве.
+               То, что было внесено офлайн и не отправилось, хранится только на старом телефоне —
+               и вместе с ним теряется. Поэтому: перед сбросом дайте приложению поймать связь
+               и убедитесь, что обмен прошёл, либо сделайте резервную копию.</p>
+          </div>
+        </details>
+        <details>
+          <summary>Не сходятся остатки</summary>
+          <div class="a">
+            <ol>
+              <li>Откройте журнал движений по позиции — там видно, кто и когда её трогал.</li>
+              <li>Если операции коллеги нет в журнале, она, скорее всего, ещё не ушла с его телефона.</li>
+              <li>Расхождение осталось и после того, как у всех была связь, — выгрузите журнал в Excel и приложите к письму.</li>
+            </ol>
+          </div>
+        </details>
+        <details>
+          <summary>Загрузка номенклатуры из таблицы</summary>
+          <div class="a">
+            <p>Загружается лист с наименованиями и количествами. Перед загрузкой сделайте резервную копию:
+               если в файле окажется не тот столбец, откатиться получится только из копии.
+               Очень длинные списки лучше делить на части и проверять результат после каждой.</p>
+          </div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section id="device">
+    <div class="wrap">
+      <p class="eyebrow">Раздел 04</p>
+      <h2>Новый телефон и установка</h2>
+      <div class="qa">
+        <details>
+          <summary>Как перейти на новый телефон</summary>
+          <div class="a">
+            <ol>
+              <li>На старом телефоне дождитесь связи и убедитесь, что обмен прошёл. Сделайте резервную копию.</li>
+              <li>На новом откройте <span class="mono">vahta.razvedchick.ru</span> и войдите своим логином.</li>
+              <li>Проверьте остатки по нескольким позициям. Старый телефон очищайте только после этого.</li>
+            </ol>
+          </div>
+        </details>
+        <details>
+          <summary>Нужно ли что-то устанавливать</summary>
+          <div class="a">
+            <p>Нет. Приложение открывается по ссылке в браузере. Чтобы оно запускалось значком с главного
+               экрана: на Android — меню браузера → «Добавить на главный экран»; на iPhone — кнопка
+               «Поделиться» → «На экран «Домой»». Работает так же, магазин приложений не нужен.</p>
+          </div>
+        </details>
+        <details>
+          <summary>Приложение открылось старой версией</summary>
+          <div class="a">
+            <p>Закройте вкладку и откройте заново при живой связи. Номер сборки подписан внизу экрана входа —
+               по нему видно, обновилось ли. Данные при обновлении не теряются.</p>
+          </div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section id="mail">
+    <div class="wrap">
+      <p class="eyebrow">Раздел 05</p>
+      <h2>Рабочая почта</h2>
+      <dl class="spec">
+        <div><dt>Адрес почты</dt><dd><a href="https://email.razvedchick.ru/">email.razvedchick.ru</a></dd></div>
+        <div><dt>Логин</dt><dd><span class="mono">логин@razvedchick.ru</span> — тот же логин, что и в ВахтаХоз</dd></div>
+        <div><dt>Пароль</dt><dd>Тот, что был выдан вместе с доступом. Смена пароля в приложении почтовый не меняет</dd></div>
+      </dl>
+      <p class="muted small" style="margin-top:16px">Не входит в почту — напишите нам с любого другого адреса,
+         указав свой логин. Пароль ящика восстанавливается вручную.</p>
+    </div>
+  </section>
+
+  <section id="write">
+    <div class="wrap">
+      <p class="eyebrow">Раздел 06</p>
+      <h2>Написать в поддержку</h2>
+      <p class="lede" style="margin-bottom:22px">Отвечаем по рабочим дням. Чтобы разобраться с первого письма,
+         приложите к нему четыре вещи — без них придётся переспрашивать.</p>
+      <div class="rows">
+        <div class="item"><span class="n">01</span><p>Логин и название базы.</p></div>
+        <div class="item"><span class="n">02</span><p>Номер сборки — подписан внизу экрана входа.</p></div>
+        <div class="item"><span class="n">03</span><p>Телефон и браузер: например, «Android 9, Chrome» или «iPhone, Safari».</p></div>
+        <div class="item"><span class="n">04</span><p>Что делали и что получили — по шагам, со временем. Снимок экрана помогает сильнее любого описания.</p></div>
+      </div>
+      <div class="btns" style="margin-top:26px">
+        <a class="btn btn-1" href="mailto:support@razvedchick.ru?subject=%D0%92%D0%B0%D1%85%D1%82%D0%B0%D0%A5%D0%BE%D0%B7%20%E2%80%94%20%D0%BE%D0%B1%D1%80%D0%B0%D1%89%D0%B5%D0%BD%D0%B8%D0%B5">Написать на support@razvedchick.ru</a>
+      </div>
+      <p class="small muted" style="margin-top:18px">Пароли в письмах не пересылайте — они нам не нужны.
+         Сотрудник поддержки никогда не спросит ваш пароль.</p>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="cols">
+      <a href="/">Главная</a>
+      <a href="https://email.razvedchick.ru/">Почта Разведчик</a>
+      <a href="/start">Подключить объект</a>
+      <a href="/terms">Условия использования</a>
+      <a href="/privacy">Политика конфиденциальности</a>
+      <a href="mailto:support@razvedchick.ru">support@razvedchick.ru</a>
+    </div>
+    <p class="who">ООО «Разведчик» · владелец и разработчик — Павлович Александр Кириллович</p>
+  </div>
+</footer>
+</body>
+</html>

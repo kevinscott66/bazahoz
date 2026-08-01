@@ -1,7 +1,7 @@
 /* ВахтаХоз service worker — network-first для оболочки + offline fallback.
    network-first важен: после деплоя фикса пользователь получает свежий vahtahoz.html
    сразу при наличии сети, а кэш используется только как офлайн-резерв. */
-const CACHE = "vahtahoz-v243";
+const CACHE = "vahtahoz-v245";
 // Cache Storage общий на ORIGIN, а не на путь регистрации SW: стабильная (/) и бета (/beta/)
 // живут на одном домене vahta.razvedchick.ru и видят одни и те же ключи caches.keys().
 // Раньше activate чистил ВСЁ подряд (k !== CACHE) — заход в бету удалял кэш стабильной

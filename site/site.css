@@ -1,0 +1,207 @@
+/* ВахтаХоз — система стилей сайта.
+   Один файл на все страницы: браузер берёт его из кэша со второй страницы,
+   а править цвет или отступ приходится в одном месте, а не в пяти.
+
+   Ни одного внешнего запроса: шрифт системный, значки — svg в разметке.
+   Причина та же, что и у приложения: на объекте связь слабая, и страница
+   должна открываться, а не ждать чужой сервер. */
+
+:root{
+  --bg:#0b1220;          /* фон приложения — сайт продолжает его */
+  --bg2:#0e1526;
+  --surf:#111c2e;
+  --surf2:#16223a;
+  --line:#1f2a3d;
+  --line2:#2a374d;
+  --text:#e5e7eb;
+  --dim:#9aa7ba;
+  --dim2:#6f7c90;
+  --acc:#5ec8d4;
+  --acc2:#8fe3ea;
+  --on-acc:#06202a;
+  --ok:#3ecf8e;
+  --warn:#e0a33e;
+  --sys:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  --w:960px;             /* предельная ширина полосы набора */
+  --r:10px;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%; scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){ html{scroll-behavior:auto} *{animation:none!important; transition:none!important} }
+
+body{
+  margin:0; min-height:100vh; display:flex; flex-direction:column;
+  color:var(--text); font:17px/1.6 var(--sys);
+  background:var(--bg);
+}
+/* Фон — один неподвижный слой под содержимым: техническая сетка, подсветка
+   сверху и гашение сетки к низу. Сделано отдельным элементом, а не
+   background-attachment:fixed на body: несколько «прибитых» слоёв заставляют
+   браузер перерисовывать весь экран на каждый кадр прокрутки, и на телефонах
+   это видно. Здесь слой рисуется один раз.
+   Сетка задаёт масштаб и держит вёрстку собранной там, где нет иллюстраций. */
+body::before{
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+  background:
+    radial-gradient(100% 62% at 50% 0%, transparent 0%, var(--bg) 82%),
+    linear-gradient(var(--line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line) 1px, transparent 1px),
+    radial-gradient(120% 70% at 50% -10%, #17263f 0%, var(--bg) 62%);
+  background-size:100% 100%, 88px 88px, 88px 88px, 100% 100%;
+  background-position:center top;
+}
+body > *{position:relative; z-index:1}
+
+a{color:var(--acc2); text-underline-offset:3px}
+a:hover{color:var(--acc)}
+:focus-visible{outline:2px solid var(--acc2); outline-offset:3px; border-radius:6px}
+img{max-width:100%; height:auto; display:block}
+
+.skip{position:absolute; left:-9999px}
+.skip:focus{left:12px; top:12px; background:var(--acc); color:var(--on-acc);
+            padding:10px 14px; border-radius:8px; z-index:9; text-decoration:none}
+
+.wrap{width:100%; max-width:var(--w); margin:0 auto; padding:0 22px}
+
+/* ---------- шапка ---------- */
+.bar{border-bottom:1px solid var(--line); background:rgba(11,18,32,.72); backdrop-filter:saturate(140%) blur(6px)}
+.bar .wrap{display:flex; align-items:center; gap:12px; height:60px}
+.bar .nm{font-weight:700; letter-spacing:-.01em; text-decoration:none; color:var(--text); display:flex; align-items:center; gap:9px}
+.bar nav{margin-left:auto; display:flex; gap:4px}
+.bar nav a{color:var(--dim); text-decoration:none; font-size:14.5px; padding:10px 10px; border-radius:8px}
+.bar nav a:hover{color:var(--acc2); background:var(--surf)}
+.bar nav a[aria-current="page"]{color:var(--text); background:var(--surf)}
+@media (max-width:520px){
+  /* На узком экране имя в шапке уступает место разделам: знак остаётся,
+     слово убирается — иначе строка не помещается и страницу начинает
+     таскать вбок. */
+  .bar .wm{position:absolute; left:-9999px}
+  .bar nav a{padding:10px 8px; font-size:14px}
+  .wrap{padding:0 16px}
+}
+
+/* ---------- служебные надписи ---------- */
+.eyebrow{font:11.5px/1 var(--mono); letter-spacing:.16em; text-transform:uppercase; color:var(--dim2); margin:0 0 14px}
+.chip{display:inline-flex; align-items:center; gap:7px; font:12px/1 var(--mono);
+      color:var(--dim); background:var(--surf); border:1px solid var(--line);
+      padding:7px 11px; border-radius:999px; white-space:nowrap}
+.dot{width:7px; height:7px; border-radius:50%; background:var(--ok); box-shadow:0 0 0 3px rgba(62,207,142,.16)}
+.mono{font-family:var(--mono); font-size:.92em}
+
+/* ---------- типографика ---------- */
+h1{font-size:clamp(30px,5.2vw,44px); line-height:1.1; letter-spacing:-.025em; margin:0 0 14px; font-weight:700}
+h2{font-size:clamp(20px,2.6vw,25px); line-height:1.25; letter-spacing:-.018em; margin:0 0 12px}
+h3{font-size:17px; line-height:1.35; margin:0 0 5px; letter-spacing:-.01em}
+p{margin:0 0 15px}
+.lede{font-size:clamp(17px,2.1vw,19px); color:var(--dim); max-width:34em}
+.muted{color:var(--dim)}
+.small{font-size:14.5px}
+section{padding:46px 0}
+section + section{border-top:1px solid var(--line)}
+
+/* ---------- кнопки ---------- */
+.btn{display:inline-flex; align-items:center; justify-content:center; gap:9px;
+     min-height:54px; padding:15px 34px; border-radius:12px; border:1px solid transparent;
+     font:700 17px/1 var(--sys); text-decoration:none; cursor:pointer;
+     transition:transform .12s ease, background .12s ease, border-color .12s ease}
+.btn-1{background:var(--acc); color:var(--on-acc)}
+.btn-1:hover{background:var(--acc2); color:var(--on-acc)}
+.btn-1:active{transform:translateY(1px)}
+.btn-2{background:transparent; color:var(--text); border-color:var(--line2); font-weight:600}
+.btn-2:hover{border-color:var(--acc); color:var(--acc2)}
+.btns{display:flex; gap:12px; flex-wrap:wrap; align-items:center}
+@media (max-width:430px){ .btn{width:100%} }
+
+/* ---------- таблица характеристик ---------- */
+.spec{border:1px solid var(--line); border-radius:var(--r); overflow:hidden; background:var(--surf)}
+.spec div{display:flex; gap:16px; padding:13px 16px; font-size:15.5px}
+.spec div + div{border-top:1px solid var(--line)}
+.spec dt,.spec .k{flex:0 0 200px; color:var(--dim2); font:12px/1.5 var(--mono);
+                  letter-spacing:.08em; text-transform:uppercase; padding-top:3px}
+.spec dd,.spec .v{margin:0; flex:1 1 auto; color:var(--text)}
+@media (max-width:560px){ .spec div{flex-direction:column; gap:4px} .spec dt,.spec .k{flex:auto} }
+
+/* ---------- нумерованные разделы (стиль «паспорт») ---------- */
+.rows{display:flex; flex-direction:column}
+.item{display:flex; gap:18px; padding:18px 0}
+.item + .item{border-top:1px solid var(--line)}
+.item .n{flex:0 0 30px; font:13px/1.7 var(--mono); color:var(--acc)}
+.item p{margin:0; color:var(--dim); font-size:16px; max-width:60ch}
+
+/* ---------- карточка-выноска ---------- */
+.note{border:1px solid var(--line); border-left:3px solid var(--acc); background:var(--surf);
+      border-radius:0 var(--r) var(--r) 0; padding:16px 18px; margin:0 0 18px}
+.note p:last-child{margin:0}
+.note.warn{border-left-color:var(--warn)}
+
+/* ---------- схема потока данных ---------- */
+/* Ряд из четырёх шагов на широком экране, столбик — на телефоне.
+   Собран на flex, а не картинкой: текст в схеме читается экранным диктором
+   и не мылится на любом экране. */
+.flow{display:flex; align-items:stretch; gap:0; flex-wrap:nowrap; margin:0}
+.flow .step{flex:1 1 0; min-width:0; border:1px solid var(--line); border-radius:var(--r);
+            background:var(--surf); padding:14px 15px}
+.flow .step b{display:block; font:11px/1.4 var(--mono); letter-spacing:.11em; text-transform:uppercase;
+              color:var(--acc); margin:0 0 7px; font-weight:400}
+.flow .step span{display:block; font-size:14.5px; color:var(--dim); line-height:1.45}
+.flow .arr{flex:0 0 46px; display:flex; align-items:center; justify-content:center; color:var(--line2)}
+.flow .arr svg{display:block}
+.flow .arr i{display:none}
+@media (max-width:760px){
+  .flow{flex-direction:column}
+  .flow .arr{flex:0 0 32px; height:32px}
+  .flow .arr svg{transform:rotate(90deg)}
+}
+.flow-cap{font:12px/1.5 var(--mono); color:var(--dim2); margin:14px 0 0}
+
+/* ---------- форма ---------- */
+.form{display:flex; flex-direction:column; gap:16px; max-width:520px}
+.f label{display:block; font:11.5px/1 var(--mono); letter-spacing:.12em; text-transform:uppercase;
+         color:var(--dim2); margin:0 0 7px}
+.f input,.f textarea,.f select{
+  width:100%; background:var(--bg2); color:var(--text); border:1px solid var(--line2);
+  border-radius:9px; padding:13px 14px; font:16px/1.4 var(--sys); min-height:50px}
+.f textarea{min-height:110px; resize:vertical}
+.f input:focus,.f textarea:focus,.f select:focus{border-color:var(--acc); outline:none;
+  box-shadow:0 0 0 3px rgba(94,200,212,.16)}
+.f .hint{font-size:13.5px; color:var(--dim2); margin:7px 0 0}
+.hp{position:absolute; left:-9999px; width:1px; height:1px; overflow:hidden}
+.msg{border-radius:9px; padding:13px 15px; font-size:15.5px; display:none}
+.msg.on{display:block}
+.msg.ok{background:rgba(62,207,142,.1); border:1px solid rgba(62,207,142,.42); color:#bdf0d8}
+.msg.err{background:rgba(224,163,62,.1); border:1px solid rgba(224,163,62,.42); color:#f0dcb6}
+
+/* ---------- вопрос-ответ ---------- */
+.qa{border-top:1px solid var(--line)}
+.qa details{border-bottom:1px solid var(--line)}
+.qa summary{cursor:pointer; list-style:none; padding:16px 40px 16px 0; position:relative;
+            font-size:16.5px; font-weight:600; letter-spacing:-.01em}
+.qa summary::-webkit-details-marker{display:none}
+.qa summary::after{content:""; position:absolute; right:8px; top:50%; width:9px; height:9px;
+                   margin-top:-6px; border-right:1.6px solid var(--dim); border-bottom:1.6px solid var(--dim);
+                   transform:rotate(45deg); transition:transform .15s ease}
+.qa details[open] summary::after{transform:rotate(-135deg); margin-top:-2px; border-color:var(--acc)}
+.qa summary:hover{color:var(--acc2)}
+.qa .a{padding:0 0 18px; color:var(--dim); font-size:16px; max-width:64ch}
+.qa .a p{margin:0 0 12px}
+.qa .a p:last-child{margin:0}
+.qa .a ol,.qa .a ul{margin:0 0 12px; padding-left:22px}
+.qa .a li{margin:0 0 6px}
+
+/* ---------- правовой текст ---------- */
+.legal{max-width:70ch}
+.legal h2{margin:34px 0 12px; font-size:20px}
+.legal h2:first-child{margin-top:0}
+.legal p,.legal li{color:#c6ceda; font-size:16px}
+.legal ul,.legal ol{padding-left:22px; margin:0 0 15px}
+.legal li{margin:0 0 8px}
+.legal .upd{font:12px/1.6 var(--mono); color:var(--dim2); letter-spacing:.06em}
+
+/* ---------- подвал ---------- */
+footer{margin-top:auto; border-top:1px solid var(--line); padding:26px 0 40px; font-size:14px; color:var(--dim2)}
+footer .cols{display:flex; flex-wrap:wrap; gap:10px 22px; margin:0 0 16px}
+footer a{color:#8fa0b8; text-decoration:none}
+footer a:hover{color:var(--acc2)}
+footer .who{font:12.5px/1.7 var(--mono); color:#5a6577}
