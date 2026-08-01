@@ -411,7 +411,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v241";
+const APP_BUILD = "v242";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -1195,6 +1195,24 @@ function sanitizeIds(arr){
   for(const it of arr){ if(it && typeof it==="object") it.id = safeId(it.id); }
   return arr;
 }
+/* Единая санитизация id и чек-листов: id уходят в inline-onclick, поэтому её обязаны пройти
+   ВСЕ пути появления данных — старт, импорт и storage-событие с другого устройства. Раньше
+   это было только в стартовом блоке, и normalizeState() после слияния/перечитывания состояния
+   форму чинил, а id — нет. safeId идемпотентен, повторный вызов ничего не портит. */
+function sanitizeStateIds(){
+  sanitizeIds(state.stock);
+  sanitizeIds(state.tasks);
+  sanitizeIds(state.log);
+  if(state.journals) for(const k of JOURNAL_KEYS) sanitizeIds(state.journals[k]);
+  if(Array.isArray(state.tasks)) for(const t of state.tasks){
+    if(t && Array.isArray(t.items)){
+      t.items = t.items.filter(i=>i && typeof i==="object").map(i=>({
+        id: safeId(i.id), text: typeof i.text==="string" ? i.text.slice(0,200) : "", done: !!i.done
+      })).filter(i=>i.text);
+      if(t.items.length===0) delete t.items;
+    }
+  }
+}
 /* --- per-field валидаторы импорта (структура + нормализация); поведение идентично исходному validateImport --- */
 function validateArrayField(obj, field){
   if(obj[field]!==undefined && !Array.isArray(obj[field])) throw new Error(`поле ${field} не массив`);
@@ -1477,19 +1495,8 @@ for(const k of STOCK_TYPE_KEYS){
 }
 // общие задачи накладываем ДО санитизации — чтобы их id/чек-листы тоже прошли проверку
 loadGlobalTasks();
-sanitizeIds(state.stock);
-sanitizeIds(state.tasks);
-sanitizeIds(state.log);
-for(const k of JOURNAL_KEYS) sanitizeIds(state.journals[k]);
-// нормализуем чек-листы задач: id пунктов идут в inline-onclick → защита от XSS из импорта
-for(const t of state.tasks){
-  if(Array.isArray(t.items)){
-    t.items = t.items.filter(i=>i && typeof i==="object").map(i=>({
-      id: safeId(i.id), text: typeof i.text==="string" ? i.text.slice(0,200) : "", done: !!i.done
-    })).filter(i=>i.text);
-    if(t.items.length===0) delete t.items;
-  }
-}
+// id записей и чек-листы задач идут в inline-onclick → защита от XSS из импорта
+sanitizeStateIds();
 
 /* нормализация существующих количеств: схлопывает накопленные float-эпсилоны
    (91.54999999999998 → 91.55, 12.620000000000001 → 12.62) и заполняет пустую категорию у продуктов */
@@ -3209,34 +3216,46 @@ function journalRefScore(it){
   }
   return n;
 }
-function ledgerQtyForProduct(product){
-  if(!product) return 0;
-  let sum = 0;
-  const pid = product.id;
-  const pname = stockNormName(product.name);
+/* Индекс журнала для сверки. Раньше ledgerQtyForProduct прогонял ВЕСЬ журнал по КАЖДОЙ позиции:
+   на базе владельца это 3082 × 6000 ≈ 18 млн итераций — секунды на десктопе и замерший экран
+   на телефоне. Один проход по журналу даёт те же суммы; правила совпадения ниже — дословно те же:
+   - запись с productId и БЕЗ единицы вовсе (legacy-журнал) — совпадение по id авторитетно (byIdAny);
+   - запись с productId и с ПОНЯТНОЙ единицей — совпадает, только если единица карточки та же
+     (карточку перевели из «шт» в «кор» → 720 шт не должны лечь как 720 кор);
+   - запись БЕЗ productId — только по нормализованному имени И совпадающей единице (иначе движение
+     с чужим/удалённым productId приписалось бы не той карточке);
+   - запись с непонятной единицей (_impUnitKey → null) не учитывается вовсе — fail-closed;
+   - «[партия удалена]» пропускаем: qty уже снят с карточки, сверка не должна его поднимать. */
+function buildLedgerIndex(){
+  const byIdUnit = new Map(), byIdAny = new Map(), byName = new Map();
   for(const kind of JOURNAL_KEYS){
     for(const op of (state.journals[kind]||[])){
+      if(!op) continue;
       const sign = journalEffectSign(kind, op);
       if(!sign) continue;
-      // партия удалена → qty уже снят с карточки; не поднимать остаток сверкой
       if(/\[партия удалена\]/.test(op.note||"")) continue;
-      const matchId = op.productId && op.productId===pid;
-      // по имени учитываем ТОЛЬКО записи без productId (иначе движение с чужим/удалённым
-      // productId, но совпавшим именем, приписалось бы не той карточке)
-      const ou = _impUnitKey(op.unit), pu = _impUnitKey(product.unit);
-      const matchNameOnly = !op.productId && stockNormName(op.productName)===pname && !!ou && !!pu && ou===pu;
-      // Единица учитывается и для совпадения по productId (раньше проверялась ТОЛЬКО по имени):
-      // карточку перевели из «шт» в «кор» (saveStock не меняет записи журнала) → ledger складывал
-      // 720 шт как 720 кор, и post-pull raise ставил qty=720 кор вместо 2 (×360).
-      // НО: если у записи единицы НЕТ вовсе (legacy-журнал до появления unit), совпадение по
-      // productId авторитетно. Иначе _impUnitKey("")="шт" исключал такие записи у карточки в кг/кор,
-      // ledger обнулялся, и сверка «вниз» по галочке занижала остаток до нуля.
-      // Требуем совпадения только когда единица задана у ОБОИХ (как в _impSpecCompatible).
-      const _opUnitRaw = String(op.unit||"").trim();
-      const matchById = matchId && (!_opUnitRaw || (!!ou && !!pu && ou===pu));
-      if(matchById || matchNameOnly)
-        sum += sign * Number(op.qty||0);
+      const v = sign * Number(op.qty||0);
+      const ou = _impUnitKey(op.unit);
+      if(op.productId){
+        if(!String(op.unit||"").trim()) byIdAny.set(op.productId, (byIdAny.get(op.productId)||0) + v);
+        else if(ou){ const k = op.productId+"|"+ou; byIdUnit.set(k, (byIdUnit.get(k)||0) + v); }
+      } else if(ou){
+        const k = stockNormName(op.productName)+"|"+ou;
+        byName.set(k, (byName.get(k)||0) + v);
+      }
     }
+  }
+  return { byIdUnit, byIdAny, byName };
+}
+// idx необязателен: без него считаем как раньше — один проход на одну позицию.
+function ledgerQtyForProduct(product, idx){
+  if(!product) return 0;
+  idx = idx || buildLedgerIndex();
+  const pu = _impUnitKey(product.unit);
+  let sum = idx.byIdAny.get(product.id) || 0;
+  if(pu){
+    sum += idx.byIdUnit.get(product.id+"|"+pu) || 0;
+    sum += idx.byName.get(stockNormName(product.name)+"|"+pu) || 0;
   }
   return roundQty(sum);
 }
@@ -3403,9 +3422,10 @@ function reconcileLegacyQtyFromJournal(allowDown, allowUp){
      замершего экрана на телефоне — без индикатора и без отмены, при гарантированно нулевом эффекте. */
   if(!allowUp && !allowDown) return { fixed:0, up:[], down:[] };
   const up = [], down = [];
+  const _idx = buildLedgerIndex();   // один проход по журналу на всю сверку, а не на каждую позицию
   for(const s of (state.stock||[])){
     if(hasBatches(s)) continue;
-    const ledger = ledgerQtyForProduct(s);
+    const ledger = ledgerQtyForProduct(s, _idx);
     const cur = totalQtyOf(s);
     if(ledger === cur) continue;
     if(ledger > cur){
@@ -3433,9 +3453,10 @@ function journalLooksIncomplete(){
 // список позиций, где остаток БОЛЬШЕ журнала (кандидаты на завышение, напр. старым багом сверки)
 function overCountedVsJournal(){
   const over = [];
+  const _idx = buildLedgerIndex();   // тот же один проход, что и в сверке
   for(const s of (state.stock||[])){
     if(hasBatches(s)) continue;
-    const ledger = ledgerQtyForProduct(s);
+    const ledger = ledgerQtyForProduct(s, _idx);
     const cur = totalQtyOf(s);
     if(cur > ledger && ledger >= 0) over.push({ id:s.id, name:s.name, cur, ledger });
   }
@@ -8993,17 +9014,23 @@ function applyCloudBatchAggregates(r, it, cleaned){
     r.qty = qtyFromCloudBatches(cleaned, r.qty);
   }
 }
+/* Тянем облачные остатки по списку id. Чанкуем id=in.(...) — иначе длинный URL режется
+   прокси/PostgREST. Один и тот же запрос нужен и основному 3-way слиянию, и его fail-closed
+   повтору в catch: держим в одном месте, чтобы размер чанка и набор полей не разъехались. */
+async function fetchCloudStockByIds(cid, tok, ids){
+  const cloudById={};
+  const size=100;
+  for(let i=0;i<ids.length;i+=size){
+    const chunk = ids.slice(i,i+size);
+    const cloudRows = await cloudRest(`stock_items?select=id,qty,batches&base_id=eq.${encodeURIComponent(cid)}&id=in.(${chunk.map(encodeURIComponent).join(",")})`, tok);
+    if(Array.isArray(cloudRows)) cloudRows.forEach(cr=>cloudById[cr.id]=cr);
+  }
+  return cloudById;
+}
 async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
   try{
     const ids = upsert.map(r=>r.id); if(!ids.length) return;
-    // чанкуем id=in.(...) — иначе длинный URL режется прокси/PostgREST
-    const cloudById={};
-    const size=100;
-    for(let i=0;i<ids.length;i+=size){
-      const chunk = ids.slice(i,i+size);
-      const cloudRows = await cloudRest(`stock_items?select=id,qty,batches&base_id=eq.${encodeURIComponent(cid)}&id=in.(${chunk.map(encodeURIComponent).join(",")})`, tok);
-      if(Array.isArray(cloudRows)) cloudRows.forEach(cr=>cloudById[cr.id]=cr);
-    }
+    const cloudById = await fetchCloudStockByIds(cid, tok, ids);
     if(!Object.keys(cloudById).length) return;
     const snap = loadSyncSig(cid,"stockVals");   // {id: qty} на момент последнего синка
     let localChanged=false, conflictBatched=0;
@@ -9057,12 +9084,7 @@ async function mergeStockQtyBeforePush(cid, tok, upsert, curSig){
     // не LWW: ещё раз тянем облако и подставляем qty (иначе локальный upsert затрёт чужие списания)
     try{
       const ids = upsert.map(r=>r.id); if(!ids.length) return;
-      const cloudById={}; const size=100;
-      for(let i=0;i<ids.length;i+=size){
-        const chunk = ids.slice(i,i+size);
-        const cloudRows = await cloudRest(`stock_items?select=id,qty,batches&base_id=eq.${encodeURIComponent(cid)}&id=in.(${chunk.map(encodeURIComponent).join(",")})`, tok);
-        if(Array.isArray(cloudRows)) cloudRows.forEach(cr=>cloudById[cr.id]=cr);
-      }
+      const cloudById = await fetchCloudStockByIds(cid, tok, ids);
       let localChanged=false;
       for(const r of upsert){
         const cr=cloudById[r.id]; if(!cr) continue;
@@ -10052,6 +10074,7 @@ function normalizeState(){
     if(state.delLoc[k].length) state.locations[k] = applyTomb(state.locations[k], state.delLoc[k]);
     if(state.delCat[k].length && Array.isArray(state.categories[k])) state.categories[k] = applyTomb(state.categories[k], state.delCat[k]);
   }
+  sanitizeStateIds();   // тот же рубеж, что и на старте: id из чужого/старого состояния идут в inline-onclick
   for(const s of state.stock) normalizeStockItem(s);
 }
 window.addEventListener("storage", (e)=>{
