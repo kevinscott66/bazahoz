@@ -411,7 +411,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v236";
+const APP_BUILD = "v237";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -1433,8 +1433,17 @@ function ensureTomb(){
 function tombJr(id){
   if(!id) return; ensureTomb();
   if(!state.delJr.includes(id)) state.delJr.push(id);
-  // НЕ срезаем хвост: недоставленное надгробие нельзя терять — иначе pull воскресит запись.
-  // Доставленные снимает dropDeliveredTombstones после успешного DELETE.
+  /* Облачная база: НЕ срезаем хвост — недоставленное надгробие терять нельзя, иначе pull
+     воскресит запись. Доставленные снимает dropDeliveredTombstones после успешного DELETE.
+     ЛОКАЛЬНАЯ база (нет cloudId): тянуть записи неоткуда и воскрешать некому, а снимать
+     надгробия тоже некому (dropDeliveredTombstones живёт только на синке) — список рос бы
+     вечно и молча съедал квоту телефона у тех, кто облаком не пользуется. Держим хвост. */
+  let linked = true;
+  try{ linked = !!(typeof activeCloudId==="function" && activeCloudId()); }catch(_){ linked = true; }
+  if(!linked){
+    if(state.delJr.length>500) state.delJr.splice(0, state.delJr.length-500);
+    return;
+  }
   if(state.delJr.length>20000) console.warn("delJr oversized", state.delJr.length);
 }
 // после ПОДТВЕРЖДЁННОГО удаления из облака надгробие больше не нужно (запись там уже мертва и на pull не придёт) —
@@ -5996,21 +6005,34 @@ async function mergeCatalogs(){
   if(willAdd===0){ toast("Каталоги уже одинаковы"); return; }
   const ok = await confirmSheet(`Объединить наименования: добавить ${willAdd} позиций (с нулём) туда, где их нет? Остатки/места/сроки не меняются.`,{yes:"Объединить"});
   if(!ok) return;
-  let added=0;
+  let added=0; const failed=[]; let quotaHit=false;
   for(const b of bases){
     if(b.active) b.st = state;   // снимок снят ДО await — за время диалога глобальный state мог быть переназначен (storage-событие); берём живой
     const have = new Set(b.st.stock.map(keyOf));
     for(const [k,c] of catalog){
       if(!have.has(k)){ b.st.stock.push(catalogItem(c.type, c.name, c.unit)); added++; }
     }
+    /* Записалось ли на самом деле. Раньше сбой записи слота проглатывался пустым catch, а базу
+       всё равно помечали dirty: тост рапортовал «добавлено N наименований», в базе не появлялось
+       ничего, зато она значилась несинхронизированной и при открытии гнала полный push старых
+       данных. Теперь считаем реально записанные и говорим правду. */
+    let written = true;
     if(b.active) saveState();
-    else { try{ localStorage.setItem(slotKey(b.p.id), JSON.stringify(b.st)); }catch(_){} }
-    if(b.p.cloudId){ markDirty(b.p.cloudId); }   // к выгрузке в облако
+    else {
+      try{ localStorage.setItem(slotKey(b.p.id), JSON.stringify(b.st)); }
+      catch(e){ written=false; failed.push(b.p.name||"без имени"); if(isQuotaErr(e)) quotaHit=true; }
+    }
+    if(written && b.p.cloudId){ markDirty(b.p.cloudId); }   // к выгрузке в облако
   }
   render();
   const cid = activeCloudId();
   if(cid && cloud.ready) setTimeout(()=>{ cloudActivate(cid).catch(e=>console.warn(e)); }, 50);   // активную — сразу в облако
-  toast(`Готово: добавлено ${added} наименований. Остальные базы обновятся при открытии.`);
+  if(failed.length){
+    toast(`Добавлено ${added} наименований, но не хватило места — базы не обновлены: ${failed.join(", ")}`);
+    if(quotaHit) _quotaBlock("⛔ Не хватило места на телефоне — часть баз не обновлена");
+  } else {
+    toast(`Готово: добавлено ${added} наименований. Остальные базы обновятся при открытии.`);
+  }
 }
 /* каталожная позиция-«заготовка» (только наименование, без остатка/мест/сроков) */
 function catalogItem(type, name, unit){
@@ -6035,8 +6057,12 @@ function propagateName(type, name, unit, oldName){
       st.stock.push(catalogItem(type,name,unit)); changed=true;   // новое имя — добавить
     }
     if(changed){
-      try{ localStorage.setItem(slotKey(p.id), JSON.stringify(st)); }catch(_){}
-      if(p.cloudId) markDirty(p.cloudId);
+      // dirty ставим ТОЛЬКО если слот действительно записался: иначе база числилась бы
+      // несинхронизированной без единой новой правки и гнала бы полный push старых данных
+      let ok=true;
+      try{ localStorage.setItem(slotKey(p.id), JSON.stringify(st)); }
+      catch(e){ ok=false; console.warn("propagateName: слот не записан", p.name, e); if(isQuotaErr(e)) _quotaBlock(); }
+      if(ok && p.cloudId) markDirty(p.cloudId);
     }
   }
 }
@@ -8320,12 +8346,69 @@ function purgeCloudProfiles(alsoCopies){
     let locals = profiles.list.filter(p=>!doomed(p));
     if(!locals.length){ locals = [{ id: uid(), name: "База 1" }]; }
     const newActive = activeWasCloud ? locals[0].id : profiles.activeId;
-    if(activeWasCloud){ const raw = localStorage.getItem(slotKey(newActive)); localStorage.setItem(STORE_KEY, raw || JSON.stringify(freshProfileState())); }
-    profiles = { activeId: newActive, list: locals };
-    saveProfiles(profiles);
+    /* Порядок важен: СНАЧАЛА список баз, ПОТОМ живой STORE_KEY. Раньше было наоборот и всё
+       молча глоталось общим catch: если saveProfiles не проходил (квота/приватный режим),
+       на диске оставался старый список — с облачными базами, чьи слоты уже снесены, и с
+       activeId облачной базы, — а STORE_KEY уже держал данные ЛОКАЛЬНОЙ базы. При следующем
+       запуске локальный склад открывался ПОД ИМЕНЕМ облачной базы и мог уехать в неё push-ом. */
+    const next = { activeId: newActive, list: locals };
+    let saved=false;
+    for(let i=0;i<3 && !saved;i++) saved = saveProfiles(next);
+    profiles = next;
+    if(saved){
+      if(activeWasCloud){ const raw = localStorage.getItem(slotKey(newActive)); localStorage.setItem(STORE_KEY, raw || JSON.stringify(freshProfileState())); }
+    }else{
+      // Список не записался. Главное сделано — слоты облачных баз удалены; осталось не оставить
+      // чужие данные в STORE_KEY. Пустой STORE_KEY при старте даёт чистое состояние, а не чужой склад.
+      console.error("purgeCloudProfiles: список баз не сохранён");
+      if(activeWasCloud){ try{ localStorage.removeItem(STORE_KEY); }catch(_){} }
+      try{ toast("Не удалось сохранить список баз — проверьте место в памяти телефона"); }catch(_){}
+    }
+  }catch(e){ console.error("purgeCloudProfiles", e); }
+}
+/* Что на этом телефоне ещё НЕ уехало в общую базу. Список имён баз + признак задач. */
+function cloudPendingWork(){
+  const bases=[];
+  try{
+    for(const p of profiles.list){
+      if(p.cloudId && localStorage.getItem(cloudDirtyKey(p.cloudId))) bases.push(p.name||"без имени");
+    }
   }catch(_){}
+  let tasks=false; try{ tasks = !!localStorage.getItem(TASKS_DIRTY); }catch(_){}
+  return { bases, tasks, any: bases.length>0 || tasks };
 }
 async function cloudLogout(){
+  /* ВЫХОД — РАЗРУШИТЕЛЬНОЕ ДЕЙСТВИЕ. Ниже purgeCloudProfiles() удаляет слоты облачных баз,
+     clearBaseSyncKeys снимает dirty и снимки подписей, а задачи стираются вместе с TASKS_DIRTY.
+     Всё это правильно (общий телефон не должен хранить чужой склад), но раньше выполнялось
+     БЕЗ ЕДИНОГО ВОПРОСА прямо по тапу «Выйти». Типовая вахтовая ситуация: день без интернета,
+     приходы и выдачи копятся локально, вечером телефон передают сменщику и жмут «Выйти» —
+     день работы исчезал молча и безвозвратно, dirty-маркер стирался вместе с данными. */
+  const pend = cloudPendingWork();
+  if(pend.any){
+    const what = [pend.bases.length?`базы: ${pend.bases.join(", ")}`:"", pend.tasks?"задачи":""].filter(Boolean).join("; ");
+    const opts = [];
+    if(cloud.ready && cloudOnline()) opts.push({label:"Синхронизировать и выйти", value:"sync"});
+    opts.push({label:"Сначала сделать экспорт", value:"export"});
+    opts.push({label:"Выйти и потерять несохранённое", value:"drop", color:"btn-danger"});
+    const ans = await chooseSheet(`Не отправлено в общую базу — ${what}.\nПри выходе эти данные будут удалены с телефона.`, opts);
+    if(ans===null) return;                       // отмена — выход не выполняем
+    if(ans==="export"){
+      try{ if(typeof exportData==="function") exportData({localOnly:true}); }catch(_){}
+      toast("Файл сохранён. Выйдите ещё раз, когда убедитесь, что он на месте");
+      return;                                    // намеренно НЕ выходим: пусть человек проверит файл
+    }
+    if(ans==="sync"){
+      setSyncStatus("syncing","Отправка изменений перед выходом…");
+      try{ await cloudPushNow(); }catch(_){}
+      try{ if(typeof cloudPushTasksNow==="function") await cloudPushTasksNow(); }catch(_){}
+      if(cloudPendingWork().any){
+        const go = await confirmSheet("Отправить всё не удалось — часть данных осталась только на телефоне. Всё равно выйти и потерять их?",
+                                      { yes:"Выйти и потерять", no:"Остаться", danger:true, title:"Не всё отправлено" });
+        if(!go) return;
+      }
+    }
+  }
   try{ if(cloud.channel) await cloud.sb.removeChannel(cloud.channel); }catch(e){}
   try{ if(cloud.tasksChannel) await cloud.sb.removeChannel(cloud.tasksChannel); }catch(e){}   // снимаем и канал задач
   try{ if(cloud.sb) await cloud.sb.auth.signOut({ scope:"local" }); }catch(e){}   // ТОЛЬКО это устройство: без scope — глобальный logout, разлогинил бы и другие устройства юзера
@@ -8738,7 +8821,18 @@ function _stableStr(o){
 }
 function _sigOf(obj){ const s=_stableStr(obj); let h1=0x811c9dc5, h2=0; for(let i=0;i<s.length;i++){ const c=s.charCodeAt(i); h1=(h1^c)>>>0; h1=Math.imul(h1,0x01000193)>>>0; h2=(h2*131+c)|0; } return h1.toString(36)+h2.toString(36)+":"+s.length; }
 function loadSyncSig(cid, kind){ try{ return JSON.parse(localStorage.getItem(`${NS}vahtahoz_sig_${kind}_${cid}`)||"{}"); }catch(_){ return {}; } }
-function saveSyncSig(cid, kind, map){ if(kind==="jr") _jrSigCache=null; try{ localStorage.setItem(`${NS}vahtahoz_sig_${kind}_${cid}`, JSON.stringify(map)); }catch(_){} }
+/* Снимок подписей — best-effort, но сбой записи больше не немой. Без снимка следующий push
+   считает изменённым ВЕСЬ склад: на базе в три тысячи позиций каждая правка одной строки гонит
+   полную выгрузку — десятки секунд и мобильный трафик на вахтовом интернете. Причина при этом
+   («на телефоне кончилось место») была не видна ни в интерфейсе, ни в консоли. */
+function saveSyncSig(cid, kind, map){
+  if(kind==="jr") _jrSigCache=null;
+  try{ localStorage.setItem(`${NS}vahtahoz_sig_${kind}_${cid}`, JSON.stringify(map)); }
+  catch(e){
+    console.warn("saveSyncSig: снимок подписей не сохранён ("+kind+")", e);
+    if(isQuotaErr(e)) _quotaBlock();
+  }
+}
 // счётчики позиций склада ПО ТИПАМ — чтобы suspectWipe работал и для ограниченных ролей (Механик/Повар):
 // сравниваем с ожиданием ПО ДОСТУПНЫМ типам (per-type корректно даже если снимок от прежней, более широкой роли).
 function stockTypeCounts(){ const c={}; for(const k of STOCK_TYPE_KEYS) c[k]=0; for(const s of (state.stock||[])){ if(c[s.type]!=null) c[s.type]++; } return c; }
@@ -9012,7 +9106,13 @@ async function cloudPushNow(){
       // Флаг снимается в finally того же прохода — на следующий push защита снова в силе.
       const _wipeOk = (cloud._wipeOverride === cid);
       if(!_wipeOk && (rows.length===0 || suspectWipe) && prevCount>0){
-        if(suspectWipe) _suspectWipe=true;   // помним: при усыхании НЕ снимаем dirty и не говорим «synced»
+        /* Помним, что выгрузка склада ПРОПУЩЕНА, — для ОБЕИХ причин, а не только для «усыхания».
+           Раньше флаг ставился лишь в ветке suspectWipe, а он требует снимка ≥20 позиций. База
+           инструмента на 15 позиций, вычищенная под ноль, шла сюда с suspectWipe=false: выгрузка
+           не выполнялась, но ниже снимался dirty и статус вставал «синхронизировано». Удаления
+           не доезжали никогда, снимок подписей оставался старым, повторной попытки не было —
+           первый же pull возвращал всё удалённое, а у сменщика оно и не исчезало. */
+        _suspectWipe=true;
         console.warn("cloudPush: склад подозрительно мал ("+rows.length+" из "+prevCount+") — выгрузка склада пропущена (защита от порчи)");
       } else {
         const upsert = rows.filter(r=> curSig[r.id] !== prevSig[r.id]);   // новое/изменённое
@@ -9149,7 +9249,7 @@ async function cloudPushNow(){
          Теперь ↻ открывает явный выбор (cloudResolveWipe): восстановить из облака ИЛИ подтвердить,
          что удаление намеренное. По умолчанию — по-прежнему fail-closed: облако не трогаем. */
       cloud._wipePending = cid;
-      setSyncStatus("error","Склад резко уменьшился, выгрузка остановлена, общая база цела. Нажмите значок синхронизации вверху справа");
+      setSyncStatus("error","Склад опустел или резко уменьшился, выгрузка остановлена, общая база цела. Нажмите значок синхронизации вверху справа");
     } else if(_dirtyGen !== _genAtStart){
       // пока шла выгрузка, пользователь успел что-то изменить — эта правка НЕ в нашем снимке.
       // dirty НЕ снимаем (иначе при сбое следующей выгрузки retry не запустится, а pull затрёт

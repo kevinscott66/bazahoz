@@ -42,3 +42,6 @@ vahtahoz-supabase-keys*
 
 # Результат сборки для Cloudflare Pages — не коммитим.
 dist/
+
+# Локальный кэш wrangler (account_id/имя проекта) — служебный мусор, не код.
+.wrangler/
