@@ -414,7 +414,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v250";
+const APP_BUILD = "v251";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -6187,8 +6187,13 @@ async function runFilteredXlsx(){
   if(ws["!ref"]) ws["!autofilter"] = { ref: ws["!ref"] };   // автофильтр в Excel по шапке
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Склад (фильтр)");
-  saveXlsx(wb, `vahtahoz-${_filterTag(f)}-${todayStr()}.xlsx`, `Excel сохранён · ${list.length} поз.`);
+  /* СНАЧАЛА закрываем лист фильтра, ПОТОМ сохраняем. Обратный порядок ломался с v250:
+     saveXlsx при истёкшем жесте открывает лист «Файл готов», а идущий следом closeSheet()
+     закрывал его же — вместе с _pendingSave (его чистит _sheetOnClose). Выгрузка по фильтру
+     не давала ни файла, ни сообщения: человек жмёт «Выгрузить», и не происходит НИЧЕГО.
+     Правило для новых вызовов: свой лист закрывать до save*, а не после. */
   closeSheet();
+  saveXlsx(wb, `vahtahoz-${_filterTag(f)}-${todayStr()}.xlsx`, `Excel сохранён · ${list.length} поз.`);
 }
 
 // Универсальное сохранение файла. В НАТИВНЫХ обёртках (Capacitor iOS/Android WKWebView/WebView) обычный
@@ -6242,6 +6247,9 @@ function triggerDownload(text, filename, mime, okMsg){
   return saveBlob(new Blob([text],{type:mime||"application/json"}), filename, okMsg);
 }
 // Excel через универсальный сейв (не XLSX.writeFile — он делает тот же не-работающий в обёртках download)
+// ВАЖНО для зовущих: если у вас открыт свой лист — закрывайте его ДО вызова. После вызова нельзя:
+// при истёкшем жесте saveXlsx сам открывает лист «Файл готов», и ваш closeSheet() убьёт его вместе
+// с отложенным файлом (см. runFilteredXlsx — на этом уже обожглись).
 function saveXlsx(wb, filename, okMsg){
   try{
     const X = window.XLSX;   // вызывается ПОСЛЕ ensureXlsx() в экспорт-функции → уже загружен
