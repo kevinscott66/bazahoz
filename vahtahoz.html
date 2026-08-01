@@ -414,7 +414,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v247";
+const APP_BUILD = "v248";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -3854,12 +3854,16 @@ function _impTokenScore(a, b){
   return inter / Math.max(A.size, B.size);
 }
 // импорт: сначала существующая карточка; новая — только если нет похожей
-function findStockForImport(name, unit){
+/* pool0 — необязательный «склад», по которому искать. Нужен сухому прогону перед диалогом
+   импорта (_impPreflight): он считает, что получится, ещё не тронув state, и должен видеть
+   карточки, которые заведут ПРЕДЫДУЩИЕ строки того же файла. Без параметра — обычный поиск
+   по state.stock, поведение всех прежних вызовов не меняется. */
+function findStockForImport(name, unit, pool0){
   const types = ["product"];
   const wantUnit = _impMapUnit(unit);   // import: пустая/unknown уже отсеяны в recordReceiptRow
   const exact = stockNormName(name);
   const key = stockKeyImport(name);
-  const pool = state.stock.filter(s=> types.includes(s.type));
+  const pool = (pool0 || state.stock).filter(s=> types.includes(s.type));
   const rank = (s)=>{
     const sameU = _impUnitKey(s.unit)===wantUnit ? 1 : 0;
     const sameSz = _impSizeToken(s.name)===_impSizeToken(name) ? 1 : 0;
@@ -3934,7 +3938,68 @@ function _impAlignQtyToProduct(product, name, qty, unit){
   // нельзя молча сменить unit и оставить чужой qty — пропускаем строку
   return null;
 }
+/* СУХОЙ ПРОГОН ПЕРЕД ДИАЛОГОМ. Диалог обещал число строк, у которых есть наименование и
+   количество > 0, а дальше recordReceiptRow молча отбрасывал ещё две категории — с неизвестной
+   единицей и с единицей, не сводимой к карточке. Воспроизведено на v247: файл из 4 строк, диалог
+   «Импортировать поступлений: 4», после подтверждения — «Импортировано: 3». Строка «Крупа
+   гречневая — 4 ящик» стояла в превью как ни в чём не бывало.
+   Здесь считаем ровно то же, что сделает боевой цикл, но ничего не меняя: все зовомые помощники
+   (_impMapUnit / _impNormalizePackQty / findStockForImport / _impAlignQtyToProduct) — читающие.
+   Порядок важен: строки обрабатываются по очереди, и строка, заводящая новую карточку, меняет
+   то, что найдут следующие строки с тем же наименованием, — поэтому в pool кладётся заглушка
+   (findStockForImport читает у карточки только type/name/unit/qty/batches).
+
+   ОТДЕЛЬНАЯ КАРТОЧКА — не пропуск, а сюрприз. Если на складе «Сахар-песок» в кг, а в накладной
+   он в шт, findStockForImport не сведёт их намеренно (кг и шт — разный товар), и строка заведёт
+   ВТОРУЮ карточку с тем же именем. Импорт при этом отработает, поэтому в пропуски это не идёт,
+   но кладовщик увидит «Сахар-песок» в списке дважды и решит, что приложение задвоило склад.
+   Логику не трогаем (сливать кг со шт нельзя), а в диалоге предупреждаем — до подтверждения. */
+function _impPreflight(rows){
+  const pool = (state.stock||[]).slice();
+  const ok = [], skipped = [], dups = [];
+  for(const row of rows){
+    const name = cleanNameImport(row.name);
+    const qty0 = roundQty(parseNum(row.qty));
+    if(!name || !(qty0 > 0)){
+      skipped.push({ name: String(row.name||"").trim().slice(0,40) || "(без наименования)",
+                     why: !name ? "нет наименования" : "количество не больше нуля" });
+      continue;
+    }
+    const u0 = _impMapUnit(row.unit);
+    if(u0 == null){
+      skipped.push({ name: name.slice(0,40),
+                     why: `непонятная единица «${String(row.unit||"").trim() || "пусто"}»` });
+      continue;
+    }
+    const { qty, unit } = _impNormalizePackQty(name, qty0, u0);
+    let product = findStockForImport(name, unit, pool);
+    if(!product){
+      const pack = _impPackSize(name);
+      if(pack > 1){
+        const alts = unit==="шт" ? ["кор","уп"] : (unit==="кор"||unit==="уп") ? ["шт"] : [];
+        for(const au of alts){ const cand = findStockForImport(name, au, pool); if(cand){ product = cand; break; } }
+      }
+    }
+    if(!product){
+      const twin = pool.find(s=> s.type==="product" && stockNormName(s.name)===stockNormName(name)
+                                 && _impUnitKey(s.unit) !== unit);
+      if(twin) dups.push({ name: name.slice(0,40), unit, have: twin.unit||"шт" });
+      pool.push({ id:"_pre_"+pool.length, type:"product", name, unit, qty:0, batches:[] });
+      ok.push(row);
+      continue;
+    }
+    if(!_impAlignQtyToProduct(product, name, qty, unit)){
+      skipped.push({ name: name.slice(0,40),
+                     why: `единица «${unit}» не сходится с карточкой «${product.unit||"шт"}»` });
+      continue;
+    }
+    ok.push(row);
+  }
+  return { ok, skipped, dups };
+}
 // одна строка импорта → поступление (мутирует склад/журнал; saveState — у вызывающего через logOp/saveState)
+// ВАЖНО: любой новый `return null` здесь надо повторить в _impPreflight, иначе диалог снова
+// пообещает больше, чем импортируется.
 function recordReceiptRow(row){
   const name = cleanNameImport(row.name);
   let qty = roundQty(parseNum(row.qty));
@@ -4199,9 +4264,22 @@ async function importReceiptsExcel(ev){
   inputEl.value = "";
   if(allRows.length > IMP_MAX_ROWS){ if(out()) out().textContent=`Слишком много строк суммарно (${allRows.length}, макс. ${IMP_MAX_ROWS}).`; return; }
 
-  const valid = allRows.filter(r=> cleanNameImport(r.name) && roundQty(parseNum(r.qty))>0);
-  const skipped = allRows.length - valid.length;
-  if(!valid.length){ if(out()) out().textContent = `Не найдено строк с наименованием и количеством > 0 (всего: ${allRows.length}).`; return; }
+  /* Число в диалоге считает СУХОЙ ПРОГОН, а не фильтр «есть имя и qty>0». Прежний фильтр знал
+     только эти два условия, а recordReceiptRow отбрасывал строки ещё по двум — неизвестная
+     единица и единица, не сводимая к карточке, — уже ПОСЛЕ подтверждения. Кладовщик видел
+     «Импортировать поступлений: 4», строку «Крупа гречневая — 4 ящик» в превью, а потом тост
+     «Импортировано: 3»: какая из четырёх не прошла — нигде. Теперь пропуски названы поимённо
+     и до нажатия «Импортировать». */
+  const pre = _impPreflight(allRows);
+  const valid = pre.ok;
+  if(!valid.length){
+    const why = pre.skipped.length
+      ? `Ни одна строка не подходит для импорта (всего: ${allRows.length}).\n` +
+        pre.skipped.slice(0,8).map(s=>`• ${s.name} — ${s.why}`).join("\n") +
+        (pre.skipped.length>8 ? `\n…и ещё ${pre.skipped.length-8}` : "")
+      : `Не найдено строк с наименованием и количеством > 0 (всего: ${allRows.length}).`;
+    if(out()) out().textContent = why; return;
+  }
 
   const filesLine = meta.map(m=>{
     const d = m.date ? m.date.split("-").reverse().join(".") : "";
@@ -4213,8 +4291,21 @@ async function importReceiptsExcel(ev){
     const d = _impParseDate(r.receiptDate);
     return `• ${cleanNameImport(r.name).slice(0,48)} — ${fmtQty(roundQty(parseNum(r.qty)))} ${u}${d?` · ${d.split("-").reverse().join(".")}`:""}`;
   }).join("\n");
+  const skipLine = pre.skipped.length
+    ? `\n\nНе пойдёт в импорт (${pre.skipped.length}):\n` +
+      pre.skipped.slice(0,6).map(s=>`• ${s.name} — ${s.why}`).join("\n") +
+      (pre.skipped.length>6 ? `\n…и ещё ${pre.skipped.length-6}` : "")
+    : "";
+  /* Предупреждение про вторую карточку с тем же именем. Сливать «Сахар-песок 20 кг» со строкой
+     «Сахар-песок 5 шт» нельзя — это разный товар, — но и молчать нельзя: в списке склада имя
+     задвоится, и это читается как ошибка приложения. */
+  const dupLine = pre.dups.length
+    ? `\n\nЗаведётся ОТДЕЛЬНАЯ карточка — на складе то же имя в других единицах (${pre.dups.length}):\n` +
+      pre.dups.slice(0,6).map(d=>`• ${d.name} — в файле ${d.unit}, на складе ${d.have}`).join("\n") +
+      (pre.dups.length>6 ? `\n…и ещё ${pre.dups.length-6}` : "")
+    : "";
   const go = await confirmSheet(
-    `Импортировать поступлений: ${valid.length}${skipped?`\nПропущено: ${skipped}`:""}\n\nФайлы:\n${filesLine}\n\n${preview}${valid.length>8?`\n…и ещё ${valid.length-8}`:""}`,
+    `Импортировать поступлений: ${valid.length}\n\nФайлы:\n${filesLine}\n\n${preview}${valid.length>8?`\n…и ещё ${valid.length-8}`:""}${skipLine}${dupLine}`,
     { yes:"Импортировать", no:"Отмена", title:"Подтверждение импорта" }
   );
   if(!go) return;
@@ -4223,7 +4314,10 @@ async function importReceiptsExcel(ev){
     try{
       const res = recordReceiptRow(r);
       if(res) ok++;
-      else unitSkip++;   // имя/qty ок, но ед. неизвестна или не сошлась с карточкой
+      /* Сухой прогон повторяет все отказы recordReceiptRow, поэтому здесь ждать нечего.
+         Счётчик оставлен как сторож: если он вырос — прогон и боевой цикл разошлись
+         (например, в recordReceiptRow добавили условие и забыли про _impPreflight). */
+      else { unitSkip++; console.warn("import: строка отсеяна после сухого прогона", r); }
     }catch(e){ console.warn("recordReceiptRow", e); unitSkip++; }
   }
   /* Потолок журнала поступлений. Раньше здесь стоял голый `slice(0,3000)` — единственное
@@ -4248,10 +4342,13 @@ async function importReceiptsExcel(ev){
   }
   logOp("IMPORT", `Поступление из Excel: ${ok} поз. (${list.length} файл.)${jrTrimmed?` · журнал урезан на ${jrTrimmed}`:""}`);
   try{ render(); }catch(_){}
+  /* Пропуски уже перечислены поимённо в диалоге, до подтверждения, — в тосте хватит числа.
+     unitSkip держим отдельной строкой: он теперь означает не «строка с плохой единицей»,
+     а расхождение сухого прогона с боевым циклом, и молчать о нём нельзя. */
   const skipParts = [];
-  if(skipped) skipParts.push(`пусто: ${skipped}`);
-  if(unitSkip) skipParts.push(`ед.: ${unitSkip}`);
-  toast(`Импортировано: ${ok}${skipParts.length?` · пропущено ${skipParts.join(", ")}`:""}`);
+  if(pre.skipped.length) skipParts.push(`не подошло: ${pre.skipped.length}`);
+  if(unitSkip) skipParts.push(`сбой: ${unitSkip}`);
+  toast(`Импортировано: ${ok}${skipParts.length?` · ${skipParts.join(" · ")}`:""}`);
   // тост живёт 1.8 с и его перебьёт следующий — про урезание журнала говорим в самом листе, где текст остаётся
   if(jrTrimmed && out()) out().textContent =
     `Импортировано: ${ok}. В журнале поступлений накопилось больше ${JOURNAL_LOCAL_CAP} записей — ${jrTrimmed} самых старых убрано с телефона. Они уже в общей базе и вернутся при синхронизации.`;
