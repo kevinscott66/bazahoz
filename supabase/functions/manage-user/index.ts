@@ -366,6 +366,17 @@ Deno.serve(async (req) => {
   if (action === "set_recovery_email") {
     const email = String(p.email || "").trim().toLowerCase();
     if (!EMAIL_RE.test(email)) return json({ error: "bad_email" }, 400);
+    // Рабочий ящик резервной почтой быть НЕ может, и причин две.
+    // 1) Он бесполезен по кругу: пароль от <логин>@razvedchick.ru — тот самый пароль от
+    //    приложения (его ставит provisionMail при заведении и при смене). Забыл пароль —
+    //    значит и в ящик не войдёшь, код читать негде.
+    // 2) Он опасен: на домене стоит общая пересылка @razvedchick.ru → почта владельца,
+    //    и код от адреса, у которого ящика ещё нет, молча уезжает другому человеку.
+    //    (Почтовый сервис такое письмо теперь отбивает, это второй рубеж.)
+    // Текст — готовой фразой, а не кодом: старые сборки показывают ответ как есть.
+    if (/@razvedchick\.ru$/i.test(email)) {
+      return json({ error: "Рабочая почта не подойдёт: пароль от неё тот же, что от приложения. Укажите личную — Gmail, Яндекс и т.п." }, 400);
+    }
     const { data: recent } = await admin.from("auth_codes").select("id").eq("user_id", callerId).eq("purpose", "bind_email").gte("created_at", new Date(Date.now() - 60000).toISOString()).limit(1);
     if (recent && recent.length) return json({ error: "wait" }, 429);
     const code = genCode();
