@@ -411,7 +411,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v233";
+const APP_BUILD = "v234";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -1572,9 +1572,21 @@ function navStockOrReset(){
   const dirty = stockTab!=="all" || stockCat!=="" || stockSearch.trim()!=="" ||
                 stockExpiryFilter!=="all" || stockMode!=="stock";
   navStock();
-  try{ scrollTo({ top:0, behavior:"smooth" }); }catch(_){ scrollTo(0,0); }
+  _scrollTop();
   if(dirty) toast("Фильтры сброшены");
 }
+function _scrollTop(){ try{ scrollTo({ top:0, behavior:"smooth" }); }catch(_){ scrollTo(0,0); } }
+// То же самое на «Задачах»: у них свой лист фильтров (категория + «показывать выполненные»),
+// и та же беда — сбросить всё разом было нечем.
+function navTasksOrReset(){
+  if(currentView!=="tasks"){ nav("tasks"); return; }
+  const dirty = taskFilter.cat!=="Все" || taskFilter.showDone;
+  taskFilter.cat="Все"; taskFilter.showDone=false;
+  render(); _scrollTop();
+  if(dirty) toast("Фильтры сброшены");
+}
+// «Журнал» отдельной кнопки в панели не имеет, поэтому здесь только «Кухня» и «Дашборд» —
+// у них фильтров нет, повторное нажатие просто возвращает наверх (привычное поведение вкладок).
 function nav(view){
   currentView = view;
   document.querySelectorAll("#views > section").forEach(s=>{
@@ -1736,7 +1748,19 @@ function chooseSheet(msg, options){
   });
 }
 document.getElementById("sheet").addEventListener("click", e=>{
-  if(e.target.dataset.close!==undefined) closeSheet();
+  /* closest, а не сам e.target: крестик в шапке листа фильтров — это <div data-close> с ИКОНКОЙ
+     внутри, и палец почти всегда попадает по <svg>/<path>, у которых своего data-close нет.
+     Проверка «e.target.dataset.close» на них молча давала undefined, и крестик не закрывал лист.
+     Подъём вверх безопасен: единственный внешний data-close — .sheet-bg, он лежит РЯДОМ
+     с #sheetBody (сосед, не предок), так что клики внутри листа его не заденут. */
+  if(e.target.closest && e.target.closest("[data-close]")) closeSheet();
+});
+// role="button" + tabindex у крестика обещают клавиатуру — держим обещание
+document.getElementById("sheet").addEventListener("keydown", e=>{
+  if(e.key!=="Enter" && e.key!==" ") return;
+  const t = e.target.closest && e.target.closest(".sh-x[data-close]");
+  if(!t) return;
+  e.preventDefault(); closeSheet();
 });
 
 /* ---------- Stock helpers ---------- */
@@ -6583,6 +6607,7 @@ async function writeoffExpired(){
 /* ---------- Nav events ---------- */
 document.querySelectorAll("#navbar .nav-btn").forEach(b=>b.addEventListener("click",()=>{
   if(b.dataset.nav==="stock") return navStockOrReset();   // повторное нажатие на «Склад» — сброс фильтров
+  if(b.dataset.nav==="tasks") return navTasksOrReset();   // то же на «Задачах»
   nav(b.dataset.nav);
 }));
 document.getElementById("baseChip").addEventListener("click", ()=>openProfilesSheet());
@@ -7712,7 +7737,23 @@ function canSeeKitchen(){
 // блокировка управления базами: либо роль ограничена, либо роль ЕЩЁ НЕ ИЗВЕСТНА (есть сохранённая сессия,
 // но cloud.members не загрузились) → fail-safe: до выяснения роли не даём переключать/плодить базы,
 // иначе на холодном старте начальник успел бы переключиться на локальную базу в обход ограничений.
-function roleBaseLocked(){ try{ return isRestrictedUser() || (!!loadCloudSess() && !cloud.ready); }catch(_){ return isRestrictedUser(); } }
+function roleBaseLocked(){
+  try{
+    if(isRestrictedUser()) return true;
+    if(!loadCloudSess() || cloud.ready) return false;
+    /* РОЛИ ЕЩЁ НЕ ПРИЕХАЛИ. Раньше здесь стоял безусловный запрет — и на слабом канале он держался
+       до 25 секунд (столько ждёт общий таймаут загрузки профиля/членств), а человек всё это время
+       получал «Переключение баз недоступно для вашей роли»: неправдой про роль на ровном месте.
+       Между тем ответ уже есть: cloudGateTasks сохраняет раскладку прошлого запуска ПО uid и
+       пишет её только когда права были известны по-настоящему. Берём её — переключение становится
+       мгновенным и офлайн, и на «стухшей» связи. Запрет остаётся там, где о человеке неизвестно
+       ничего (первый вход на этом телефоне): fail-safe важнее удобства ровно один раз.
+       Это не ослабление доступа: сами данные закрыты политиками на сервере, а локальная база
+       никаких облачных прав не даёт. */
+    const h = loadGateHints();
+    return h ? !!h.t : true;
+  }catch(_){ return isRestrictedUser(); }
+}
 function visibleLog(){
   if(!isRestrictedUser()) return state.log;
   return (state.log||[]).filter(l => !String(l.action||"").toUpperCase().startsWith("TASK"));
