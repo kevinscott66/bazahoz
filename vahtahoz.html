@@ -414,7 +414,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v248";
+const APP_BUILD = "v249";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -2958,7 +2958,7 @@ async function exportJournalsMonth(ym){
     XLSX.utils.book_append_sheet(wb, ws, meta.label.slice(0,28));
   }
   if(!total){ toast(`За ${monthLabel(ym)||ym} записей нет — сохранять нечего`); return; }
-  saveXlsx(wb, `vahtahoz-журналы-${ym}-${_fileSafe(activeProfileName())}.xlsx`);
+  saveXlsx(wb, `vahtahoz-журналы-${ym}-${_fileSafe(activeProfileName())}.xlsx`, `Журналы за ${monthLabel(ym)||ym} сохранены`);
 }
 /* Оболочка журнала: кнопки, поиск и пустой контейнер списка. Сам список рисует renderJournalList —
    иначе при каждом наборе буквы пересоздавался бы <input>, и фокус с кареткой слетали бы на
@@ -4212,7 +4212,7 @@ async function downloadReceiptTemplate(){
   ws["!cols"] = [{wch:28},{wch:12},{wch:10},{wch:20},{wch:14},{wch:14},{wch:22},{wch:12}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Поступление");
-  saveXlsx(wb, `vahtahoz-шаблон-поступление.xlsx`);
+  saveXlsx(wb, `vahtahoz-шаблон-поступление.xlsx`, "Шаблон сохранён");
 }
 
 function _impFileHint(name){
@@ -6062,8 +6062,7 @@ async function _exportXlsxRun(){
     XLSX.utils.book_append_sheet(wb, tsh, "Задачи");
   }
 
-  saveXlsx(wb, `vahtahoz-${todayStr()}.xlsx`);
-  toast("Excel сохранён");
+  saveXlsx(wb, `vahtahoz-${todayStr()}.xlsx`, "Excel сохранён");
 }
 function exportCsv(){
   // без позиций получался файл из одной шапки (~165 байт) — сохранять его незачем
@@ -6091,8 +6090,7 @@ function exportCsv(){
     if(!/^-?\d+(?:[.,]\d+)?$/.test(str) && /^[=+\-@\t\r]/.test(str)) str = "'" + str;
     return /[;"\n\r]/.test(str) ? `"${str.replace(/"/g,'""')}"` : str;
   }).join(";")).join("\r\n");
-  triggerDownload(csv, `vahtahoz-sklad-${todayStr()}.csv`, "text/csv;charset=utf-8");
-  toast("CSV сохранён");
+  triggerDownload(csv, `vahtahoz-sklad-${todayStr()}.csv`, "text/csv;charset=utf-8", "CSV сохранён");
 }
 
 /* ---------- Выгрузка в Excel ПО ФИЛЬТРАМ ---------- */
@@ -6189,16 +6187,22 @@ async function runFilteredXlsx(){
   if(ws["!ref"]) ws["!autofilter"] = { ref: ws["!ref"] };   // автофильтр в Excel по шапке
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Склад (фильтр)");
-  saveXlsx(wb, `vahtahoz-${_filterTag(f)}-${todayStr()}.xlsx`);
+  saveXlsx(wb, `vahtahoz-${_filterTag(f)}-${todayStr()}.xlsx`, `Excel сохранён · ${list.length} поз.`);
   closeSheet();
-  toast(`Excel сохранён · ${list.length} поз.`);
 }
 
 // Универсальное сохранение файла. В НАТИВНЫХ обёртках (Capacitor iOS/Android WKWebView/WebView) обычный
 // <a download>+Blob НЕ срабатывает (нет менеджера загрузок) → сначала пробуем Web Share API с файлом
 // («Поделиться» → «Сохранить в Файлы»/отправить), и только затем классическое скачивание (браузеры/десктоп).
 // ВАЖНО: вызывать синхронно из обработчика клика (без await до share) — иначе iOS снимет «жест» и share упадёт.
-async function saveBlob(blob, filename){
+/* okMsg — тост об успехе печатает САМА функция, а не зовущий. Раньше зовущие делали
+   `triggerDownload(...); toast("CSV сохранён")` в том же синхронном тике, то есть до того,
+   как станет известно, чем кончился «Поделиться». Отмена шита («AbortError») приводила к
+   `return true`, и человек читал «сохранён» про файл, которого нет, — а это ровно бэкап,
+   на который потом рассчитывают. Теперь отмена говорит, что файл не сохранён.
+   Про путь `<a download>` честнее сказать нельзя: браузер не сообщает, дошла ли запись,
+   — там тост остаётся оптимистичным, как и был. */
+async function saveBlob(blob, filename, okMsg){
   // share нужен на МОБИЛЬНЫХ/тач (там download не работает в обёртках); на десктопе/Tauri оставляем обычное
   // скачивание (иначе десктоп-веб получал бы лишний «Поделиться» вместо прямого сохранения).
   const mobileLike = (navigator.maxTouchPoints||0) > 0 || /iphone|ipad|ipod|android/i.test(navigator.userAgent||"");
@@ -6210,10 +6214,15 @@ async function saveBlob(blob, filename){
       // накладной появлялся второй файл, в русской локали именованный «текст». Имя несёт сам
       // File, оно и так показывается в шите «Поделиться», так что ничего не теряем.
       await navigator.share({ files:[file] });
-      return true;   // пользователь сохранил/отправил (или закрыл шит) — второй раз НЕ качаем
+      if(okMsg) toast(okMsg);
+      return true;   // пользователь сохранил/отправил — второй раз НЕ качаем
     }
   }catch(e){
-    if(e && e.name==="AbortError") return true;   // сам отменил «Поделиться» — не дублируем скачиванием
+    if(e && e.name==="AbortError"){
+      // сам закрыл шит «Поделиться» — скачиванием НЕ дублируем и об успехе НЕ врём
+      toast("Отменено — файл не сохранён");
+      return false;
+    }
     // иначе (не поддержано/не разрешено) — падаем на обычное скачивание
   }
   try{
@@ -6222,19 +6231,20 @@ async function saveBlob(blob, filename){
     a.href = url; a.download = filename;
     document.body.appendChild(a); a.click();
     setTimeout(()=>{ a.remove(); URL.revokeObjectURL(url); }, 1500);
+    if(okMsg) toast(okMsg);
     return true;
   }catch(e){ toast("Не удалось сохранить файл на этом устройстве"); return false; }
 }
-function triggerDownload(text, filename, mime){
-  saveBlob(new Blob([text],{type:mime||"application/json"}), filename);
+function triggerDownload(text, filename, mime, okMsg){
+  return saveBlob(new Blob([text],{type:mime||"application/json"}), filename, okMsg);
 }
 // Excel через универсальный сейв (не XLSX.writeFile — он делает тот же не-работающий в обёртках download)
-function saveXlsx(wb, filename){
+function saveXlsx(wb, filename, okMsg){
   try{
     const X = window.XLSX;   // вызывается ПОСЛЕ ensureXlsx() в экспорт-функции → уже загружен
     if(!X){ toast("Excel ещё грузится — повторите"); return; }
     const buf = X.write(wb, { type:"array", bookType:"xlsx" });
-    saveBlob(new Blob([buf], { type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), filename);
+    saveBlob(new Blob([buf], { type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), filename, okMsg);
   }catch(e){ console.warn("saveXlsx", e); toast("Не удалось сформировать Excel"); }
 }
 /* ПОЛНЫЕ журналы базы из облака для бэкапа. Локальный state.journals после pull урезан до 500
@@ -6294,7 +6304,7 @@ function offerFileSave(text, filename, title, note){
      Сохраняем немедленно — жест уже потрачен, но это всё равно лучше молчания. */
   if(_sheetRefused){
     const p = _pendingSave; _pendingSave = null;
-    if(p){ triggerDownload(p.text, p.filename); toast(title); }
+    if(p){ triggerDownload(p.text, p.filename, "application/json", title); }
     return false;
   }
   /* Лист закрывают не только кнопкой: тап по фону, Esc, следующий openSheet. Без этого содержимое
@@ -6307,7 +6317,8 @@ function doPendingSave(){
   const p = _pendingSave; _pendingSave = null;
   if(!p) return;
   closeSheet();
-  triggerDownload(p.text, p.filename);   // синхронно в обработчике клика → share/download работают
+  // синхронно в обработчике клика → share/download работают; про исход говорит сам saveBlob
+  triggerDownload(p.text, p.filename, "application/json", "Файл сохранён");
 }
 /* opts.localOnly — писать файл СРАЗУ, без обращения к облаку. Нужно для аварийного экспорта при
    переполнении памяти: там последняя операция могла не лечь на диск, и откладывать запись файла
@@ -6317,7 +6328,12 @@ async function exportData(opts){
   // у начальника (нет прав на задачи) «Задачи» не выгружаем
   const localOnly = !!(opts && opts.localOnly);
   const cid = activeCloudId();
-  const fname = `vahtahoz-${activeProfileName()}-${todayStr()}.json`;
+  /* `_fileSafe`, а не голое имя базы. Локально имя проходит `cleanName40` и при создании, и при
+     переименовании, так что практически сюда мусор не доезжает, — но имя базы приходит ещё и
+     из облака (её мог назвать другой участник другой сборкой), а имя файла со слэшем или
+     двоеточием часть систем режет молча: у человека вместо бэкапа не сохраняется ничего.
+     Имена XLSX через `_fileSafe` шли давно, JSON-бэкап оставался единственным исключением. */
+  const fname = `vahtahoz-${_fileSafe(activeProfileName())}-${todayStr()}.json`;
   const pack = (journals)=>{
     const base = journals ? { ...state, journals } : state;
     const out = isRestrictedUser() ? { ...base, tasks: [] } : base;
@@ -6325,8 +6341,7 @@ async function exportData(opts){
   };
   // Локальная база или аварийный режим — жест жив, пишем немедленно.
   if(!cid || localOnly){
-    triggerDownload(pack(null), fname);
-    toast(localOnly && cid
+    triggerDownload(pack(null), fname, "application/json", localOnly && cid
       ? "Экспортировано БЕЗ облачного архива журнала (аварийный режим) — повторите онлайн для полной истории"
       : "Экспортировано (текущая база)");
     return;
@@ -6372,7 +6387,6 @@ function exportAllProfiles(){
   const payload = { __vahtahozProfiles:1, version:2, exportedAt:new Date().toISOString(), activeId: profiles.activeId,
     profiles:list, tasks: (isRestrictedUser() ? [] : (Array.isArray(state.tasks) ? state.tasks : [])),
     journalsMayBeTruncated: truncated };
-  triggerDownload(JSON.stringify(payload,null,2), `vahtahoz-ВСЕ-БАЗЫ-${todayStr()}.json`);
   /* ОДНО сообщение, а не три подряд. #toast в приложении один, и toast() ЗАМЕЩАЕТ текст: прежние
      три вызова гасили друг друга в том же кадре, и предупреждение о неполном журнале не видел никто —
      на экране оставалось бодрое «Сохранены все базы». Здесь же названы КОНКРЕТНЫЕ базы: совет
@@ -6382,7 +6396,10 @@ function exportAllProfiles(){
   const parts = [`Сохранены все базы (${list.length})`];
   if(damaged.length){ console.warn("Повреждённые/пустые базы:", damaged); parts.push(`без данных: ${damaged.join(", ")}`); }
   if(truncated) parts.push(`журнал на диске неполный (${truncNames.join(", ")}) — в файле есть всё, чего нет в облаке, а облачный архив вернётся при первой связи`);
-  toast(parts.join(". "));
+  /* Сообщение собирается ДО сохранения и уходит в saveBlob: он печатает его, только если файл
+     действительно ушёл. Отменили «Поделиться» — читаем «Отменено», а не «Сохранены все базы». */
+  triggerDownload(JSON.stringify(payload,null,2), `vahtahoz-ВСЕ-БАЗЫ-${todayStr()}.json`,
+                  "application/json", parts.join(". "));
 }
 /* ОБЩИЙ КАТАЛОГ: добавить во ВСЕ базы устройства те наименования (тип+имя+ед.), которых там нет,
    с количеством 0. Существующие позиции, остатки, места, сроки, партии НЕ трогаются. */
@@ -8189,7 +8206,7 @@ async function exportAllBasesXlsx(){
   });
   // ни одной доступной базы — файл с единственной ячейкой «Нет данных» только путал: не сохраняем
   if(!wb.SheetNames.length){ toast("Нет доступных баз — сохранять нечего"); return; }
-  saveXlsx(wb, `vahtahoz-по-базам-${todayStr()}.xlsx`);
+  saveXlsx(wb, `vahtahoz-по-базам-${todayStr()}.xlsx`, "Excel по базам сохранён");
 }
 async function exportOneBaseXlsx(baseId){
   const b=(_allBasesCache||[]).find(x=>x.id===baseId); if(!b||!b.rows){ toast("Нет данных по базе"); return; }
@@ -8197,7 +8214,7 @@ async function exportOneBaseXlsx(baseId){
   const rows=b.rows.map(_acctRow);
   const ws=XLSX.utils.json_to_sheet(rows.length?rows:[{"Наименование":""}]); ws["!cols"]=_ACCT_COLS;
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, _sheetName(b.name, new Set()));
-  saveXlsx(wb, `vahtahoz-${_fileSafe(b.name)}-${todayStr()}.xlsx`);
+  saveXlsx(wb, `vahtahoz-${_fileSafe(b.name)}-${todayStr()}.xlsx`, "Excel сохранён");
 }
 const cloudDirtyKey = (cid)=>`${NS}vahtahoz_dirty_${cid}`;
 // удалить все sync-маркеры базы (dirty + снимки подписей) — при удалении/замене базы, чтобы не копить мусор
