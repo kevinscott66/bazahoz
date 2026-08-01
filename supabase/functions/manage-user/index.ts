@@ -64,18 +64,23 @@ async function rateKey(req: Request): Promise<string> {
   const salt = Deno.env.get("RATE_SALT") || SERVICE.slice(0, 16);
   return await sha256(salt + "|" + ip);
 }
-// true = можно продолжать. Сбой БД → true (fail-OPEN): недоступность счётчика не должна
-// превращаться в отказ восстановления пароля. Ниже остаются per-user 60с, attempts≤5, TTL 15 мин.
-async function rateOk(admin: any, req: Request, purpose: string, windowSecs: number, limit: number): Promise<boolean> {
+// true = можно продолжать. Поведение при СБОЕ счётчика задаётся вызывающим:
+//   failOpen=true  (запрос кода): недоступность счётчика не должна превращаться в отказ
+//                  восстановления пароля — человек на вахте останется без входа.
+//   failOpen=false (ввод кода): здесь счётчик — единственный общий тормоз перебора,
+//                  размазанного по многим логинам (attempts≤5 капает лишь ОДИН код).
+//                  Молча пускать неограниченный перебор из-за отказа БД нельзя.
+// Ответ вызывающего одинаков в обоих случаях («invalid»), нового оракула отказ не создаёт.
+async function rateOk(admin: any, req: Request, purpose: string, windowSecs: number, limit: number, failOpen = true): Promise<boolean> {
   try {
     const key = await rateKey(req);
-    if (!key) return true;
+    if (!key) return failOpen;   // IP не определить — считать это «лимит не превышен» можно только там, где отказ дороже перебора
     const { data, error } = await admin.rpc("auth_rate_hit", {
       p_key: key, p_purpose: purpose, p_window: windowSecs, p_limit: limit,
     });
-    if (error) { console.warn("auth_rate_hit", error.message); return true; }
+    if (error) { console.warn("auth_rate_hit", error.message); return failOpen; }
     return data !== false;
-  } catch (e) { console.warn("rateOk", e); return true; }
+  } catch (e) { console.warn("rateOk", e); return failOpen; }
 }
 // отправка кода письмом через наш почтовый сервер (/sendcode на VPS, секрет = MAIL_BROADCAST_SECRET)
 async function sendCode(to: string, code: string, purpose: "bind" | "reset"): Promise<boolean> {
@@ -305,7 +310,7 @@ Deno.serve(async (req) => {
     const fail = async () => { await floorPad(); return json({ error: "invalid" }, 400); };
     // per-IP: 30 попыток / 15 мин. attempts≤5 капает ОДИН код; без общего тормоза перебор
     // размазывался по многим логинам. Ответ — тот же «invalid», нового оракула не добавляем.
-    if (!(await rateOk(admin, req, "confirm_reset", 900, 30))) return await fail();
+    if (!(await rateOk(admin, req, "confirm_reset", 900, 30, false))) return await fail();
     const { data: u } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
     if (!u) return await fail();
     // Сначала меняем пароль — если упадёт, код ещё жив. Атомарная verify+used — только после успеха.
