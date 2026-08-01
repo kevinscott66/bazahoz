@@ -411,7 +411,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v235";
+const APP_BUILD = "v236";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -9778,12 +9778,27 @@ if("serviceWorker" in navigator && location.protocol!=="file:"){
   // ЖДЁМ завершение идущего продления токена: reload посреди ротации refresh-токена терял НОВЫЙ токен
   // (ответ не долетал), после перезагрузки старый токен = «повторно использован» → разлогин при каждом обновлении версии.
   let _swReloaded = false;
+  /* БЫЛ ЛИ КОНТРОЛЛЁР ДО НАС. На ПЕРВОМ открытии сайта контроллёра нет: свежий SW встаёт,
+     делает skipWaiting + clients.claim() — и controllerchange срабатывает через секунду-другую
+     после загрузки. Перезагружать тут нечего (страница и так свежайшая), а вот навредить есть чем:
+     человек в этот момент как раз набирает почту и пароль на экране входа, и reload стирает
+     набранное. Перезагрузка нужна только когда СМЕНИЛСЯ уже работавший SW — то есть выкачена
+     новая версия. */
+  const _hadController = !!navigator.serviceWorker.controller;
+  // Перезагрузка не должна прилетать посреди ввода: ждём, пока человек уйдёт из поля.
+  function _swReloadWhenIdle(tries){
+    const ae = document.activeElement;
+    const typing = ae && (ae.tagName==="INPUT" || ae.tagName==="TEXTAREA" || ae.isContentEditable);
+    if(typing && (tries||0) < 30){ setTimeout(()=>_swReloadWhenIdle((tries||0)+1), 2000); return; }
+    location.reload();
+  }
   navigator.serviceWorker.addEventListener("controllerchange", ()=>{
     if(_swReloaded) return; _swReloaded = true;
+    if(!_hadController) return;                      // первый запуск — перезагружать нечего
     try{
-      if(cloud && cloud._refreshing){ cloud._refreshing.catch(()=>{}).finally(()=>setTimeout(()=>location.reload(),100)); return; }
+      if(cloud && cloud._refreshing){ cloud._refreshing.catch(()=>{}).finally(()=>setTimeout(()=>_swReloadWhenIdle(0),100)); return; }
     }catch(_){}
-    location.reload();
+    _swReloadWhenIdle(0);
   });
 }
 
