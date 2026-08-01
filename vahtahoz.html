@@ -139,6 +139,19 @@
   .sheet.open{ display:flex; }
   .sheet-bg{ position:absolute; inset:0; background:rgba(0,0,0,.6); }
   .sheet-body{ position:relative; margin-top:auto; width:100%; max-width:560px; margin-left:auto; margin-right:auto; background:#0b1220; border-radius:24px 24px 0 0; padding:20px; max-height:92vh; max-height:92svh; overflow-y:auto; padding-bottom:calc(24px + env(safe-area-inset-bottom)); }   /* 92svh — МАЛЕНЬКИЙ вьюпорт (панель браузера видна). У 92vh (БОЛЬШОЙ вьюпорт) низ модалки на iOS уезжал за экран — та же болезнь, что уже вылечена у body выше. Первая строка — запас для движков без svh. */
+  /* ЛИСТ НЕ ДОЛЖЕН ЕЗДИТЬ ВБОК. У .sheet-body задан overflow-y:auto, а по правилам CSS вторая ось
+     тогда не может остаться visible — браузер делает её auto. Значит любое содержимое, вылезшее
+     хоть на пиксель (ряд «Удалить · Отмена · Сохранить» на узком экране вылезал на 5), превращало
+     лист в горизонтально прокручиваемый: под пальцем он уезжал влево-вправо, а вместе с вертикальной
+     прокруткой — «хоть в левый нижний угол» (жалоба владельца про «Редактировать продукт»).
+     Здесь запрещаем ход вбок как класс явления; конкретное переполнение лечит .sheet-actions ниже. */
+  .sheet-body{ overflow-x:hidden; overscroll-behavior:contain; }
+  /* Ряд кнопок в конце листа. У .btn padding 0 18px, а flex-элемент не сжимается ниже содержимого:
+     три кнопки («Удалить · Отмена · Сохранить») на 360 px не помещались. Уменьшаем боковые поля,
+     а на совсем узких экранах ряд переносится — это лучше, чем обрезанная надпись на кнопке
+     (min-width:0 давал ровно её). Переполнения листа не будет ни при каком размере экрана. */
+  .sheet-actions{ flex-wrap:wrap; }
+  .sheet-actions > .btn{ padding:0 12px; }
   .light .sheet-body{ background:#fff; }
   /* «×» листа: та же роль, что и кнопка закрытия в конце длинного списка, но без прокрутки до низа.
      44×44 — минимальная тап-цель (iOS HIG / Material). Лежит в потоке абсолютом, поэтому заголовку
@@ -398,7 +411,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v232";
+const APP_BUILD = "v233";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -2470,7 +2483,7 @@ function openTaskEdit(id){
         <textarea class="input" id="titems" rows="4" placeholder="Картофель 2 мешка&#10;Масло 1 кор&#10;Сахар 1 мешок">${esc((Array.isArray(t.items)?t.items:[]).map(i=>i.text).join("\n"))}</textarea>
         <div class="text-xs opacity-60 mt-1">Для повторяющейся задачи список переносится на следующий день с обнулёнными галочками.</div>
       </div>
-      <div class="flex gap-2 pt-2">
+      <div class="flex gap-2 pt-2 sheet-actions">
         ${id?`<button class="btn btn-danger" onclick="deleteTask('${id}')">Удалить</button>`:""}
         <button class="btn btn-ghost flex-1" data-close>Отмена</button>
         <button class="btn btn-primary flex-1" onclick="saveTask('${id||""}')">Сохранить</button>
@@ -3007,7 +3020,7 @@ function openOpEdit(kind){
         <select class="input" id="opUnit">${UNITS.map(u=>`<option>${u}</option>`).join("")}</select>
       </div>
       <textarea class="input" id="opNote" rows="2" placeholder="${kind==='issue'?'Кому выдано':kind==='writeoff'?'Причина списания':kind==='order'?'Поставщик / комментарий':'Комментарий'}"></textarea>
-      <div class="flex gap-2 pt-2">
+      <div class="flex gap-2 pt-2 sheet-actions">
         <button class="btn btn-ghost flex-1" data-close>Отмена</button>
         <button class="btn btn-primary flex-1" onclick="saveOp('${kind}')">Записать</button>
       </div>
@@ -4242,7 +4255,7 @@ function editOp(kind, opId){
         <select class="input" id="eopUnit">${UNITS.map(u=>`<option ${u===op.unit?"selected":""}>${u}</option>`).join("")}</select>
       </div>
       <textarea class="input" id="eopNote" rows="2">${esc(op.note||"")}</textarea>
-      <div class="flex gap-2 pt-2">
+      <div class="flex gap-2 pt-2 sheet-actions">
         <button class="btn btn-ghost flex-1" data-close>Отмена</button>
         <button class="btn btn-primary flex-1" onclick="saveOpEdit('${kind}','${opId}')">Сохранить</button>
       </div>
@@ -4595,7 +4608,9 @@ function openStockEdit(id, typeDefault){
     </div>` : "";
   openSheet(`
     <div class="flex items-center justify-between gap-2 mb-3">
-      <div class="font-bold text-xl">${id?"Редактировать":"Новый"} ${esc(typeMeta(tk).addLabel.toLowerCase())}</div>
+      <!-- min-w-0 + truncate: заголовок «Редактировать продукт» рядом с кнопкой «Партия» (shrink-0)
+           не помещался на 360 px и выдавливал ряд за край листа -->
+      <div class="font-bold text-xl min-w-0 truncate">${id?"Редактировать":"Новый"} ${esc(typeMeta(tk).addLabel.toLowerCase())}</div>
       ${id?`<div class="flex gap-2 shrink-0">
         ${(!hasBatches(it) && roundQty(it.qty||0)>0)?`<button class="btn btn-ghost" onclick="openMove('${id}','')" aria-label="Перенести на другое место">${ico("move",18)}</button>`:""}
         <button class="btn btn-warn" onclick="openBatchAdd('${id}')">${ico("plus",18)} Партия</button>
@@ -4630,7 +4645,7 @@ function openStockEdit(id, typeDefault){
 
       ${batchesSection}
 
-      <div class="flex gap-2 pt-2">
+      <div class="flex gap-2 pt-2 sheet-actions">
         ${id?`<button class="btn btn-danger" onclick="deleteStock('${id}')">Удалить</button>`:""}
         <button class="btn btn-ghost flex-1" data-close>Отмена</button>
         <button class="btn btn-primary flex-1" onclick="saveStock('${id||""}','${it.type}')">Сохранить</button>
@@ -4729,7 +4744,7 @@ function openBatchAdd(id){
         <div class="scroll-x flex gap-2">${LOCS.map(l=>`<button class="chip" data-loc="${esc(l)}" onclick="${CHIP_PICK}">${esc(l)}</button>`).join("")}</div>
       </div>
       <input class="input" id="bnote" placeholder="Примечание (опц.)" />
-      <div class="flex gap-2 pt-2">
+      <div class="flex gap-2 pt-2 sheet-actions">
         <button class="btn btn-ghost flex-1" data-close>Отмена</button>
         <button class="btn btn-primary flex-1" onclick="saveBatch('${id}')">Добавить</button>
       </div>
@@ -4786,7 +4801,7 @@ function openBatchEdit(itemId, batchId){
         <div class="scroll-x flex gap-2">${LOCS.map(l=>`<button class="chip ${b.location===l?"active":""}" data-loc="${esc(l)}" onclick="${CHIP_PICK}">${esc(l)}</button>`).join("")}</div>
       </div>
       <input class="input" id="bnote2" placeholder="Примечание (опц.)" value="${esc(b.note||"")}" />
-      <div class="flex gap-2 pt-2">
+      <div class="flex gap-2 pt-2 sheet-actions">
         <button class="btn btn-ghost flex-1" data-close>Отмена</button>
         <button class="btn btn-primary flex-1" onclick="saveBatchEdit('${itemId}','${batchId}')">Сохранить</button>
       </div>
@@ -4868,7 +4883,7 @@ function openMove(itemId, batchId){
         <div class="text-sm opacity-70 mb-1">Куда (место хранения)</div>
         <div class="flex flex-wrap gap-2" id="mvLocs">${LOCS.length?LOCS.map(l=>`<button class="chip" data-loc="${esc(l)}" onclick="${CHIP_PICK}">${esc(l)}</button>`).join(""):'<span class="text-xs opacity-60">Других мест нет — добавьте место в «Места и категории»</span>'}</div>
       </div>
-      <div class="flex gap-2 pt-2">
+      <div class="flex gap-2 pt-2 sheet-actions">
         <button class="btn btn-ghost flex-1" data-close>Отмена</button>
         <button class="btn btn-primary flex-1" onclick="doMove('${itemId}','${batchId||""}')">Перенести</button>
       </div>
@@ -5108,7 +5123,7 @@ function openCategoriesEdit(){
             <button class="btn btn-primary" onclick="addCategory('${t.key}')" aria-label="Добавить категорию" title="Добавить категорию">＋</button>
           </div>
         </div>`).join("")}
-      <div class="flex gap-2 pt-2">
+      <div class="flex gap-2 pt-2 sheet-actions">
         <button class="btn btn-ghost flex-1" data-close>Готово</button>
       </div>
     </div>
