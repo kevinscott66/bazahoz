@@ -414,7 +414,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v253";
+const APP_BUILD = "v254";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -8474,7 +8474,11 @@ async function requestPasswordReset(){
     // шаг 2: код + новый пароль
     openSheetOverGate(`
       <div class="font-bold text-xl mb-1">Новый пароль</div>
-      <div class="text-sm opacity-70 mb-3">Если у логина есть привязанная почта — код отправлен. Введите его и новый пароль.</div>
+      <!-- Текст статический и одинаковый для всех логинов: ответ функции намеренно
+           не выдаёт, есть ли такой логин и привязана ли у него почта. Но человеку в
+           поле нужно знать, что делать, если письма не будет: у большинства учётных
+           записей резервная почта пока не привязана вовсе. -->
+      <div class="text-sm opacity-70 mb-3">Если у логина есть привязанная почта — код отправлен. Введите его и новый пароль.<br>Письма нет и почта не привязана? Пароль сбросит начальник.</div>
       <input class="input mb-2" id="rcCode" inputmode="numeric" maxlength="6" placeholder="Код из письма (6 цифр)" />
       <input class="input mb-2" id="rcPw" type="password" autocapitalize="none" autocorrect="off" autocomplete="new-password" spellcheck="false" placeholder="Новый пароль (от 8 символов)" />
       <button class="btn btn-primary w-full" id="rcGo">Сменить пароль</button>
