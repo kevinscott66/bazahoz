@@ -1,7 +1,7 @@
 /* ВахтаХоз service worker — network-first для оболочки + offline fallback.
    network-first важен: после деплоя фикса пользователь получает свежий vahtahoz.html
    сразу при наличии сети, а кэш используется только как офлайн-резерв. */
-const CACHE = "vahtahoz-v239";
+const CACHE = "vahtahoz-v240";
 // Cache Storage общий на ORIGIN, а не на путь регистрации SW: стабильная (/) и бета (/beta/)
 // живут на одном домене vahta.razvedchick.ru и видят одни и те же ключи caches.keys().
 // Раньше activate чистил ВСЁ подряд (k !== CACHE) — заход в бету удалял кэш стабильной
@@ -13,7 +13,7 @@ const PRECACHE = [
   "./vahtahoz.html",
   "./manifest.webmanifest",
   "./supabase.js",
-  "./xlsx.js",        // прекэшируем сразу — чтобы Excel-экспорт работал ПОЛНОСТЬЮ оффлайн (раньше нужна была сеть в первый раз)
+  "./xlsx.js",        // прекэшируем сразу — чтобы Excel-экспорт работал ПОЛНОСТЬЮ офлайн (раньше нужна была сеть в первый раз)
 ];
 
 // Оболочка КРИТИЧНА: без неё офлайн невозможен вообще. Остальное (xlsx/manifest) — терпимо.
@@ -82,7 +82,7 @@ self.addEventListener("fetch", e => {
         const html = await cache.match("./vahtahoz.html");
         if (html) return html;
       }
-      return new Response("Оффлайн", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+      return new Response("Офлайн", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } });
     }
 
     /* КЭШ ЕСТЬ → у сети короткий срок. Раньше здесь было честное network-first с потолком 7 с:
