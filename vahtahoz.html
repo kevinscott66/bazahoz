@@ -414,7 +414,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v252";
+const APP_BUILD = "v253";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -8502,7 +8502,10 @@ async function openRecoveryEmailSheet(){
   const ver = cloud.profile && cloud.profile.recovery_email_verified;
   openSheet(`
     <div class="font-bold text-xl mb-1">Резервная почта</div>
-    <div class="text-sm opacity-70 mb-3">На неё придёт код для восстановления пароля. Можно личную почту (Gmail и т.п.) или @razvedchick.ru.</div>
+    <!-- Рабочий адрес @razvedchick.ru сюда звать нельзя: пароль от него — тот же пароль от
+         приложения, забыл один — потерял оба, и код читать негде. Сервер такой адрес и не
+         примет; текст правим, чтобы человек не бился в закрытую дверь. -->
+    <div class="text-sm opacity-70 mb-3">На неё придёт код для восстановления пароля. Нужна <b>личная</b> почта — Gmail, Яндекс, Mail.ru. Рабочая @razvedchick.ru не подойдёт: пароль от неё тот же, что от приложения.</div>
     ${cur?`<div class="text-sm mb-3">Сейчас: <b>${esc(cur)}</b> ${ver?'<span class="badge badge-green">подтверждена</span>':'<span class="badge badge-yellow">не подтверждена</span>'}</div>`:''}
     <input class="input mb-2" id="reEmail" inputmode="email" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="email@example.com" value="${esc(cur||'')}" />
     <button class="btn btn-primary w-full" id="reSend">Отправить код подтверждения</button>
