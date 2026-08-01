@@ -414,7 +414,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v245";
+const APP_BUILD = "v246";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -1802,7 +1802,9 @@ function chooseSheet(msg, options){
   // options: [{label, value, color?}]
   return new Promise(resolve=>{
     openSheet(`
-      <div class="font-bold text-lg mb-3">${esc(msg)}</div>
+      <!-- whitespace-pre-line: почти все вызовы шлют двустрочный текст («Что делаем?\nПодробность»),
+           а без класса он склеивался в одну строку — как в confirmSheet/promptSheet, там класс был -->
+      <div class="font-bold text-lg mb-3 whitespace-pre-line">${esc(msg)}</div>
       <div class="space-y-2">
         ${options.map((o,i)=>`<button class="btn ${o.color||"btn-primary"} w-full" data-choice="${i}">${esc(o.label)}</button>`).join("")}
         <button class="btn btn-ghost w-full" data-choice="-1">Отмена</button>
@@ -4224,13 +4226,35 @@ async function importReceiptsExcel(ev){
       else unitSkip++;   // имя/qty ок, но ед. неизвестна или не сошлась с карточкой
     }catch(e){ console.warn("recordReceiptRow", e); unitSkip++; }
   }
-  if(Array.isArray(state.journals.receipt) && state.journals.receipt.length>3000) state.journals.receipt = state.journals.receipt.slice(0,3000);
-  logOp("IMPORT", `Поступление из Excel: ${ok} поз. (${list.length} файл.)`);
+  /* Потолок журнала поступлений. Раньше здесь стоял голый `slice(0,3000)` — единственное
+     усечение журнала во всём приложении, которое шло МИМО _trimJournalKeepPending. Три беды
+     сразу: (1) выбрасывались и записи, которых в облаке ещё нет, — а это их единственная копия,
+     и остаток склада их уже учёл (applyStockDelta), то есть склад и журнал расходились навсегда;
+     (2) не ставился journalsTrunc, поэтому сверка продолжала считать журнал ПОЛНЫМ ledger-ом и
+     правила остатки по обрезку, а бэкап называл себя полным; (3) всё это молча, а следом идущий
+     logOp → saveState тут же клал обрезок на диск. Плюс свой потолок 3000 при общем 5000.
+     Теперь — общее правило: тот же помощник, тот же предел, честный флаг и явное сообщение. */
+  let jrTrimmed = 0;
+  const _upl = _uploadedJrIds();   // null — облака нет либо снимок подписей ещё не собран
+  /* Режем ТОЛЬКО когда архив заведомо лежит не только здесь. Без облака (или до первой
+     синхронизации) телефон — единственная копия, и правило кодовой базы прямое: «Локальная
+     база без облака не урезается вовсе». Переполнение памяти там разбирает _saveStateTrimmed,
+     и разбирает громко. Усечение надгробий не ставит, значит из облака ничего не удаляется. */
+  if(_upl && Array.isArray(state.journals.receipt) && state.journals.receipt.length > JOURNAL_LOCAL_CAP){
+    const was = state.journals.receipt.length;
+    state.journals.receipt = _trimJournalKeepPending(state.journals.receipt, JOURNAL_LOCAL_CAP, _upl, "receipt");
+    jrTrimmed = was - state.journals.receipt.length;
+    if(jrTrimmed) state.journalsTrunc = true;
+  }
+  logOp("IMPORT", `Поступление из Excel: ${ok} поз. (${list.length} файл.)${jrTrimmed?` · журнал урезан на ${jrTrimmed}`:""}`);
   try{ render(); }catch(_){}
   const skipParts = [];
   if(skipped) skipParts.push(`пусто: ${skipped}`);
   if(unitSkip) skipParts.push(`ед.: ${unitSkip}`);
   toast(`Импортировано: ${ok}${skipParts.length?` · пропущено ${skipParts.join(", ")}`:""}`);
+  // тост живёт 1.8 с и его перебьёт следующий — про урезание журнала говорим в самом листе, где текст остаётся
+  if(jrTrimmed && out()) out().textContent =
+    `Импортировано: ${ok}. В журнале поступлений накопилось больше ${JOURNAL_LOCAL_CAP} записей — ${jrTrimmed} самых старых убрано с телефона. Они уже в общей базе и вернутся при синхронизации.`;
 }
 
 function orderReceive(opId){
@@ -5092,21 +5116,62 @@ function doMove(itemId, batchId){
   toast(`Перенесено в «${dest}»`);
 }
 
+// сколько записей журнала ссылается на карточку (один проход по всем видам журнала)
+function journalOpsForProduct(id){
+  let n = 0;
+  if(!id || !state.journals) return 0;
+  for(const k of JOURNAL_KEYS){
+    for(const op of (state.journals[k]||[])) if(op && op.productId===id) n++;
+  }
+  return n;
+}
+
+/* Удаление карточки склада.
+   Раньше отсюда КАСКАДОМ вычищались записи журнала: tombJr на каждую найденную, а
+   cloudPushNow превращает надгробия в настоящие DELETE в облаке. Но локально лежит лишь
+   ХВОСТ журнала (см. journalLooksIncomplete: облачная база, усечение по памяти, кап) —
+   то есть у ВСЕЙ бригады удалялась случайная его часть, а остальное возвращалось pull-ом
+   уже без карточки. Движения — общая запись бригады, они карточку переживают.
+   Связка разорвана: журнал по умолчанию остаётся. Удалить его можно, но только отдельным
+   явным выбором и только там, где локальный журнал заведомо полон, — иначе выбор означал бы
+   «удалить непредсказуемую часть чужих записей».
+   Совместимость: ключи localStorage, формат бэкапа и облачный payload не тронуты. */
 async function deleteStock(id){
   if(!ensureCanEdit()) return;
-  const it = state.stock.find(s=>s.id===id);
-  if(!await confirmSheet(`Удалить «${it?.name||""}»?`,{danger:true,yes:"Удалить"})) return;
+  const before = state.stock.find(s=>s.id===id);
+  if(!before) return;
+  const name = before.name || "";
+  const linked = journalOpsForProduct(id);
+  let dropJournal = false;
+  if(linked > 0 && !journalLooksIncomplete()){
+    const choice = await chooseSheet(
+      `Удалить «${name}»?\nЗаписей в журналах: ${linked}`,
+      [
+        { label:"Удалить только карточку", value:"card", color:"btn-danger" },
+        { label:`Удалить и записи журнала (${linked})`, value:"all", color:"btn-warn" },
+      ]
+    );
+    if(!choice) return;
+    dropJournal = choice==="all";
+  } else {
+    const tail = linked
+      ? `\nЗаписей в журналах: ${linked} — они останутся: это общий учёт движений бригады.`
+      : "";
+    if(!await confirmSheet(`Удалить «${name}»?${tail}`,{danger:true,yes:"Удалить"})) return;
+  }
+  // ссылка снята ДО await — pull или другая вкладка могли удалить позицию, пока висел вопрос
+  if(!state.stock.some(s=>s.id===id)){ toast("Позиция уже удалена"); closeSheet(); render(); return; }
   state.stock = state.stock.filter(s=>s.id!==id);
-  // каскадом чистим связанные записи в журналах, чтобы не оставалось «висячих» ссылок
-  if(state.journals){
+  let removed = 0;
+  if(dropJournal && state.journals){
     JOURNAL_KEYS.forEach(k=>{
       if(Array.isArray(state.journals[k])){
-        state.journals[k].forEach(op=>{ if(op.productId===id) tombJr(op.id); });   // надгробия — чтобы удалённые с товаром записи не воскресли pull-ом
+        state.journals[k].forEach(op=>{ if(op.productId===id){ tombJr(op.id); removed++; } });   // надгробия — чтобы удалённые записи не воскресли pull-ом
         state.journals[k] = state.journals[k].filter(op=> op.productId!==id);
       }
     });
   }
-  logOp("STOCK_DEL", it?.name||"");
+  logOp("STOCK_DEL", name + (removed?` (и ${removed} в журналах)`:""));
   saveState(); closeSheet(); render();
 }
 
