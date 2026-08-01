@@ -414,7 +414,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v246";
+const APP_BUILD = "v247";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -6647,16 +6647,11 @@ function importData(ev){
           if(found){
             const _mBefore = _mSnap(found);
             // Слияние batches: если у src есть партии — добавляем их к found с новыми id
-            // (если у found ещё нет batches, но был qty>0 — конвертируем его в первую партию)
+            // (если у found ещё нет batches, но был qty>0 — остаток переносится партией ПОСЛЕ дедупа, см. ниже)
             if(Array.isArray(src.batches) && src.batches.length){
               if(!Array.isArray(found.batches)) found.batches = [];
-              if(found.batches.length===0 && roundQty(found.qty||0) > 0){
-                found.batches.push({
-                  id: uid(), qty: roundQty(found.qty||0),
-                  expiry: found.expiry||"", location: found.location||"",
-                  note: "Перенос исходного остатка", createdAt: found.createdAt||new Date().toISOString()
-                });
-              }
+              // локальный СКАЛЯРНЫЙ остаток (карточка без партий) — переносим его в партию не здесь, а после дедупа
+              const _scalarBefore = found.batches.length===0 ? roundQty(found.qty||0) : 0;
               /* Дедуп партий в ДВА рубежа.
                  (1) по id — нормальный бэкап: id в файле есть и не меняется, повторный импорт узнаёт партию.
                  (2) СЧЁТНЫЙ по подписи (qty|expiry|location|note) — второй рубеж, обязателен.
@@ -6690,6 +6685,30 @@ function importData(ev){
                   note: b.note||"", createdAt: b.createdAt||new Date().toISOString()
                 });
                 if(b.id) existingIds.add(b.id);
+              }
+              /* ЛОКАЛЬНЫЙ СКАЛЯР ПРОТИВ ПАРТИЙ ИЗ ФАЙЛА — ТОЖЕ СНИМОК, А НЕ ПРИХОД.
+                 Раньше остаток карточки без партий (10 кг «Муки») переносился в партию БЕЗУСЛОВНО,
+                 до слияния, и партии из файла добавлялись сверху: локально 10 + в файле партия
+                 10 = 20 кг из воздуха. Воспроизведено на v246 (локальная база, «Объединить»):
+                 qty 10 → 20, две партии по 10. Сценарий обыденный — на одном телефоне кладовщик
+                 завёл партии, на другом та же позиция осталась скаляром, обменялись бэкапом.
+                 Правило то же, что в соседних ветках: файл — СНИМОК склада. Партии из файла и есть
+                 остаток этой позиции; локальный скаляр добирает только НЕДОСТАЧУ сверх них.
+                 10 и 10 → 10; локально 40, в файле 25 → 40 (партии из файла + 15 остатком);
+                 локально 5, в файле 25 → 25.
+                 Перенос идёт ПОСЛЕ дедупа намеренно: пока он делался до, перенесённая партия
+                 попадала в счёт подписей и могла съесть настоящую партию из файла с такой же
+                 подписью (после обмена бэкапами «Перенос исходного остатка» лежит и в файле). */
+              if(_scalarBefore > 0){
+                const _fromFile = found.batches.reduce((a,b)=> a + roundQty(b.qty||0), 0);
+                const need = roundQty(_scalarBefore - _fromFile);
+                if(need > 0){
+                  found.batches.push({
+                    id: uid(), qty: need,
+                    expiry: found.expiry||"", location: found.location||"",
+                    note: "Перенос исходного остатка", createdAt: found.createdAt||new Date().toISOString()
+                  });
+                }
               }
               syncItemFromBatches(found);
             } else if(hasBatches(found)){
