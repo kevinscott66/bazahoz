@@ -414,7 +414,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v249";
+const APP_BUILD = "v250";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -6202,10 +6202,13 @@ async function runFilteredXlsx(){
    на который потом рассчитывают. Теперь отмена говорит, что файл не сохранён.
    Про путь `<a download>` честнее сказать нельзя: браузер не сообщает, дошла ли запись,
    — там тост остаётся оптимистичным, как и был. */
+// share нужен на МОБИЛЬНЫХ/тач (там download не работает в обёртках); на десктопе/Tauri оставляем обычное
+// скачивание (иначе десктоп-веб получал бы лишний «Поделиться» вместо прямого сохранения).
+function _saveMobileLike(){
+  return (navigator.maxTouchPoints||0) > 0 || /iphone|ipad|ipod|android/i.test(navigator.userAgent||"");
+}
 async function saveBlob(blob, filename, okMsg){
-  // share нужен на МОБИЛЬНЫХ/тач (там download не работает в обёртках); на десктопе/Tauri оставляем обычное
-  // скачивание (иначе десктоп-веб получал бы лишний «Поделиться» вместо прямого сохранения).
-  const mobileLike = (navigator.maxTouchPoints||0) > 0 || /iphone|ipad|ipod|android/i.test(navigator.userAgent||"");
+  const mobileLike = _saveMobileLike();
   try{
     const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
     if(mobileLike && navigator.canShare && navigator.canShare({ files:[file] })){
@@ -6244,7 +6247,23 @@ function saveXlsx(wb, filename, okMsg){
     const X = window.XLSX;   // вызывается ПОСЛЕ ensureXlsx() в экспорт-функции → уже загружен
     if(!X){ toast("Excel ещё грузится — повторите"); return; }
     const buf = X.write(wb, { type:"array", bookType:"xlsx" });
-    saveBlob(new Blob([buf], { type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), filename, okMsg);
+    const blob = new Blob([buf], { type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    /* ЖЕСТ МОГ УЖЕ ИСТЕЧЬ. Каждый экспорт в Excel идёт после `await ensureXlsx()`, и если
+       xlsx.js пришлось тянуть по сети, к этому моменту transient user activation кончилась:
+       `navigator.share` отвечает NotAllowedError, а фолбэк `<a download>` в Capacitor-обёртке
+       молча ничего не делает — и раньше поверх этого печаталось «Excel сохранён». Это ровно
+       та беда, которую для JSON-бэкапа уже закрыли шитом «Сохранить файл»: сохранение идёт
+       СИНХРОННО из свежего клика по кнопке. Теперь тем же путём идёт и Excel.
+       Окно узкое (xlsx.js лежит в PRECACHE сервис-воркера и со второго запуска берётся из
+       кэша мгновенно, не теряя жест), поэтому и проверяем по факту, а не «на всякий случай»:
+       жест жив — сохраняем сразу, как и прежде. */
+    const gestureGone = !!(navigator.userActivation && navigator.userActivation.isActive === false);
+    if(gestureGone && _saveMobileLike() && typeof navigator.share === "function"){
+      offerFileSaveBlob(blob, filename, "Файл готов",
+        "Excel собран. Нажмите «Сохранить файл» — иначе телефон не даст записать его на диск.", okMsg);
+      return;
+    }
+    saveBlob(blob, filename, okMsg);
   }catch(e){ console.warn("saveXlsx", e); toast("Не удалось сформировать Excel"); }
 }
 /* ПОЛНЫЕ журналы базы из облака для бэкапа. Локальный state.journals после pull урезан до 500
@@ -6282,16 +6301,19 @@ function mergeJournalsForExport(cloudJ){
   }
   return out;
 }
-/* opts.localOnly — писать файл СРАЗУ, без обращения к облаку. Нужно для аварийного экспорта при
-   переполнении памяти: там последняя операция могла не лечь на диск, и откладывать запись файла
-   на сетевой запрос (до 120 с) нельзя. */
 /* Сохранение файла ПОСЛЕ сетевого ожидания: transient user activation к этому моменту истекла,
    поэтому navigator.share даёт NotAllowedError, а фолбэк <a download> в Capacitor-обёртке молча
    ничего не делает — тост при этом говорил «сохранён». Ломался ровно главный страховочный бэкап.
    Решение: показываем шит с кнопкой, и сохранение идёт СИНХРОННО из её onclick — жест свежий. */
 let _pendingSave = null;
 function offerFileSave(text, filename, title, note){
-  _pendingSave = { text, filename };
+  // «Файл сохранён», а не заголовок шита: «Бэкап готов» после записи читается как «ещё не записан».
+  return offerFileSaveBlob(new Blob([text],{type:"application/json"}), filename, title, note, "Файл сохранён");
+}
+/* Тот же шит, но для готового Blob: XLSX собирается в двоичный буфер, текстом его не подсунешь.
+   okMsg — что сказать, когда файл действительно уйдёт (печатает saveBlob). */
+function offerFileSaveBlob(blob, filename, title, note, okMsg){
+  _pendingSave = { blob, filename, okMsg: okMsg || title };
   openSheet(`
     <div class="font-bold text-xl mb-2">${esc(title)}</div>
     <div class="text-sm opacity-80 mb-4" style="line-height:1.5">${esc(note)}</div>
@@ -6304,7 +6326,7 @@ function offerFileSave(text, filename, title, note){
      Сохраняем немедленно — жест уже потрачен, но это всё равно лучше молчания. */
   if(_sheetRefused){
     const p = _pendingSave; _pendingSave = null;
-    if(p){ triggerDownload(p.text, p.filename, "application/json", title); }
+    if(p){ saveBlob(p.blob, p.filename, p.okMsg); }
     return false;
   }
   /* Лист закрывают не только кнопкой: тап по фону, Esc, следующий openSheet. Без этого содержимое
@@ -6318,7 +6340,7 @@ function doPendingSave(){
   if(!p) return;
   closeSheet();
   // синхронно в обработчике клика → share/download работают; про исход говорит сам saveBlob
-  triggerDownload(p.text, p.filename, "application/json", "Файл сохранён");
+  saveBlob(p.blob, p.filename, p.okMsg);
 }
 /* opts.localOnly — писать файл СРАЗУ, без обращения к облаку. Нужно для аварийного экспорта при
    переполнении памяти: там последняя операция могла не лечь на диск, и откладывать запись файла
