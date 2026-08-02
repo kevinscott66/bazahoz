@@ -3,10 +3,7 @@
   "appName": "ВахтаХоз",
   "webDir": "www",
   "server": {
-    "url": "https://vahta.razvedchick.ru/vahtahoz.html",
-    "androidScheme": "https",
-    "allowNavigation": [
-      "vahta.razvedchick.ru"
-    ]
+    "hostname": "vahta.razvedchick.ru",
+    "androidScheme": "https"
   }
 }
