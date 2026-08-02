@@ -1,12 +1,21 @@
-/* ВахтаХоз service worker — network-first для оболочки + offline fallback.
-   network-first важен: после деплоя фикса пользователь получает свежий vahtahoz.html
-   сразу при наличии сети, а кэш используется только как офлайн-резерв. */
-const CACHE = "vahtahoz-BETA-v214";
+/* ВахтаХоз service worker — БЕТА-канал (/beta/). Копия корневого, отличается двумя строками:
+   именем кэша и тем, какую линейку версий чистит activate. Всё остальное держать одинаковым —
+   расхождение уже стоило кэша стабильной (см. ниже).
+   network-first для оболочки + offline fallback: после деплоя фикса пользователь получает
+   свежий vahtahoz.html сразу при наличии сети, кэш — только офлайн-резерв. */
+const CACHE = "vahtahoz-BETA-v254";
+// Cache Storage общий на ORIGIN, а не на путь регистрации SW: стабильная (/) и бета (/beta/)
+// живут на одном домене и видят одни и те же ключи caches.keys().
+// Прежняя редакция чистила ВСЁ подряд (k !== CACHE): один заход в бету удалял кэш стабильной,
+// и стабильная переставала открываться офлайн — весь смысл этого SW. Воспроизведено 02.08.2026
+// на живом сайте: до захода в бету caches.keys() = ["vahtahoz-v254"], после — только
+// ["vahtahoz-BETA-v214"]. Поэтому удаляем ТОЛЬКО свою линейку.
+const isMyCache = k => k !== CACHE && k.startsWith("vahtahoz-BETA-");
 const PRECACHE = [
   "./vahtahoz.html",
   "./manifest.webmanifest",
   "./supabase.js",
-  "./xlsx.js",        // прекэшируем сразу — чтобы Excel-экспорт работал ПОЛНОСТЬЮ оффлайн (раньше нужна была сеть в первый раз)
+  "./xlsx.js",        // прекэшируем сразу — чтобы Excel-экспорт работал ПОЛНОСТЬЮ офлайн (раньше нужна была сеть в первый раз)
 ];
 
 // Оболочка КРИТИЧНА: без неё офлайн невозможен вообще. Остальное (xlsx/manifest) — терпимо.
@@ -34,7 +43,7 @@ self.addEventListener("activate", e => {
     // второй рубеж: старый кэш удаляем ТОЛЬКО когда новый действительно содержит оболочку
     if (await c.match(SHELL)) {
       const keys = await caches.keys();
-      await Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)));
+      await Promise.all(keys.filter(isMyCache).map(k => caches.delete(k)));
     } else {
       console.warn("activate: оболочки нет в", CACHE, "— прежний кэш оставлен как офлайн-резерв");
     }
@@ -50,34 +59,46 @@ self.addEventListener("fetch", e => {
   if (new URL(req.url).origin !== self.location.origin) return;
   e.respondWith((async () => {
     const cache = await caches.open(CACHE);
-    try {
-      // network-first: всегда пробуем свежую версию, НО с таймаутом —
-      // на «стух» соединении (TCP открыт, данные не идут) голый fetch висит десятки секунд,
-      // и оболочка грузится «бесконечно». 7с → abort → отдаём кэш (catch ниже).
+    const cached = await cache.match(req, { ignoreSearch: true });
+
+    // Сеть с жёстким потолком: на «стух» соединении (TCP открыт, данные не идут) голый fetch
+    // висит десятки секунд. Кэш пополняем внутри — чтобы фоновая догрузка работала и тогда,
+    // когда ответ мы уже отдали из кэша.
+    const net = (async () => {
       const ac = new AbortController();
       const to = setTimeout(() => ac.abort(), 7000);
-      let fresh;
-      try { fresh = await fetch(req, { signal: ac.signal }); }
-      finally { clearTimeout(to); }
-      if (fresh && fresh.status === 200 && (fresh.type === "basic" || fresh.type === "cors")) {
-        cache.put(req, fresh.clone()).catch(() => {});
+      try {
+        const fresh = await fetch(req, { signal: ac.signal });
+        if (fresh && fresh.status === 200 && (fresh.type === "basic" || fresh.type === "cors")) {
+          await cache.put(req, fresh.clone()).catch(() => {});
+        }
         return fresh;
-      }
-      // не-OK (4xx/5xx): не отдаём сломанный деплой/шлюз — лучше кэш
-      if (fresh && !fresh.ok) {
-        const cached = await cache.match(req, { ignoreSearch: true });
-        if (cached) return cached;
-      }
-      return fresh;
-    } catch (_) {
-      // офлайн / сеть недоступна → отдаём из кэша
-      const cached = await cache.match(req, { ignoreSearch: true });
-      if (cached) return cached;
+      } finally { clearTimeout(to); }
+    })().catch(() => null);   // ставим обработчик СРАЗУ: промис живёт дольше ответа (фоновая догрузка)
+
+    // Кэша нет — показывать нечего, ждём сеть до упора.
+    if (!cached) {
+      const fresh = await net;
+      if (fresh) return fresh;
       if (req.mode === "navigate") {
         const html = await cache.match("./vahtahoz.html");
         if (html) return html;
       }
-      return new Response("Оффлайн", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+      return new Response("Офлайн", { status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" } });
     }
+
+    /* КЭШ ЕСТЬ → у сети короткий срок. Раньше здесь было честное network-first с потолком 7 с:
+       переключение баз (оно делает location.reload) на слабой связи упиралось в эти 7 секунд
+       пустого экрана — вместо мгновенного открытия из кэша, который лежит рядом. Жалоба владельца:
+       «переключение должно быть моментальным, особенно на очень слабом интернете».
+       Полностью уходить в cache-first нельзя: тогда выкаченное исправление доезжает до людей
+       только со второго запуска. Компромисс — гонка: быстрый канал (норма) успевает за 1.2 с и
+       отдаёт свежее, как и раньше; медленный не задерживает человека — отдаём кэш, а загрузку
+       НЕ отменяем, она допишет свежую версию в кэш к следующему открытию. */
+    const SLOW = Symbol("slow");
+    const raced = await Promise.race([net, new Promise(r => setTimeout(() => r(SLOW), 1200))]);
+    if (raced !== SLOW && raced && raced.ok) return raced;   // успели: свежий ответ
+    if (raced === SLOW) e.waitUntil(net);                    // не успели: дописываем кэш в фоне
+    return cached;                                           // не-OK (4xx/5xx, сломанный деплой) — тоже кэш
   })());
 });
