@@ -600,6 +600,12 @@ Deno.serve(async (req) => {
       .select("can_manage").eq("base_id", baseId).eq("user_id", targetId).maybeSingle();
     if (!mem) return json({ error: "Работник не в этой базе" }, 400);
     if (!prof?.is_admin) {
+      /* Своя же строка. Дальше сработал бы общий запрет (управляющий сам can_manage), и человек,
+         стоя на СВОЁМ имени, читал бы «Нельзя сменить пароль управляющему или владельцу базы» —
+         фразу про кого-то третьего. Права от этого не меняются, меняется только внятность отказа. */
+      if (targetId === callerId) {
+        return json({ error: "Свой пароль здесь не меняется. Его может сменить владелец базы, а если у вас привязана резервная почта — «Забыли пароль?» на входе" }, 403);
+      }
       const { data: tprof } = await admin.from("profiles").select("is_admin").eq("id", targetId).maybeSingle();
       if (tprof?.is_admin || mem.can_manage) {
         return json({ error: "Нельзя сменить пароль управляющему или владельцу базы" }, 403);
