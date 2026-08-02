@@ -313,7 +313,7 @@
            смену, колокольчик — изредка, и место в строке в первую очередь принадлежит фильтру и имени
            базы. Кнопка не исчезает при нуле непрочитанных: пропадающий колокольчик пришлось бы искать,
            а найти его должны в том числе те, у кого уведомлений ещё не было ни одного. -->
-      <button id="bellChip" class="btn btn-ghost" style="padding:0;width:44px;min-width:44px;flex:0 0 auto;align-items:center;justify-content:center;position:relative;overflow:visible" title="Уведомления" aria-label="Уведомления" onclick="openNotifs()"></button>
+      <button id="bellChip" class="btn btn-ghost" style="padding:0;width:44px;min-width:44px;flex:0 0 auto;align-items:center;justify-content:center;position:relative;overflow:visible" title="Уведомления" aria-label="Уведомления" onclick="toggleNotifs()"></button>
       <button id="filterChip" class="btn btn-ghost" style="display:none;padding:0;width:52px;min-width:52px;flex:0 0 auto;align-items:center;justify-content:center;position:relative;overflow:visible" title="Фильтры" aria-label="Фильтры"></button>
       <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px;min-width:0;flex:1 1 auto;max-width:52vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Сменить базу" aria-label="Сменить базу"></button>
     </div>
@@ -455,7 +455,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v257";
+const APP_BUILD = "v258";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -7279,8 +7279,11 @@ function renderBell(){
     b.textContent = n>99 ? "99+" : String(n);
     el.appendChild(b);
   }
-  el.className = "btn " + (currentView==="notifs" ? "btn-primary" : "btn-ghost");
-  const aria = n ? `Уведомления, непрочитанных: ${n}` : "Уведомления";
+  const open = currentView==="notifs";
+  el.className = "btn " + (open ? "btn-primary" : "btn-ghost");
+  // Пока раздел открыт, кнопка закрывает его — подпись должна говорить именно это,
+  // иначе с озвучкой экрана человек второй раз жмёт «Уведомления» и попадает обратно.
+  const aria = open ? "Закрыть уведомления" : (n ? `Уведомления, непрочитанных: ${n}` : "Уведомления");
   el.title = aria; el.setAttribute("aria-label", aria);
 }
 
@@ -7313,6 +7316,11 @@ function openNotifs(){
   nav("notifs");
 }
 function closeNotifs(){ nav(_notifBack||"dashboard"); }
+/* Колокольчик — переключатель, а не только вход: нажали второй раз — вернулись туда, откуда
+   пришли. Кнопка в шапке подсвечена, пока раздел открыт, и «нажать на подсвеченную, чтобы
+   погасить» — то, чего от неё ждут. Строка в «Ещё» и переходы по самим уведомлениям зовут
+   openNotifs() напрямую: там повторного нажатия по той же кнопке не бывает. */
+function toggleNotifs(){ if(currentView==="notifs") closeNotifs(); else openNotifs(); }
 
 // Куда ведёт нажатие. Список закрытый и повторяет поведение плиток дашборда один в один:
 // «Сроки истекают» → navStock('exp14'), «Низкий запас» → navStock('all'). Открой склад
