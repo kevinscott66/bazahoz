@@ -414,7 +414,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v254";
+const APP_BUILD = "v255";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -8500,10 +8500,15 @@ async function requestPasswordReset(){
   };
 }
 // Профиль: привязать/подтвердить резервную почту (для восстановления пароля кодом)
-async function openRecoveryEmailSheet(){
+async function openRecoveryEmailSheet(edit){
   await cloudRefreshRecoveryProfile().catch(()=>{});
   const cur = cloud.profile && cloud.profile.recovery_email;
   const ver = cloud.profile && cloud.profile.recovery_email_verified;
+  // Подтверждённый адрес — законченное состояние, кода для него больше не нужно.
+  // Раньше форма отправки кода висела и здесь, прямо под зелёным «подтверждена», и читалась
+  // как «подтверждение не засчиталось, отправьте код ещё раз». Теперь форма появляется
+  // только по «Изменить адрес».
+  const form = !ver || edit === true;
   openSheet(`
     <div class="font-bold text-xl mb-1">Резервная почта</div>
     <!-- Рабочий адрес @razvedchick.ru сюда звать нельзя: пароль от него — тот же пароль от
@@ -8511,14 +8516,24 @@ async function openRecoveryEmailSheet(){
          примет; текст правим, чтобы человек не бился в закрытую дверь. -->
     <div class="text-sm opacity-70 mb-3">На неё придёт код для восстановления пароля. Нужна <b>личная</b> почта — Gmail, Яндекс, Mail.ru. Рабочая @razvedchick.ru не подойдёт: пароль от неё тот же, что от приложения.</div>
     ${cur?`<div class="text-sm mb-3">Сейчас: <b>${esc(cur)}</b> ${ver?'<span class="badge badge-green">подтверждена</span>':'<span class="badge badge-yellow">не подтверждена</span>'}</div>`:''}
+    ${form?`
+    ${ver?`<div class="text-sm opacity-70 mb-2">Новый адрес нужно будет подтвердить кодом. Пока он не подтверждён, восстановление пароля идёт на прежний.</div>`:``}
     <input class="input mb-2" id="reEmail" inputmode="email" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="email@example.com" value="${esc(cur||'')}" />
     <button class="btn btn-primary w-full" id="reSend">Отправить код подтверждения</button>
+    `:`
+    <div class="text-sm opacity-70 mb-2">Почта подтверждена — код вводить больше не нужно. Если забудете пароль, письмо придёт сюда.</div>
+    <button class="btn btn-ghost w-full" id="reChange">Изменить адрес</button>
+    `}
     ${cur?`<button class="btn btn-ghost w-full mt-2" id="reUnbind">Отвязать почту</button>`:''}
     <div id="reErr" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
   `);
+  const ch=document.getElementById("reChange");
+  if(ch) ch.onclick=()=>{ openRecoveryEmailSheet(true); };
   const un=document.getElementById("reUnbind");
   if(un) un.onclick=async()=>{ try{ const d=await cloudCallFn("unbind_recovery_email",{}); cloudApplyRecoveryProfile(d); closeSheet(); toast("Резервная почта отвязана"); renderMore(); }catch(e){ toast("Не удалось"); } };
-  document.getElementById("reSend").onclick = async ()=>{
+  const send=document.getElementById("reSend");
+  if(!send) return;
+  send.onclick = async ()=>{
     const email=(document.getElementById("reEmail").value||"").trim().toLowerCase();
     const err=document.getElementById("reErr");
     if(!/^[a-z0-9_.+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(email)){ err.textContent="Введите корректный адрес почты"; return; }
