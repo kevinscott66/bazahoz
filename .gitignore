@@ -9,6 +9,11 @@ node_modules/
 # каждый раз перетирал бы его свежим шаблоном. Внутри native/android/.gitignore закрывает
 # всё генерируемое: build/, .gradle/, local.properties, assets/public, capacitor-cordova-android-plugins.
 native/ios/
+# native/www собирается скриптом scripts/build-native-www.sh из оболочки в корне:
+# это копия vahtahoz.html + supabase.js + xlsx.js (≈2 МБ). Коммитить её — держать
+# в репозитории вторую, отдельно протухающую копию приложения; в CI она собирается
+# перед `cap sync`. Локально перед сборкой руками — запустить тот же скрипт.
+native/www/
 native-desktop/src-tauri/target/
 # gen/ Tauri пересоздаёт при каждой сборке из tauri.conf.json и capabilities/ —
 # в репозитории он только шумит в диффе и конфликтует между сборщиками.

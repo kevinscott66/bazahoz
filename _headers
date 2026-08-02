@@ -40,6 +40,14 @@
 /beta/sw.js
   Cache-Control: no-cache
 
+# Номер живой сборки для установленных Android-приложений (см. native/packaged.js).
+# Заголовок про источник обязателен: файл лежит на апексе razvedchick.ru, а спрашивает
+# его страница с origin https://vahta.razvedchick.ru — без него браузер ответ не отдаст,
+# и приложение никогда не узнает, что вышло обновление. Внутри только номер сборки.
+/appver.json
+  Access-Control-Allow-Origin: *
+  Cache-Control: no-cache
+
 # Оболочка лежит без расширения (см. scripts/build-site.sh) — тип задаём явно,
 # иначе Pages отдаст её как поток байт и браузер предложит скачать файл.
 /vahtahoz
