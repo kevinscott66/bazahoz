@@ -34,6 +34,7 @@ cp beta/vahtahoz.html dist/beta/vahtahoz
 # принципиально: localStorage и кэш офлайна привязаны к origin, и перенос
 # приложения на другой адрес оставил бы людей с пустой базой.
 cp site/index.html   dist/index.html
+cp site/app.html     dist/app.html
 cp site/support.html dist/support.html
 cp site/start.html   dist/start.html
 cp site/terms.html   dist/terms.html
@@ -43,6 +44,19 @@ cp site/site.css     dist/site.css
 # Остальное — как есть.
 cp sw.js manifest.webmanifest supabase.js xlsx.js dist/
 cp beta/sw.js beta/manifest.webmanifest beta/supabase.js beta/xlsx.js dist/beta/ 2>/dev/null || true
+
+# --- Приложение для Android ---------------------------------------------------
+# Артефакт сборки в GitHub живёт ~90 дней и требует входа в репозиторий — работник
+# на вахте его не скачает. Поэтому файл лежит в репозитории и раздаётся с сайта по
+# постоянному короткому адресу /vahtahoz.apk (его называют людям вслух).
+# Имя без версии намеренно: ссылка в переписке и на странице /app не должна протухать
+# при следующей сборке. Версия видна на странице и в самом файле.
+# ВАЖНО: при выпуске новой версии заменить файл в downloads/, поправить здесь имя,
+# а также версию, сумму и отпечаток на site/app.html и в docs/ANDROID_RELEASE.md.
+cp downloads/vahtahoz-1.0.7.apk dist/vahtahoz.apk
+# Имя внутри файла суммы подменяем на раздаваемое, иначе `shasum -c` спотыкается о
+# несуществующее имя и проверка, ради которой файл и выкладывается, не проходит.
+sed 's/vahtahoz-1\.0\.7\.apk/vahtahoz.apk/' downloads/vahtahoz-1.0.7.apk.sha256 > dist/vahtahoz.apk.sha256
 
 cp _headers   dist/_headers
 cp _redirects dist/_redirects

@@ -71,6 +71,10 @@
   Cache-Control: no-cache
   Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://sb.razvedchick.ru; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
 
+/app*
+  Cache-Control: no-cache
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
+
 /support*
   Cache-Control: no-cache
   Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://sb.razvedchick.ru; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
@@ -86,6 +90,15 @@
 /privacy*
   Cache-Control: no-cache
   Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
+
+# Приложение для Android. Тип задаём явно: без него Pages отдаёт файл как поток байт,
+# и часть телефонов открывает его «просмотром» вместо установки. Имя при сохранении —
+# с версией, чтобы в «Загрузках» было видно, что именно лежит; раздаётся файл при этом
+# по постоянному адресу /vahtahoz.apk (см. scripts/build-site.sh).
+/vahtahoz.apk
+  Content-Type: application/vnd.android.package-archive
+  Content-Disposition: attachment; filename="vahtahoz-1.0.7.apk"
+  Cache-Control: no-cache
 
 # Один общий файл стилей на все страницы. no-cache, а не длинный срок: имени с
 # версией у него нет, и после правки дизайна страница не должна ехать со старым
