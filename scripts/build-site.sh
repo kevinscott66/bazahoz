@@ -64,10 +64,10 @@ cp beta/sw.js beta/manifest.webmanifest beta/supabase.js beta/xlsx.js dist/beta/
 # при следующей сборке. Версия видна на странице и в самом файле.
 # ВАЖНО: при выпуске новой версии заменить файл в downloads/, поправить здесь имя,
 # а также версию, сумму и отпечаток на site/app.html и в docs/ANDROID_RELEASE.md.
-cp downloads/vahtahoz-1.0.7.apk dist/vahtahoz.apk
+cp downloads/vahtahoz-1.0.8.apk dist/vahtahoz.apk
 # Имя внутри файла суммы подменяем на раздаваемое, иначе `shasum -c` спотыкается о
 # несуществующее имя и проверка, ради которой файл и выкладывается, не проходит.
-sed 's/vahtahoz-1\.0\.7\.apk/vahtahoz.apk/' downloads/vahtahoz-1.0.7.apk.sha256 > dist/vahtahoz.apk.sha256
+sed 's/vahtahoz-1\.0\.8\.apk/vahtahoz.apk/' downloads/vahtahoz-1.0.8.apk.sha256 > dist/vahtahoz.apk.sha256
 
 cp _headers   dist/_headers
 cp _redirects dist/_redirects
