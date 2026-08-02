@@ -1,7 +1,7 @@
 /* ВахтаХоз service worker — network-first для оболочки + offline fallback.
    network-first важен: после деплоя фикса пользователь получает свежий vahtahoz.html
    сразу при наличии сети, а кэш используется только как офлайн-резерв. */
-const CACHE = "vahtahoz-v256";
+const CACHE = "vahtahoz-v257";
 // Cache Storage общий на ORIGIN, а не на путь регистрации SW: стабильная (/) и бета (/beta/)
 // живут на одном домене vahta.razvedchick.ru и видят одни и те же ключи caches.keys().
 // Раньше activate чистил ВСЁ подряд (k !== CACHE) — заход в бету удалял кэш стабильной
@@ -46,6 +46,25 @@ self.addEventListener("activate", e => {
       console.warn("activate: оболочки нет в", CACHE, "— прежний кэш оставлен как офлайн-резерв");
     }
     await self.clients.claim();
+  })());
+});
+
+/* НАЖАТИЕ ПО СИСТЕМНОМУ УВЕДОМЛЕНИЮ.
+   Нужен именно здесь: на Android уведомление показывает service worker (конструктор
+   Notification на странице там запрещён — см. notify() в vahtahoz.html), и клик приходит
+   сюда, а не на страницу. Без обработчика уведомление просто закрывалось, и приложение
+   не открывалось — уведомление, по которому некуда нажать, бесполезно. */
+self.addEventListener("notificationclick", e => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || "./vahtahoz.html";
+  e.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    // Уже открытое окно поднимаем, а не плодим второе: две копии ВахтаХоза — это два
+    // состояния на одном телефоне и лишний повод для расхождения данных.
+    for (const c of all) {
+      if (new URL(c.url).origin === self.location.origin) return c.focus();
+    }
+    if (self.clients.openWindow) return self.clients.openWindow(url);
   })());
 });
 

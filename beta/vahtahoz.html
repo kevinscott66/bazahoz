@@ -135,6 +135,30 @@
      читаемой разницей с обычным бейджем (8,33:1 и 6,16:1), а не потерей текста. */
   .badge-gray.opacity-50{ opacity:1; color:#adb4bf; }
   .light .badge-gray.opacity-50{ opacity:1; color:#5c6472; }
+  /* ===== Уведомления =====
+     Счётчик на колокольчике сделан по образцу счётчика на кнопке фильтра (тот же размер и та же
+     посадка в угол), чтобы две кнопки в шапке не выглядели из разных приложений. Цифра красная,
+     а не акцентная: акцентом в шапке уже помечено «фильтр включён», и одинаковый цвет читался бы
+     как одно и то же состояние. */
+  .bell-badge{ position:absolute; top:-3px; right:-3px; min-width:18px; height:18px; padding:0 5px; border-radius:999px;
+    background:#dc2626; color:#fff; font-size:11px; font-weight:700; line-height:18px; text-align:center;
+    box-shadow:0 0 0 2px #0b1220; }
+  .light .bell-badge{ box-shadow:0 0 0 2px #f9fafb; }
+  /* Всплывашка. pointer-events возвращаем именно карточке: контейнер сквозной, иначе невидимая
+     полоса поверх шапки перехватывала бы нажатия по чипу базы и по фильтру. */
+  .popup{ pointer-events:auto; width:100%; max-width:520px; display:flex; align-items:flex-start; gap:10px;
+    padding:12px 12px 12px 14px; border-radius:16px; background:#1f2937; color:#f3f4f6;
+    box-shadow:0 10px 30px rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.10);
+    animation:popIn .18s ease-out; text-align:left; }
+  .light .popup{ background:#fff; color:#111827; border-color:#e5e7eb; box-shadow:0 10px 30px rgba(20,20,18,.18); }
+  .popup .pu-t{ font-weight:700; font-size:14px; line-height:1.3; }
+  .popup .pu-b{ font-size:13px; line-height:1.4; opacity:.85; margin-top:2px; overflow-wrap:break-word; }
+  .popup .pu-x{ flex:none; opacity:.55; padding:2px 4px; margin:-2px -4px 0 0; background:none; border:none; color:inherit; font-size:18px; line-height:1; }
+  @keyframes popIn{ from{ opacity:0; transform:translateY(-10px); } to{ opacity:1; transform:none; } }
+  @media (prefers-reduced-motion:reduce){ .popup{ animation:none; } }
+  /* Непрочитанное помечаем полосой слева, а не заливкой: заливка на списке из десяти строк
+     превращается в сплошное пятно, и «новое» перестаёт выделяться. */
+  .notif.unread{ border-left:3px solid var(--accent); }
   .sheet{ position:fixed; inset:0; z-index:100; display:none; }   /* модалка — поверх всего, включая логин-гейт (z-90): чтобы юр-страницы открывались и до входа */
   .sheet.open{ display:flex; }
   .sheet-bg{ position:absolute; inset:0; background:rgba(0,0,0,.6); }
@@ -285,6 +309,11 @@
            по ней, чтобы кнопка была квадратной, а не узкой полосой рядом с чипом базы);
            весь дефицит ширины забирает чип базы, имя базы читаемо и в обрезанном виде
            («2 отряд РоГРП…»). Потолок 52vw: без соседского текста места ему досталось больше. -->
+      <!-- Колокольчик стоит ЛЕВЕЕ фильтра и уже его (44 против 52): фильтр нажимают по многу раз за
+           смену, колокольчик — изредка, и место в строке в первую очередь принадлежит фильтру и имени
+           базы. Кнопка не исчезает при нуле непрочитанных: пропадающий колокольчик пришлось бы искать,
+           а найти его должны в том числе те, у кого уведомлений ещё не было ни одного. -->
+      <button id="bellChip" class="btn btn-ghost" style="padding:0;width:44px;min-width:44px;flex:0 0 auto;align-items:center;justify-content:center;position:relative;overflow:visible" title="Уведомления" aria-label="Уведомления" onclick="openNotifs()"></button>
       <button id="filterChip" class="btn btn-ghost" style="display:none;padding:0;width:52px;min-width:52px;flex:0 0 auto;align-items:center;justify-content:center;position:relative;overflow:visible" title="Фильтры" aria-label="Фильтры"></button>
       <button id="baseChip" class="btn btn-ghost text-xs" style="padding:6px 10px;min-width:0;flex:1 1 auto;max-width:52vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Сменить базу" aria-label="Сменить базу"></button>
     </div>
@@ -309,6 +338,11 @@
     <section data-view="kitchen" class="space-y-3 hidden"></section>
     <!-- More -->
     <section data-view="more" class="space-y-3 hidden"></section>
+    <!-- Уведомления. Раздел, а не лист: список читают и прокручивают, а лист на телефоне
+         занимает половину экрана и закрывается случайным тапом по фону. Кнопки в нижней
+         панели у него нет намеренно — их и так пять, шестая не влезает на 320px; вход
+         один, через колокольчик в шапке. -->
+    <section data-view="notifs" class="space-y-3 hidden"></section>
   </main>
 </div>
 
@@ -337,6 +371,13 @@
 
 <!-- Toast -->
 <div id="toast" role="status" aria-live="polite" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[80] hidden px-4 py-3 rounded-xl bg-gray-800 text-white text-sm shadow-xl" style="max-width:90vw;text-align:center;overflow-wrap:break-word;word-break:break-word"></div>
+
+<!-- Всплывающие уведомления. Отдельно от #toast и НЕ вместо него: toast — это ответ на действие
+     («Сохранено»), он один и замещается следующим; уведомление приходит само, его можно не
+     заметить, поэтому оно живёт дольше, копится стопкой и по нажатию ведёт туда, где дело.
+     Сверху, а не снизу: снизу нижняя панель и toast, и на 320px они наложились бы друг на друга.
+     z-index ниже гейта входа (90) — до входа человеку показывать нечего. -->
+<div id="popups" role="status" aria-live="polite" class="fixed left-0 right-0 z-[85]" style="top:calc(env(safe-area-inset-top) + 8px);display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none;padding:0 10px"></div>
 
 <!-- Экран загрузки. Стоит в разметке (а не рисуется скриптом) и виден с первого кадра: интерфейс
      успевает отрисоваться раньше, чем облако скажет, кто вошёл, и человек видел лишнее — пять кнопок
@@ -414,7 +455,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v256";
+const APP_BUILD = "v257";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -1886,6 +1927,7 @@ function render(){
   if(currentView==="stock") renderStock();
   if(currentView==="kitchen") renderKitchen();
   if(currentView==="more") renderMore();
+  if(currentView==="notifs") renderNotifs();
   syncNavbarBottom();   // высота полотна поменялась → могло поменяться и место нижней панели
 }
 
@@ -2094,6 +2136,8 @@ const ICON_PATHS = {
   bottle:'<path d="M9.8 3h4.4v3H9.8z"/><path d="M8 9.5A3.5 3.5 0 0111.5 6h1A3.5 3.5 0 0116 9.5V19a2 2 0 01-2 2h-4a2 2 0 01-2-2z"/><path d="M8.5 12.5h7"/>',
   wrench:'<path d="M14.7 6.3a4 4 0 00-5.6 5.6L3 18v3h3l6.1-6.1a4 4 0 005.6-5.6l-2.8 2.8-2.1-2.1 2.8-2.8z"/>',
   info:  '<circle cx="12" cy="12" r="9"/><path d="M12 11.2v5"/><path d="M12 8h.01"/>',
+  bell:  '<path d="M18 8.8a6 6 0 10-12 0c0 5.2-2 6.7-2 6.7h16s-2-1.5-2-6.7z"/><path d="M13.7 19.4a2 2 0 01-3.4 0"/>',
+  bellOff:'<path d="M3 3l18 18"/><path d="M18 8.8c0 5.2 2 6.7 2 6.7H7.4"/><path d="M6.1 10.3C6 9.8 6 9.3 6 8.8a6 6 0 019.4-4.9"/><path d="M13.7 19.4a2 2 0 01-3.4 0"/>',
   dot:   '<circle cx="12" cy="12" r="5.5" fill="currentColor" stroke="none"/>'
 };
 const ico = (name, size)=> `<svg class="ico" viewBox="0 0 24 24" width="${size||20}" height="${size||20}" aria-hidden="true">${ICON_PATHS[name]||""}</svg>`;
@@ -2293,6 +2337,9 @@ function renderHeader(){
     else { bc.style.display="none"; }
   }
   renderFilterChip();
+  // колокольчик рисуем ДО замера приветствия: он занимает 44px строки, и мерить остаток
+  // раньше него значит померить не ту ширину (см. fitHeaderGreeting в конце функции)
+  try{ renderBell(); }catch(e){ console.warn("bell", e); }
   // статус-бар/чип облака скрываем, если активная база не связана с облаком или нет входа
   if(typeof cloud!=="undefined" && (!cloud.ready || !activeCloudId())){
     const sc=document.getElementById("syncChip"), sb=document.getElementById("syncBar");
@@ -2314,8 +2361,10 @@ try{ window.addEventListener("resize", ()=>{
 
 /* ---------- Dashboard ---------- */
 function dismissOnboarding(){ try{ localStorage.setItem(NS+"vahtahoz_onboarded","1"); }catch(_){} render(); }
-function renderDashboard(){
-  const v = document.querySelector('[data-view="dashboard"]');
+/* Четыре набора, по которым живёт дашборд. Вынесены из renderDashboard, потому что ровно эти же
+   числа называют уведомления, а расхождение счётчика с экраном тут уже случалось дважды (плитка
+   «5», список «3» — см. комментарии про allowedTypeKeys ниже). Одно определение — расходиться нечему. */
+function dashSets(){
   const today = todayStr();
   const todayTasks = state.tasks.filter(t=>!t.done && t.due===today);
   const overdueTasks = state.tasks.filter(t=>!t.done && t.due && t.due<today);
@@ -2337,6 +2386,11 @@ function renderDashboard(){
      объяснить было нечем. Тот же allowedTypeKeys(), что у плитки сроков и у чипов на складе. */
   const _lowAllowed = allowedTypeKeys();
   const lowStock = state.stock.filter(s=> _lowAllowed.includes(s.type) && inStock(s) && s.minStock!=="" && s.minStock!=null && totalQtyOf(s) <= Number(s.minStock));
+  return { today, todayTasks, overdueTasks, expiringSoon, lowStock };
+}
+function renderDashboard(){
+  const v = document.querySelector('[data-view="dashboard"]');
+  const { today, todayTasks, overdueTasks, expiringSoon, lowStock } = dashSets();
   // роль: у начальника (нет права на задачи) дашборд складской — задачные блоки скрываем
   const _m = activeMember();
   const showTasks = !isRestrictedUser();
@@ -5613,6 +5667,9 @@ function renderMore(){
   const acc = [];
   if(!baseLocked && nBases>1) acc.push(row("Сменить базу","openProfilesSheet()",{val:String(nBases)}));
   acc.push(row("Синхронизация с облаком","openCloudSheet()",{ right:`<span class="set-dot" style="background:${cloudStatusColor()}"></span>${ch}` }));
+  // Второй вход в уведомления (первый — колокольчик в шапке). Настройки всплывашек живут
+  // внутри самого раздела, и человек, который пошёл искать их в «Ещё», должен найти дорогу.
+  { const _nu = notifUnread(); acc.push(row("Уведомления","openNotifs()",{ val: _nu ? String(_nu) : "" })); }
   if(activeCloudId() && cloud.profile) acc.push(row("Резервная почта","openRecoveryEmailSheet()",{ val: cloud.profile.recovery_email_verified ? "✓ подтв." : (cloud.profile.recovery_email ? "не подтв." : "не задана") }));
   if(canManageBase()) acc.push(row("Работники и роли","openMembersSheet()"));
   if(canManageOrgRoles()) acc.push(row("Роли по регионам","openOrgRolesSheet()"));
@@ -7042,12 +7099,22 @@ function setTheme(t){ state.theme=t; saveState(); applyTheme(); render(); }
 // когда выбран режим «Системная» — реагируем на смену темы телефона на лету
 try{ if(window.matchMedia){ window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", ()=>{ if(state.theme==="system") applyTheme(); }); } }catch(_){}
 
-/* ---------- Уведомления (срок годности и т.п.) ---------- */
+/* ---------- Системное уведомление телефона (срок годности и т.п.) ---------- */
+const NOTIFY_ICON = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'><rect width='48' height='48' rx='11' fill='%23111827'/><g transform='translate(24 24) scale(.74) translate(-24 -24)' fill='none' stroke='%235ec8d4' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><path d='M9 16.5h30v22a3 3 0 0 1-3 3H12a3 3 0 0 1-3-3z'/><path d='M7 8.5h34a2 2 0 0 1 2 2v6H5v-6a2 2 0 0 1 2-2z'/><path d='M16.5 26.5l5.5 5.5 10-10'/></g></svg>";
 function notify(title, body){
   try{
-    if("Notification" in window && Notification.permission==="granted"){
-      new Notification(title, { body, icon: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'><rect width='48' height='48' rx='11' fill='%23111827'/><g transform='translate(24 24) scale(.74) translate(-24 -24)' fill='none' stroke='%235ec8d4' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><path d='M9 16.5h30v22a3 3 0 0 1-3 3H12a3 3 0 0 1-3-3z'/><path d='M7 8.5h34a2 2 0 0 1 2 2v6H5v-6a2 2 0 0 1 2-2z'/><path d='M16.5 26.5l5.5 5.5 10-10'/></g></svg>" });
-    }
+    if(!("Notification" in window) || Notification.permission!=="granted") return;
+    const opts = { body, icon:NOTIFY_ICON, badge:NOTIFY_ICON, data:{ url: location.href } };
+    /* ДВА ПУТИ, И ПОРЯДОК ВАЖЕН. Chrome на Android запрещает конструктор Notification на
+       странице («Illegal constructor») — там уведомление обязан показывать service worker.
+       Ровно поэтому напоминание о сроках годности на телефонах не показывалось никогда, а на
+       десктопе показывалось: конструктор бросал исключение и молча гасился этим самым catch.
+       Пробуем конструктор первым (десктоп — поведение прежнее, без асинхронности), а на
+       телефоне ловим отказ и уходим в SW. Ждать navigator.serviceWorker.ready вслепую нельзя:
+       без зарегистрированного SW (file://, отвалившаяся регистрация) промис не разрешается
+       никогда, и уведомления пропали бы уже везде. */
+    try{ new Notification(title, opts); return; }catch(_){}
+    if(navigator.serviceWorker) navigator.serviceWorker.ready.then(r=>r.showNotification(title, opts)).catch(()=>{});
   }catch(e){}
 }
 
@@ -7107,6 +7174,321 @@ function expiryNoticeOnOpen(){
   state.lastExpiryNoticeDate = todayStr();
   saveState();
 }
+
+/* ============================================================
+   УВЕДОМЛЕНИЯ: колокольчик в шапке, свой раздел и всплывашки
+   ------------------------------------------------------------
+   ЧТО ЭТО. Единственное место, где видно «что случилось, пока меня не было»: напоминания
+   по задачам, срокам годности и остаткам, а также сообщения о смене, роли и доступе к базам.
+   Раньше такого места не было вовсе — разовый toast исчезал через 1,8 секунды и не оставлял
+   следа, а модалка про сроки годности показывается один раз в сутки и только про продукты.
+
+   ОТКУДА БЕРУТСЯ ЧИСЛА. Из dashSets() — того же расчёта, что рисует плитки на дашборде.
+   Ровно поэтому он и вынесен в отдельную функцию: расхождение «в колокольчике 5, на плитке 3»
+   объяснить человеку нечем, а в этом приложении такое уже случалось дважды (см. комментарии
+   про allowedTypeKeys в dashSets).
+
+   ЧТО ВСПЛЫВАЕТ, А ЧТО ПРОСТО ЛОЖИТСЯ В СПИСОК. Всплывашка — это «произошло прямо сейчас»:
+   поставили на смену, сменили роль, открыли базу, наступил новый день с задачами. Разбор при
+   запуске идёт МОЛЧА: иначе каждое открытие приложения встречало бы человека пачкой карточек
+   поверх шапки, да ещё и вперемешку с модалкой про сроки годности, которая показывается там же.
+   Накопленное видно по цифре на колокольчике — за этим он и нужен.
+
+   ЧЕГО ЗДЕСЬ НЕТ. Фоновой доставки (push) нет: сервер уведомлений не поднят, а обещать
+   «придёт на телефон» и не прислать — хуже, чем не обещать. Системные уведомления телефона
+   поэтому выключены по умолчанию и работают только пока приложение запущено; так и написано
+   в самой настройке.
+
+   СОВМЕСТИМОСТЬ. Ключи localStorage НОВЫЕ (vahtahoz_notifs, vahtahoz_notif_mem) и с NS-префиксом
+   канала. Старые сборки их не читают и не пишут, в облачную выгрузку и в резервную копию они не
+   попадают — уведомления живут на том телефоне, где произошли, и переносить их некуда.
+   ============================================================ */
+const NOTIF_KEY = NS+"vahtahoz_notifs";
+const NOTIF_MEM_KEY = NS+"vahtahoz_notif_mem";
+const NOTIF_MAX = 60;          // дальше не листают; хвост занимает место в localStorage без пользы
+let _notifs = null;
+let _notifBack = "dashboard";  // куда вернуть по «Назад»: раздел открывают из любого места
+
+function notifLoad(){
+  if(_notifs) return _notifs;
+  let o = null;
+  try{ o = JSON.parse(localStorage.getItem(NOTIF_KEY)||"null"); }catch(_){}
+  if(!o || typeof o!=="object" || Array.isArray(o)) o = {};
+  // Форму восстанавливаем целиком: битый ключ (чужая запись, оборванная запись при нехватке
+  // места) не должен ронять шапку — колокольчик рисуется на каждом render.
+  _notifs = {
+    v: 1,
+    uid: typeof o.uid==="string" ? o.uid : "",
+    list: Array.isArray(o.list) ? o.list.filter(n=>n && typeof n==="object" && typeof n.id==="string" && typeof n.k==="string").slice(0,NOTIF_MAX) : [],
+    cfg: { pop: !(o.cfg && o.cfg.pop===false), sys: !!(o.cfg && o.cfg.sys) },
+  };
+  return _notifs;
+}
+function notifSave(){
+  try{ localStorage.setItem(NOTIF_KEY, JSON.stringify(notifLoad())); }
+  catch(_){ /* переполнение хранилища: уведомления — расходный материал, теряем молча */ }
+}
+function notifUnread(){ return notifLoad().list.reduce((n,x)=>n+(x.read?0:1),0); }
+
+/* На телефоне сменился человек — чужие уведомления показывать нельзя (в них имена баз и роли).
+   Зовётся перед каждым разбором; пока uid неизвестен (холодный старт, офлайн) не трогаем
+   ничего: иначе список стирался бы при каждом запуске без сети. */
+function notifOwnerCheck(){
+  const u = (typeof cloud!=="undefined" && cloud.profile && cloud.profile.id) || "";
+  if(!u) return;
+  const s = notifLoad();
+  if(s.uid===u) return;
+  if(s.uid) s.list = [];
+  s.uid = u; notifSave();
+}
+
+/* n = {k, t, b, go, ic}. k — ключ повтора: одно и то же событие не должно появляться дважды
+   (сводка по задачам за день, повторный разбор через пять минут). Возвращает true, если
+   уведомление действительно новое. */
+function notifAdd(n, opts){
+  opts = opts||{};
+  const s = notifLoad();
+  if(s.list.some(x=>x.k===n.k)) return false;
+  const item = { id: uid(), k: n.k, t: n.t, b: n.b||"", ic: n.ic||"bell", go: n.go||"", ts: new Date().toISOString(), read:false };
+  s.list.unshift(item);
+  if(s.list.length>NOTIF_MAX) s.list.length = NOTIF_MAX;
+  notifSave();
+  if(opts.popup){
+    // Приложение свёрнуто — карточку внутри него никто не увидит; тогда (и только тогда)
+    // отдаём событие системе, если человек это разрешил.
+    if(document.hidden){ if(s.cfg.sys) notify("ВахтаХоз · "+item.t, item.b); }
+    else if(s.cfg.pop) popupShow(item);
+  }
+  try{ renderBell(); if(currentView==="notifs") renderNotifs(); }catch(_){}
+  return true;
+}
+
+/* ---------- колокольчик в шапке ---------- */
+function renderBell(){
+  const el = document.getElementById("bellChip"); if(!el) return;
+  const s = notifLoad();
+  const n = notifUnread();
+  /* Значок — разметкой (константа в коде), число — только textContent: в счётчик попадает
+     произвольная длина, и собирать его склейкой HTML незачем. Тот же приём, что в
+     renderFilterChip. */
+  el.replaceChildren();
+  el.insertAdjacentHTML("afterbegin", ico(s.cfg.pop ? "bell" : "bellOff", 21));
+  if(n){
+    const b = document.createElement("span");
+    b.className = "bell-badge";
+    b.textContent = n>99 ? "99+" : String(n);
+    el.appendChild(b);
+  }
+  el.className = "btn " + (currentView==="notifs" ? "btn-primary" : "btn-ghost");
+  const aria = n ? `Уведомления, непрочитанных: ${n}` : "Уведомления";
+  el.title = aria; el.setAttribute("aria-label", aria);
+}
+
+/* ---------- всплывашки ---------- */
+const POPUP_MAX = 3, POPUP_MS = 7000;
+function popupShow(item){
+  const host = document.getElementById("popups"); if(!host) return;
+  if(gateOpen()) return;   // поверх полноэкранного входа всплывашкам делать нечего
+  // Больше трёх карточек закрывают собой шапку целиком; старые уходят первыми.
+  while(host.children.length >= POPUP_MAX && host.firstElementChild) host.firstElementChild.remove();
+  const el = document.createElement("div");
+  el.className = "popup";
+  // Всё подставляемое — либо константа кода (ico), либо через esc: item.t/item.b собирает
+  // только этот файл, но в них попадают имена баз, а их вводит человек.
+  el.innerHTML = `<span style="flex:none;margin-top:1px;color:var(--accent)">${ico(item.ic||"bell",18)}</span>`
+    + `<span style="flex:1;min-width:0"><span class="pu-t" style="display:block">${esc(item.t)}</span>${item.b?`<span class="pu-b">${esc(item.b)}</span>`:""}</span>`
+    + `<button class="pu-x" aria-label="Закрыть уведомление">×</button>`;
+  let tid = 0;
+  const close = ()=>{ clearTimeout(tid); el.remove(); };
+  el.querySelector(".pu-x").addEventListener("click", e=>{ e.stopPropagation(); close(); });
+  el.addEventListener("click", ()=>{ close(); notifOpenItem(item.id); });
+  host.appendChild(el);
+  tid = setTimeout(close, POPUP_MS);
+}
+
+/* ---------- раздел «Уведомления» ---------- */
+function openNotifs(){
+  if(gateOpen()) return;
+  if(currentView!=="notifs") _notifBack = currentView;
+  nav("notifs");
+}
+function closeNotifs(){ nav(_notifBack||"dashboard"); }
+
+// Куда ведёт нажатие. Список закрытый и повторяет поведение плиток дашборда один в один:
+// «Сроки истекают» → navStock('exp14'), «Низкий запас» → navStock('all'). Открой склад
+// как-нибудь иначе — человек попадёт в другой набор позиций, чем обещало уведомление.
+function notifGo(go){
+  if(go==="tasks"){ taskFilter.cat="Все"; nav("tasks"); return; }
+  if(go==="exp14"){ navStock("exp14"); return; }
+  if(go==="low"){ navStock("all"); return; }
+  if(go==="more"){ nav("more"); return; }
+}
+function notifOpenItem(id){
+  const s = notifLoad();
+  const it = s.list.find(x=>x.id===id);
+  if(!it){ openNotifs(); return; }
+  if(!it.read){ it.read = true; notifSave(); }
+  if(!it.go){ openNotifs(); return; }
+  notifGo(it.go);
+  try{ renderBell(); }catch(_){}
+}
+/* Кнопки «Прочитать всё» здесь нет намеренно: открытый список и есть прочтение (см. конец
+   renderNotifs). Кнопка, которая появляется уже после того, как цифра с колокольчика ушла,
+   ничего не меняет — только спрашивает сделать то, что уже сделано. */
+function notifToggle(){
+  const s = notifLoad();
+  s.cfg.pop = !s.cfg.pop; notifSave(); renderBell(); renderNotifs();
+}
+async function notifToggleSys(){
+  const s = notifLoad();
+  if(s.cfg.sys){ s.cfg.sys = false; notifSave(); renderNotifs(); return; }
+  if(!("Notification" in window)){ toast("Телефон не поддерживает такие уведомления"); return; }
+  let p = Notification.permission;
+  if(p==="default"){ try{ p = await Notification.requestPermission(); }catch(_){ p = "denied"; } }
+  // Отказ уже дан — переспросить нельзя ни из какого кода, только руками в настройках
+  // телефона. Так и говорим, иначе переключатель молча не включается и выглядит сломанным.
+  if(p!=="granted"){ toast("Уведомления запрещены в настройках телефона"); renderNotifs(); return; }
+  s.cfg.sys = true; notifSave(); renderNotifs();
+}
+async function notifClear(){
+  if(!await confirmSheet("Очистить список уведомлений? Сами задачи, сроки и остатки не изменятся.", {title:"Уведомления", yes:"Очистить", danger:true})) return;
+  const s = notifLoad();
+  s.list = []; notifSave(); renderBell(); renderNotifs();
+  toast("Список очищен");
+}
+// «12:40» сегодня, «вчера, 12:40», дальше — «01.08, 12:40». Год не пишем: список живёт
+// 60 записей и до годовалых уведомлений не доживает.
+function notifWhen(ts){
+  const d = new Date(ts); if(isNaN(d.getTime())) return "";
+  const hm = String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
+  const dayKey = x => x.getFullYear()+"-"+x.getMonth()+"-"+x.getDate();
+  const now = new Date();
+  if(dayKey(d)===dayKey(now)) return hm;
+  const y = new Date(now.getTime()-86400000);
+  if(dayKey(d)===dayKey(y)) return "вчера, "+hm;
+  return String(d.getDate()).padStart(2,"0")+"."+String(d.getMonth()+1).padStart(2,"0")+", "+hm;
+}
+function renderNotifs(){
+  const v = document.querySelector('[data-view="notifs"]'); if(!v) return;
+  const s = notifLoad();
+  const list = s.list;
+  const unread = notifUnread();
+  const sysOn = ("Notification" in window) && Notification.permission==="granted" && s.cfg.sys;
+  const nRow = (n)=>`<button class="card tap text-left notif ${n.read?"":"unread"}" style="width:100%;display:flex;align-items:flex-start;gap:10px;padding:13px 14px" onclick="notifOpenItem('${safeId(n.id)}')">
+      <span style="flex:none;margin-top:1px;color:var(--accent)">${ico(n.ic||"bell",18)}</span>
+      <span style="flex:1;min-width:0">
+        <span class="font-bold" style="display:block;font-size:14px">${esc(n.t)}</span>
+        ${n.b?`<span style="display:block;font-size:13px;opacity:.8;margin-top:2px;overflow-wrap:break-word">${esc(n.b)}</span>`:""}
+        <span style="display:block;font-size:12px;opacity:.55;margin-top:4px">${esc(notifWhen(n.ts))}</span>
+      </span>
+    </button>`;
+  v.innerHTML = `
+    <div class="flex items-center gap-2">
+      <button class="btn btn-ghost" style="padding:8px 12px;flex:0 0 auto" onclick="closeNotifs()" aria-label="Назад">‹</button>
+      <div class="font-bold text-xl" style="flex:1;min-width:0">Уведомления</div>
+    </div>
+    ${list.length
+      ? `<div class="space-y-2">${list.map(nRow).join("")}</div>`
+      : `<div class="card text-center opacity-70 text-sm" style="padding:26px 16px">Пока пусто.<br>Здесь будут напоминания о задачах, сроках годности и остатках, а также сообщения о смене, роли и доступе к базам.</div>`}
+    <div class="set-group">
+      <div class="set-head">Настройки</div>
+      <div class="set-list">
+        <button class="set-row" onclick="notifToggle()"><span class="sr-t"><div>Всплывающие подсказки</div><div class="sr-sub">Карточка вверху экрана, пока приложение открыто</div></span><span class="sr-v">${s.cfg.pop?"Вкл":"Выкл"}</span><span class="sr-ch">›</span></button>
+        <button class="set-row" onclick="notifToggleSys()"><span class="sr-t"><div>Уведомления телефона</div><div class="sr-sub">Только пока приложение запущено: фоновой доставки нет</div></span><span class="sr-v">${sysOn?"Вкл":"Выкл"}</span><span class="sr-ch">›</span></button>
+        ${list.length?`<button class="set-row danger" onclick="notifClear()"><span class="sr-t"><div>Очистить список</div></span><span class="sr-ch">›</span></button>`:""}
+      </div>
+    </div>`;
+  /* Открыли список — значит прочитали. Пометку ставим ПОСЛЕ отрисовки: полоска «непрочитано»
+     остаётся видна на этом экране, а цифра с колокольчика уходит сразу. Так делают почтовые
+     клиенты, и это единственный способ не заставлять человека каждый раз жать «Прочитать всё». */
+  if(unread){ list.forEach(n=>{ n.read = true; }); notifSave(); }
+  try{ renderBell(); }catch(_){}
+}
+
+/* ---------- разбор данных: задачи, сроки, остатки ---------- */
+/* opts.silent — только положить в список, без всплывашек (запуск приложения; см. шапку блока). */
+function notifScan(opts){
+  try{
+    opts = opts||{};
+    if(gateOpen()) return;
+    notifOwnerCheck();
+    const popup = !opts.silent;
+    const d = dashSets();
+    const day = d.today;
+    /* Права на задачи: пока роли не приехали, берём раскладку прошлого запуска — тот же
+       источник, что у cloudGateTasks. Иначе на холодном старте начальник участка, у которого
+       задач нет вовсе, получал бы уведомление о чужих задачах. */
+    const known = cloud.ready || !loadCloudSess();
+    const hints = known ? null : loadGateHints();
+    const hideTasks = hints ? !!hints.t : isRestrictedUser();
+    if(!hideTasks && (d.todayTasks.length || d.overdueTasks.length)){
+      const parts = [];
+      if(d.todayTasks.length) parts.push(`на сегодня ${d.todayTasks.length}`);
+      if(d.overdueTasks.length) parts.push(`просрочено ${d.overdueTasks.length}`);
+      notifAdd({ k:`tasks-${day}`, ic:"checkCircle", t:"Невыполненные задачи", b:parts.join(", "), go:"tasks" }, {popup});
+    }
+    /* Сводка одна на день, а не по позиции: на складе бывает под четыреста наименований, и
+       отдельное уведомление на каждое превратило бы список в стену, которую перестают читать. */
+    if(d.expiringSoon.length)
+      notifAdd({ k:`exp-${day}`, ic:"clock", t:"Истекают сроки годности", b:`Позиций со сроком 14 дней и меньше: ${d.expiringSoon.length}`, go:"exp14" }, {popup});
+    if(d.lowStock.length)
+      notifAdd({ k:`low-${day}`, ic:"alert", t:"Низкий запас", b:`Позиций на минимуме или ниже: ${d.lowStock.length}`, go:"low" }, {popup});
+  }catch(e){ console.warn("notifScan", e); }
+}
+
+/* ---------- разбор членств: смена, роль, доступ к базам ---------- */
+/* Зовётся сразу после каждого присвоения cloud.members (вход и обновление членств) — это
+   единственные два места, где права меняются, других источников у приложения нет.
+   Сравниваем со снимком прошлого раза. Первый заход (и заход другим человеком) — молча
+   запоминаем: иначе первое же открытие после обновления выдало бы «вам открыли доступ»
+   на каждую базу разом. */
+function notifMemberScan(){
+  try{
+    const u = (cloud.profile && cloud.profile.id) || "";
+    if(!u || !cloud.membersLoaded) return;
+    notifOwnerCheck();
+    const cur = {};
+    (cloud.members||[]).forEach(m=>{
+      if(!m || !m.base_id) return;
+      cur[m.base_id] = { r:m.role||"", a:m.active!==false, c:!!m.can_manage, n:(cloud.bases&&cloud.bases[m.base_id])||"" };
+    });
+    let prev = null;
+    try{ prev = JSON.parse(localStorage.getItem(NOTIF_MEM_KEY)||"null"); }catch(_){}
+    const save = ()=>{ try{ localStorage.setItem(NOTIF_MEM_KEY, JSON.stringify({ uid:u, m:cur })); }catch(_){} };
+    if(!prev || prev.uid!==u || !prev.m || typeof prev.m!=="object" || Array.isArray(prev.m)){ save(); return; }
+    // Метка времени в ключе повтора обязательна: сняли со смены и вернули в тот же день —
+    // это два разных события, и второе не должно потеряться как «уже было».
+    const stamp = Date.now();
+    const nameOf = (bid, snap)=> (cloud.bases&&cloud.bases[bid]) || (snap&&snap.n) || "База";
+    for(const bid of Object.keys(cur)){
+      const c = cur[bid], p = prev.m[bid];
+      const bn = nameOf(bid, c);
+      if(!p){
+        notifAdd({ k:`m-new-${bid}-${stamp}`, ic:"home", t:"Открыт доступ к базе", b:`«${bn}» · ${roleLabel(c.r)}${c.a?"":" · пока не на смене"}`, go:"more" }, {popup:true});
+        continue;
+      }
+      if(p.a!==c.a)
+        notifAdd({ k:`m-shift-${bid}-${stamp}`, ic:c.a?"checkCircle":"alert", t:c.a?"Вы на смене":"Вы сняты со смены", b:`База «${bn}»`, go:"more" }, {popup:true});
+      if(p.r!==c.r)
+        notifAdd({ k:`m-role-${bid}-${stamp}`, ic:"users", t:"Изменена ваша роль", b:`«${bn}» · ${roleLabel(p.r)} → ${roleLabel(c.r)}`, go:"more" }, {popup:true});
+      if(p.c!==c.c)
+        notifAdd({ k:`m-mgr-${bid}-${stamp}`, ic:"users", t:c.c?"Вам передано управление базой":"Управление базой снято", b:`«${bn}»`, go:"more" }, {popup:true});
+    }
+    for(const bid of Object.keys(prev.m)){
+      if(cur[bid]) continue;
+      notifAdd({ k:`m-off-${bid}-${stamp}`, ic:"alert", t:"Доступ к базе закрыт", b:`«${prev.m[bid].n||"База"}»`, go:"more" }, {popup:true});
+    }
+    save();
+  }catch(e){ console.warn("notifMemberScan", e); }
+}
+
+/* Первый разбор — молча и с задержкой: к этому моменту состояние загружено, гейт уже показан
+   или уже не нужен, а модалка про сроки годности (400 мс) успела открыться и не будет
+   перекрыта карточками. Дальше раз в пять минут — ради смены суток: приложение на вахте
+   держат открытым сутками, и «задачи на сегодня» должны появиться сами. */
+setTimeout(()=>{ notifScan({silent:true}); try{ renderBell(); }catch(_){} }, 700);
+setInterval(()=>{ notifScan(); }, 5*60*1000);
+try{ document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) notifScan(); }); }catch(_){}
 
 function openExpiredView(){
   closeSheet();
@@ -8801,6 +9183,8 @@ async function cloudOnLogin(session, attempt){
     cloud.bases = {}; cloud._baseParty = {}; (Array.isArray(bs)?bs:[]).forEach(b=>{ cloud.bases[b.id]=b.name; cloud._baseParty[b.id]=b.party_id||null; });
     cloud.ready = true; cloud.basesLoaded = true;
     cloud.membersLoaded = true;   // сервер ОТВЕТИЛ: членство известно (в т.ч. «членства нет» = [])
+    // ПОСЛЕ cloud.bases: разбор членств называет базы по именам, а до этой строки их ещё нет.
+    try{ notifMemberScan(); }catch(_){}
     cloud._basesLoading = false; clearTimeout(cloud._basesRetryT);   // цикл загрузки баз завершён успехом
     hideLoginGate();                           // успешный вход — прячем полноэкранный гейт
     const reloaded = await cloudAutoLink();
@@ -10257,6 +10641,10 @@ async function cloudRefreshMyMembership(){
     if(Array.isArray(orgs)) cloud.orgRoles=orgs;
     if(Array.isArray(orgMgrs)){ cloud.orgManagers=orgMgrs; cloud.orgManagersLoaded=true; }
     if(Array.isArray(bs)){ cloud.bases={}; cloud._baseParty={}; bs.forEach(b=>{ cloud.bases[b.id]=b.name; cloud._baseParty[b.id]=b.party_id||null; }); }
+    /* Права поменялись, пока человек сидел в приложении: пересменка, смена роли, выдача или
+       отзыв доступа к базе. Раньше об этом узнавали случайно — по исчезнувшей кнопке. Здесь
+       (и при входе) — единственные два места, где cloud.members обновляется. */
+    try{ notifMemberScan(); }catch(_){}
     // если появились новые видимые базы (выдали орг-роль/добавили в базу пока сидел в приложении) — привяжем их,
     // иначе пользователь не увидит новые базы до перезахода (org_roles/base_members без реалтайма).
     if(Array.isArray(bs)){
