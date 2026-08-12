@@ -50,23 +50,48 @@
 
 # Оболочка лежит без расширения (см. scripts/build-site.sh) — тип задаём явно,
 # иначе Pages отдаст её как поток байт и браузер предложит скачать файл.
+#
+# CSP у оболочки появилась 12.08.2026. Раньше её тут не было намеренно — «общий CSP
+# её сломает, это отдельная работа». Работа сделана: политика подобрана под оболочку
+# и проверена на собранном dist в браузере (запуск, все шесть экранов, подгрузка
+# xlsx.js по требованию, скачивание через blob:, регистрация служебного обработчика) —
+# ноль нарушений.
+#
+# Зачем она вообще нужна, если сегодня дыры нет. В оболочке около семисот мест, где
+# в разметку подставляются чужие данные: наименования из накладной постороннего
+# поставщика, заметки и названия баз из общей базы бригады, имена людей. Рядом, в том
+# же localStorage, лежит vahtahoz_sess — с access_token И refresh_token, которые к
+# устройству не привязаны. Одна забытая esc() в одном из семисот мест превращается в
+# «чужой аккаунт со стороннего компьютера до ручного отзыва». CSP — это тот слой,
+# который делает такую ошибку неприятной, а не разрушительной.
+#
+# Почему 'unsafe-inline' обязателен: весь скрипт и все стили встроены в один файл,
+# без сборки. Это осознанная плата: закрыты СТОРОННИЕ адреса, а они и опасны.
+# data: в img-src — иконка ярлыка и иконка уведомления. connect-src: приложение ходит
+# ровно в один внешний адрес, Supabase через свой домен, и по https, и по wss
+# (realtime — отдельная схема, https её НЕ покрывает; забудешь wss — молча умрёт
+# живое обновление у второго телефона).
+# Пути перечислены поимённо, без звёздочки: /vahtahoz* заодно накрыло бы /vahtahoz.apk.
 /vahtahoz
   Content-Type: text/html; charset=utf-8
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://sb.razvedchick.ru wss://sb.razvedchick.ru; worker-src 'self'; manifest-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
 
 /beta/vahtahoz
   Content-Type: text/html; charset=utf-8
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://sb.razvedchick.ru wss://sb.razvedchick.ru; worker-src 'self'; manifest-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
 
 /vahtahoz.html
   Content-Type: text/html; charset=utf-8
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://sb.razvedchick.ru wss://sb.razvedchick.ru; worker-src 'self'; manifest-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
 
 /beta/vahtahoz.html
   Content-Type: text/html; charset=utf-8
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://sb.razvedchick.ru wss://sb.razvedchick.ru; worker-src 'self'; manifest-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
 
 # ── Сайт razvedchick.ru ───────────────────────────────────────────────────────
-# Политика содержимого задаётся ТОЛЬКО страницам сайта, не приложению: у оболочки
-# свой набор встроенных стилей и скриптов, и общий CSP её сломает — это отдельная
-# работа с проверкой на живом телефоне.
-# Здесь же CSP почти ничего не стоит: страницы статические, единственный внешний
+# У страниц сайта политика своя, отдельная от оболочки (см. выше): им не нужен ни
+# wss, ни worker-src, а connect-src у половины страниц вообще пуст.
+# Здесь CSP почти ничего не стоит: страницы статические, единственный внешний
 # адрес — функция приёма заявки. 'unsafe-inline' оставлен осознанно (встроенный
 # стиль и один скрипт на /start), но сторонние домены для скриптов закрыты —
 # именно они и опасны. form-action 'none': ни одна форма никуда не отправляется
