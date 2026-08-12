@@ -2948,7 +2948,12 @@ let stockExpiryFilter = "all"; // all | expired | soon (≤14дн) | exp14 (пр
    Условие ровно то же, что у плитки дашборда и у бейджа на карточке (см. dashSets/stockStatus):
    есть заданный минимум и остаток НЕ БОЛЬШЕ него. */
 let stockLow = false;
-const isLowStock = (s) => inStock(s) && s.minStock!=="" && s.minStock!=null && totalQtyOf(s) <= Number(s.minStock);
+/* Объявлением функции, а не const-стрелкой: stockExpScope и filterChipState стоят в файле ВЫШЕ
+   этого места, и стрелка оставила бы их в мёртвой зоне — на любом вызове до этой строки был бы
+   ReferenceError. Объявление поднимается, порядок в файле перестаёт быть ловушкой. */
+function isLowStock(s){
+  return inStock(s) && s.minStock!=="" && s.minStock!=null && totalQtyOf(s) <= Number(s.minStock);
+}
 
 /* ПОИСК ПО СКЛАДУ — одна реализация на список и на счётчики чипов сроков. Раньше их было две:
    список искал по имени, месту карточки и местам/примечаниям партий, а счётчик на чипе — только
