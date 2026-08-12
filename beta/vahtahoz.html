@@ -4779,6 +4779,11 @@ function _invParseAoa(aoa){
   }
   return { rows };
 }
+/* Ключ имени для описи. От stockNormName отличается тем, что СХЛОПЫВАЕТ пробелы — в том числе
+   неразрывный, который Excel любит подставлять сам. Иначе карточка «Мука␣␣пшеничная в/с»
+   (два пробела — так набирают руками) и строка файла «Мука пшеничная в/с» считались разными
+   товарами: заводилась вторая карточка, а первая шла под обнуление как «которой нет в файле». */
+const _invNameKey = (s)=> String(s==null?"":s).replace(/[\s ]+/g," ").trim().toLowerCase().replace(/ё/g,"е");
 /* Поиск карточки под строку описи. Строго по имени; тип — как в приходе: сперва свой раздел,
    потом остальные разрешённые роли (тот же товар, заведённый когда-то не в тот раздел, лучше
    найти, чем задвоить). В своём разделе несовпадение единицы и двойник — ОТКАЗ строки с
@@ -4886,9 +4891,30 @@ function _invZeroCandidates(plan){
   return (state.stock||[]).filter(s=> s && plan.types.has(s.type) && allowed.includes(s.type)
                                    && !inFile.has(s.id) && !hasBatches(s) && totalQtyOf(s) > 0);
 }
+/* ОТПЕЧАТОК ПЛАНА — ровно те числа, которые человеку показали в диалоге. Перед самой записью
+   план пересчитывается заново, и отпечатки сверяются: разошлись — не пишем НИЧЕГО.
+   Зачем это нужно. Между «Применить опись» и записью стоят два await (два листа подтверждения),
+   а за это время склад успевает измениться: realtime дёргает cloudPull на любую правку напарника,
+   и state.stock пересоздаётся целиком. Поймано вживую трижды: (1) напарник выдал 5 кг, пока висел
+   лист, — применялась старая дельта, остаток уходил в минус; (2) pull приносил четыре новые
+   позиции — под галочку «обнулить отсутствующих» попадали и они, вместо обещанной одной позиции
+   обнулялось пять; (3) после pull объекты карточек в плане становились «сиротами» — склад не
+   менялся вовсе, а записи в журнал уходили, и расхождение уезжало в облако.
+   В отпечаток входит и список обнуления: без него именно случай (2) проходил как «свежий план». */
+function _invFingerprint(plan, zeroList){
+  const one = (x)=> `${x.product ? x.product.id : "+"+_invNameKey(x.name)}:${x.was}>${x.now}`;
+  return JSON.stringify({
+    add:  plan.add.map(x=> `${_invNameKey(x.name)}|${x.type}|${x.unit}|${x.now}`).sort(),
+    up:   plan.up.map(one).sort(),
+    down: plan.down.map(one).sort(),
+    same: plan.same.length, empty: plan.empty.length, bad: plan.bad.length,
+    zero: (zeroList||[]).map(s=> `${s.id}:${totalQtyOf(s)}`).sort(),
+  });
+}
 /* ПРИМЕНЕНИЕ. Единственное место, которое что-то меняет, и зовётся оно только из applyInventory —
-   после предпросмотра и подтверждения. Разница «факт − учёт» проводится обычным движением:
-   плюс → «Поступление», минус → «Списание», обе записи с одной пометкой описи. */
+   после предпросмотра, подтверждения и сверки отпечатка, ОДНИМ синхронным куском без await внутри.
+   Разница «факт − учёт» проводится обычным движением: плюс → «Поступление», минус → «Списание»,
+   обе записи с одной пометкой описи. */
 function _invApply(plan, zeroList){
   const day = todayStr();
   const human = day.split("-").reverse().join(".");
@@ -4927,8 +4953,15 @@ function _invApply(plan, zeroList){
     // место и срок из описи ДОПОЛНЯЮТ карточку, но не затирают: опись считает штуки, а не сроки
     const loc = cleanCatName(e.row && e.row.location); if(loc && !p.location) p.location = loc;
     const exp = _impParseDate(e.row && e.row.expiry);  if(exp && !p.expiry)  p.expiry = exp;
-    move(p, e.type, e.delta);
-    if(e.delta > 0) raised++; else lowered++;
+    /* ДЕЛЬТА СЧИТАЕТСЯ ОТ ЖИВОЙ КАРТОЧКИ, а не берётся из плана. Опись ЗАДАЁТ остаток, значит
+       после записи он обязан равняться ровно `now` — при любом раскладе. Это последний рубеж
+       против «применилось дважды»: план говорил «20 → 5», два нажатия подряд давали −15 и ещё
+       −15, остаток −10 и две пачки в журнале. Теперь второй проход видит на карточке уже 5,
+       считает дельту 0 и не пишет ничего. Отрицательным остаток стать не может по построению. */
+    const delta = roundQty(e.now - totalQtyOf(p));
+    if(!delta) continue;
+    move(p, e.type, delta);
+    if(delta > 0) raised++; else lowered++;
   }
   for(const s of (zeroList||[])){ move(s, s.type, -totalQtyOf(s)); zeroed++; }
   /* Потолок журнала — тот же общий помощник и тот же предел, что у импорта накладной:
@@ -4992,6 +5025,11 @@ const _invLine = (e)=> `<div class="text-xs opacity-80 truncate">• ${esc(e.nam
 function _invPreviewHtml(plan){
   const zeroCand = _invZeroCandidates(plan);
   const touched = plan.add.length + plan.up.length + plan.down.length;
+  /* Запоминаем отпечаток ИМЕННО ТЕХ чисел, которые сейчас окажутся на экране. По нему
+     applyInventory проверит, что человек нажимает «Применить» под тем, что прочитал: между
+     разбором файла и нажатием мог прийти pull, и тогда предпросмотр обещает «обнулится 1»,
+     а обнулилось бы 6. Перерисовка (render после pull) обновит и числа, и отпечаток разом. */
+  plan.shownFp = _invFingerprint(plan, zeroCand);
   const list = (title, arr, render, max)=> !arr.length ? "" : `
     <div class="mt-2"><div class="text-sm font-bold">${esc(title)}: ${arr.length}</div>
     ${arr.slice(0,max||6).map(render).join("")}
@@ -5008,7 +5046,7 @@ function _invPreviewHtml(plan){
     ${zeroCand.length?`<label class="flex items-start gap-2 text-xs mt-2"><input type="checkbox" id="invZero"><span>Обнулить те, которых нет в файле (${zeroCand.length} поз.) — только в разделах из этого файла. Остаток спишется в ноль, карточки останутся.</span></label>`:""}
     <div class="flex gap-2 mt-3">
       <button class="btn btn-ghost flex-1" onclick="cancelInventory()">Отмена</button>
-      <button class="btn btn-primary flex-1" onclick="applyInventory()" ${touched?"":"disabled"}>Применить опись</button>
+      <button class="btn btn-primary flex-1" id="invApplyBtn" onclick="applyInventory()" ${touched?"":"disabled"}>Применить опись</button>
     </div>
     ${touched?"":`<div class="text-xs opacity-70 mt-2">Менять нечего: ни одной строки с расхождением.</div>`}`;
 }
@@ -5048,64 +5086,99 @@ async function importInventoryExcel(ev){
   _invSay(_invPreviewHtml(plan));
 }
 function cancelInventory(){ _invPending = null; _invSay(""); toast("Опись отменена — ничего не изменилось"); }
+/* Опись уже применяется — второй вход запрещён. Между нажатием и записью стоят два листа
+   подтверждения (два await), и всё это время кнопка оставалась живой: два нажатия подряд —
+   дребезг тача на морозе, «не сработало, нажму ещё раз» — давали ДВЕ пачки в журнале и остаток
+   ниже нуля. Флага мало (он снимается в finally), поэтому кнопку ещё и гасим в разметке. */
+let _invBusy = false;
 /* ШАГ 2 — подтверждение и применение. */
 async function applyInventory(){
+  if(_invBusy){ toast("Опись уже применяется — подождите"); return; }
   const p = _invPending;
   if(!p){ toast("Сначала выберите файл описи"); return; }
   if(!canInventoryStock()){ toast("Опись доступна начальнику участка и выше"); return; }
-  const zeroOn = !!(document.getElementById("invZero") || {}).checked;
-  /* Склад мог измениться, пока человек читал предпросмотр: пришёл pull из облака, кладовщик
-     провёл выдачу с другого телефона. Пересобираем план по тем же строкам файла и, если числа
-     разошлись, показываем НОВЫЙ предпросмотр вместо того, чтобы молча применить старый. */
-  const fresh = _invPlan(p.rows);
-  fresh.file = p.file;
-  const cnt = (x)=> `${x.add.length}/${x.up.length}/${x.down.length}/${x.bad.length}`;
-  const stale = cnt(fresh)!==cnt(p)
-    || fresh.up.concat(fresh.down).some((e,i)=>{ const o=p.up.concat(p.down)[i]; return !o || o.was!==e.was; });
-  _invPending = fresh;
-  if(stale){
-    _invSay(_invPreviewHtml(fresh));
-    toast("Склад изменился — проверьте числа ещё раз");
-    return;
-  }
-  const zeroList = zeroOn ? _invZeroCandidates(fresh) : [];
-  const day = todayStr().split("-").reverse().join(".");
-  const go = await confirmSheet(
-    `Файл: ${fresh.file}\n\n`
-    + `Новых позиций: ${fresh.add.length}\n`
-    + `Остаток вырастет: ${fresh.up.length}\n`
-    + `Остаток уменьшится: ${fresh.down.length}\n`
-    + `Совпало с учётом: ${fresh.same.length}\n`
-    + `Строк без отметки (не проверяли): ${fresh.empty.length}\n`
-    + `Не принято строк: ${fresh.bad.length}\n\n`
-    + `Позиции, которых в файле нет, ${zeroOn ? "будут ОБНУЛЕНЫ (см. следующий шаг)" : "останутся как есть"}.\n`
-    + `Записи уйдут в журнал с пометкой «Опись ${day}» — по ней их можно найти и отменить.`,
-    { yes:"Применить опись", no:"Отмена", title:"Подтверждение описи" }
-  );
-  if(!go) return;
-  if(zeroList.length){
-    const sum = zeroList.reduce((s,x)=> s + totalQtyOf(x), 0);
-    const names = zeroList.slice(0,6).map(s=>`• ${s.name} — ${fmtQty(totalQtyOf(s))} ${s.unit||""}`).join("\n");
-    const ok2 = await confirmSheet(
-      `Списать в ноль ${zeroList.length} поз., которых нет в файле (всего ${fmtQty(sum)} ед.)?\n\n`
-      + `${names}${zeroList.length>6?`\n…и ещё ${zeroList.length-6}`:""}\n\n`
-      + `Отсутствие строки в файле обычно значит «не считали», а не «пусто». Обнуляйте, только если опись СПЛОШНАЯ — пересчитан весь раздел целиком.\n`
-      + `Позиции останутся в каталоге. Отменить одной кнопкой нельзя — только разбором журнала.`,
-      { yes:"Да, обнулить", no:"Не обнулять", title:"Обнуление отсутствующих", danger:true }
+  _invBusy = true;
+  const btn = document.getElementById("invApplyBtn");
+  if(btn) btn.disabled = true;
+  try{
+    const zeroOn = !!(document.getElementById("invZero") || {}).checked;
+    /* Числа для диалога считаем ЗДЕСЬ И СЕЙЧАС, а не берём из предпросмотра на экране: между
+       разбором файла и нажатием мог пройти pull. То, что человек прочтёт в листе подтверждения,
+       всегда соответствует складу на момент нажатия. */
+    const shown = _invPlan(p.rows);
+    shown.file = p.file;
+    const shownAll = _invZeroCandidates(shown);
+    /* СНАЧАЛА сверяем с тем, что человек ВИДЕЛ на экране. Если склад успел измениться между
+       разбором файла и нажатием (pull, выдача с другого телефона), диалог не показываем вовсе:
+       обновляем разбор и просим посмотреть заново. Иначе выходило самое неприятное — предпросмотр
+       обещал обнулить одну позицию, а под нож шло шесть, и «подтверждение» человек давал не тому,
+       что читал. */
+    if(p.shownFp && _invFingerprint(shown, shownAll) !== p.shownFp){
+      _invPending = shown;
+      _invSay(_invPreviewHtml(shown));
+      toast("Склад изменился — проверьте числа и нажмите снова");
+      return;
+    }
+    const shownZero = zeroOn ? shownAll : [];
+    const fp = _invFingerprint(shown, shownZero);
+    _invPending = shown;
+    const nothing = !(shown.add.length || shown.up.length || shown.down.length || shownZero.length);
+    if(nothing){ _invSay(_invPreviewHtml(shown)); toast("Менять нечего: расхождений нет"); return; }
+    const day = todayStr().split("-").reverse().join(".");
+    const go = await confirmSheet(
+      `Файл: ${shown.file}\n\n`
+      + `Новых позиций: ${shown.add.length}\n`
+      + `Остаток вырастет: ${shown.up.length}\n`
+      + `Остаток уменьшится: ${shown.down.length}\n`
+      + `Совпало с учётом: ${shown.same.length}\n`
+      + `Строк без отметки (не проверяли): ${shown.empty.length}\n`
+      + `Не принято строк: ${shown.bad.length}\n\n`
+      + `Позиции, которых в файле нет, ${zeroOn ? `будут ОБНУЛЕНЫ — ${shownZero.length} поз. (см. следующий шаг)` : "останутся как есть"}.\n`
+      + `Записи уйдут в журнал с пометкой «Опись ${day}» — по ней их можно найти и отменить.`,
+      { yes:"Применить опись", no:"Отмена", title:"Подтверждение описи" }
     );
-    if(!ok2) return;
+    if(!go) return;
+    if(shownZero.length){
+      const sum = shownZero.reduce((s,x)=> s + totalQtyOf(x), 0);
+      const names = shownZero.slice(0,6).map(s=>`• ${s.name} — ${fmtQty(totalQtyOf(s))} ${s.unit||""}`).join("\n");
+      const ok2 = await confirmSheet(
+        `Списать в ноль ${shownZero.length} поз., которых нет в файле (всего ${fmtQty(sum)} ед.)?\n\n`
+        + `${names}${shownZero.length>6?`\n…и ещё ${shownZero.length-6}`:""}\n\n`
+        + `Отсутствие строки в файле обычно значит «не считали», а не «пусто». Обнуляйте, только если опись СПЛОШНАЯ — пересчитан весь раздел целиком.\n`
+        + `Позиции останутся в каталоге. Отменить одной кнопкой нельзя — только разбором журнала.`,
+        { yes:"Да, обнулить", no:"Не обнулять", title:"Обнуление отсутствующих", danger:true }
+      );
+      if(!ok2) return;
+    }
+    /* ЗАПИСЬ — ОДНИМ СИНХРОННЫМ КУСКОМ, БЕЗ AWAIT ВНУТРИ. Пересчитываем план по тем же строкам
+       файла (заодно берём ЖИВЫЕ объекты карточек — прежние могли осиротеть после pull) и сверяем
+       отпечаток с тем, что человек подтвердил. Разошлось хоть в одном числе — не пишем ничего и
+       показываем новый разбор: пусть решает заново, глядя на правду. */
+    const fresh = _invPlan(p.rows);
+    fresh.file = p.file;
+    const zeroList = zeroOn ? _invZeroCandidates(fresh) : [];
+    if(_invFingerprint(fresh, zeroList) !== fp){
+      _invPending = fresh;
+      _invSay(_invPreviewHtml(fresh));
+      toast("Склад изменился, пока вы подтверждали — ничего не записано");
+      return;
+    }
+    // план гасим ДО применения: _invApply перерисовывает экран, и живой _invPending вернул бы
+    // на него предпросмотр уже применённой описи — как будто её надо применить ещё раз
+    _invPending = null;
+    const r = _invApply(fresh, zeroList);
+    const parts = [`новых ${r.added}`, `больше ${r.raised}`, `меньше ${r.lowered}`];
+    if(r.zeroed) parts.push(`обнулено ${r.zeroed}`);
+    toast(`Опись применена: ${parts.join(" · ")}`);
+    // тост живёт 1.8 с — метку пачки оставляем на экране: по ней ищут записи в журнале
+    _invSay(`<div class="text-sm">Опись применена. Метка в журнале: <b>${esc(r.note)}</b>.</div>
+      <div class="text-xs opacity-70 mt-1">Новых позиций: ${r.added} · стало больше: ${r.raised} · стало меньше: ${r.lowered}${r.zeroed?` · обнулено: ${r.zeroed}`:""}. Не принято строк: ${fresh.bad.length}.</div>
+      ${r.jrTrimmed?`<div class="text-xs opacity-70 mt-1">В журнале накопилось больше ${JOURNAL_LOCAL_CAP} записей — ${r.jrTrimmed} самых старых убрано с телефона. Они уже в общей базе и вернутся при синхронизации.</div>`:""}`);
+  } finally {
+    _invBusy = false;
+    const b2 = document.getElementById("invApplyBtn");
+    if(b2) b2.disabled = false;
   }
-  // план гасим ДО применения: _invApply перерисовывает экран, и живой _invPending вернул бы
-  // на него предпросмотр уже применённой описи — как будто её надо применить ещё раз
-  _invPending = null;
-  const r = _invApply(fresh, zeroList);
-  const parts = [`новых ${r.added}`, `больше ${r.raised}`, `меньше ${r.lowered}`];
-  if(r.zeroed) parts.push(`обнулено ${r.zeroed}`);
-  toast(`Опись применена: ${parts.join(" · ")}`);
-  // тост живёт 1.8 с — метку пачки оставляем на экране: по ней ищут записи в журнале
-  _invSay(`<div class="text-sm">Опись применена. Метка в журнале: <b>${esc(r.note)}</b>.</div>
-    <div class="text-xs opacity-70 mt-1">Новых позиций: ${r.added} · стало больше: ${r.raised} · стало меньше: ${r.lowered}${r.zeroed?` · обнулено: ${r.zeroed}`:""}. Не принято строк: ${fresh.bad.length}.</div>
-    ${r.jrTrimmed?`<div class="text-xs opacity-70 mt-1">В журнале накопилось больше ${JOURNAL_LOCAL_CAP} записей — ${r.jrTrimmed} самых старых убрано с телефона. Они уже в общей базе и вернутся при синхронизации.</div>`:""}`);
 }
 
 function orderReceive(opId){
