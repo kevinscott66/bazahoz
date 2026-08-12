@@ -6821,7 +6821,7 @@ function renderFiles(){
     <div class="flex items-center gap-2">
       <!-- min-width:44 — тап-цель. Высоту 52 даёт .btn, а ширину задаёт содержимое: у одного
            знака «‹» с полями 12+12 выходило 30px, и попасть по кнопке большим пальцем в рукавице
-           нельзя. Тот же промах есть у кнопки «Назад» в «Уведомлениях» (см. отчёт). -->
+           нельзя. То же самое сделано у кнопки «Назад» в «Уведомлениях». -->
       <button class="btn btn-ghost" style="padding:8px 12px;min-width:44px;flex:0 0 auto" onclick="closeFiles()" aria-label="Назад">‹</button>
       <div class="font-bold text-xl" style="flex:1;min-width:0">Файлы</div>
     </div>
@@ -8501,7 +8501,10 @@ function renderNotifs(){
     </button>`;
   v.innerHTML = `
     <div class="flex items-center gap-2">
-      <button class="btn btn-ghost" style="padding:8px 12px;flex:0 0 auto" onclick="closeNotifs()" aria-label="Назад">‹</button>
+      <!-- min-width:44 — тап-цель, ровно как у «Назад» в «Файлах». Высоту 52 даёт .btn, а ширину
+           задаёт содержимое: у одного знака «‹» с полями 12+12 выходило 30px, и попасть по кнопке
+           большим пальцем в рукавице на морозе нельзя. -->
+      <button class="btn btn-ghost" style="padding:8px 12px;min-width:44px;flex:0 0 auto" onclick="closeNotifs()" aria-label="Назад">‹</button>
       <div class="font-bold text-xl" style="flex:1;min-width:0">Уведомления</div>
     </div>
     ${list.length
