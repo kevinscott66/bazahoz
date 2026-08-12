@@ -2492,10 +2492,16 @@ function dashSets(){
 function renderDashboard(){
   const v = document.querySelector('[data-view="dashboard"]');
   const { today, todayTasks, overdueTasks, expiringSoon, lowStock } = dashSets();
-  // роль: у начальника (нет права на задачи) дашборд складской — задачные блоки скрываем
-  const _m = activeMember();
+  /* роль: у начальника (нет права на задачи) дашборд складской — задачные блоки скрываем.
+     Кнопка «＋ Задача» отдельной проверкой НЕ закрывается, и это не упущение. Прежняя проверка
+     `!activeMember() || activeMember().can_edit_tasks` была мёртвой в обе стороны: триггер в БД
+     принудительно ставит can_edit_tasks := true всем базовым ролям (false остаётся только у
+     бухгалтерии, а её отсекает isRestrictedUser выше), а сами задачи в облаке персональные —
+     RLS у них owner_id = auth.uid(), к базе они отношения не имеют. Плюс на самом экране
+     «Задачи» такая же кнопка «＋ Новая задача» ничем не закрыта, то есть «запрет» на дашборде
+     обходился одним тапом по нижней панели. Убрано целиком, чтобы следующий не потратил час на
+     выяснение, что эта проверка значит. */
   const showTasks = !isRestrictedUser();
-  const canEditTasks = !_m || _m.can_edit_tasks;
 
   const showOnboarding = !state.stock.length && !(state.tasks||[]).length && !localStorage.getItem(NS+"vahtahoz_onboarded");
   v.innerHTML = `
@@ -2533,7 +2539,7 @@ function renderDashboard(){
       </button>`:""}
     </div>
 
-    ${canEditTasks?`<button class="btn btn-primary w-full mt-2" onclick="openTaskEdit()">＋ Задача</button>`:""}
+    ${showTasks?`<button class="btn btn-primary w-full mt-2" onclick="openTaskEdit()">＋ Задача</button>`:""}
     <div class="grid grid-cols-3 gap-2 mt-2">
       ${visibleStockTypes().map(t=>`<button class="btn ${t.key==='product'?'btn-success':(t.key==='household'?'btn-warn':'btn-ghost')}" onclick="openStockEdit(null,'${t.key}')">＋ ${t.short}</button>`).join("")}
     </div>
@@ -3687,7 +3693,14 @@ function canReconcileStock(){
   return canManageBase();
 }
 function runStockJournalReconcile(allowDown, allowMerge){
-  if(!canEditStock()) return { merged:0, relinked:0, created:0, fixed:0, up:[], down:[], skippedBatched:0, incomplete:false };
+  /* ПРАВО — ТО ЖЕ, ЧТО У КНОПКИ. Кнопка «Сверка склада» закрыта canReconcileStock (нач. участка
+     и выше на общей базе), а сама функция проверяла лишь canEditStock — то есть повару или
+     хозрабочему хватило бы одного вызова из консоли, чтобы слить карточки и переписать остатки
+     всей бригады. Ради этого рубеж и вводили (см. комментарий у canReconcileStock).
+     Автозапуск при входе от этого не меняется: runAutoStockJournalReconcile выходит раньше, если
+     journalLooksIncomplete(), а тот возвращает true для ЛЮБОЙ облачной базы; на локальной же базе
+     canReconcileStock() и canEditStock() совпадают по определению. */
+  if(!canReconcileStock()) return { merged:0, relinked:0, created:0, fixed:0, up:[], down:[], skippedBatched:0, incomplete:false };
   const incomplete = journalLooksIncomplete();
   // merge дублей — только по явной «Сверке» (allowMerge). Авто/boot не сливает карточки.
   const merged = allowMerge ? mergeDuplicateStockByName() : 0;
