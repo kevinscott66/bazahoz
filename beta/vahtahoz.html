@@ -4816,6 +4816,58 @@ function _invFindStock(pool, name, type, unitKey){
   }
   return { item:null };
 }
+/* КОЛИЧЕСТВО В ОПИСИ разбирается СТРОЖЕ, чем в приходе, и это не придирчивость. В приходе
+   ошибка разбора добавляет не то число к остатку — видно по журналу. В описи она ЗАМЕЩАЕТ
+   остаток, и «0» вместо непонятного значения означает списание всей позиции в ноль. Поэтому
+   всё, что нельзя прочесть однозначно, — отказ строки с внятной причиной; человек поправит
+   файл и загрузит снова, это дешевле потерянного склада.
+   Что ловим (всё воспроизведено на живом файле):
+   • «нет», «—», «ок», «20 кг» — parseNum молча отдаёт 0, то есть «списать всё»;
+   • одинокая «.» или «,» — тоже 0, а прежний сторож их пропускал;
+   • «1,250» — в приходе это осознанный компромисс (0,532 кг мяса важнее тысяч), но здесь
+     «1250 шт» и «1,25 шт» — это разница в тысячу, и угадывать нельзя. Три знака после
+     запятой считаем однозначными только при нуле в целой части («0,532» — это граммы);
+   • «1.234.567» — прежде превращалось в 1234567;
+   • отрицательное — отдельным сообщением, чтобы человек понял, что дело в минусе;
+   • нелепо большое (больше 10 млн) — обычно съехавший столбец, а не сто миллионов банок. */
+const _INV_QTY_MAX = 10000000;
+function _invParseFact(v){
+  if(typeof v === "number"){
+    if(!Number.isFinite(v)) return { why:"количество не число" };
+    if(v < 0) return { why:"количество меньше нуля" };
+    if(v > _INV_QTY_MAX) return { why:`неправдоподобно большое количество (${fmtQty(v)})` };
+    return { qty: roundQty(v) };
+  }
+  const raw = String(v==null ? "" : v).trim();
+  const s = raw.replace(/[\s ]/g, "");            // «1 250» → «1250»: пробел как разделитель тысяч
+  if(/^-/.test(s)) return { why:"количество меньше нуля" };
+  const m = /^\+?(\d+)(?:([.,])(\d+))?$/.exec(s);
+  if(!m) return { why:`количество не число: «${raw.slice(0,16)}»` };
+  const whole = m[1], frac = m[3] || "";
+  if(frac.length === 3 && whole !== "0"){
+    return { why:`неоднозначное число «${raw.slice(0,16)}»: напишите ${whole}${frac} или ${whole}.${frac.slice(0,2)}` };
+  }
+  const n = Number(whole + (frac ? "." + frac : ""));
+  if(!Number.isFinite(n)) return { why:`количество не число: «${raw.slice(0,16)}»` };
+  if(n > _INV_QTY_MAX) return { why:`неправдоподобно большое количество (${raw.slice(0,16)})` };
+  return { qty: roundQty(n) };
+}
+/* Итоги по файлу — единственный способ заметить систематическую ошибку на двух тысячах строк:
+   съехавший столбец, лишний ноль, чужой файл. Счётчики строк её не показывают («2000 строк,
+   всё уменьшится» выглядит буднично), а «было 6000 кг → станет 60 кг» бросается в глаза. */
+function _invTotalsText(plan){
+  const by = new Map();   // ед. → {was, now}
+  for(const e of plan.add.concat(plan.up, plan.down, plan.same)){
+    const u = e.unit || "шт";
+    const t = by.get(u) || { was:0, now:0 };
+    t.was += Number(e.was||0); t.now += Number(e.now||0);
+    by.set(u, t);
+  }
+  if(!by.size) return "";
+  const parts = [...by.entries()].sort((a,b)=> b[1].now - a[1].now).slice(0,4)
+    .map(([u,t])=> `${u}: было ${fmtQty(t.was)} → станет ${fmtQty(t.now)}`);
+  return `Итого по посчитанным строкам —\n${parts.join("\n")}${by.size>4?`\n…и ещё ${by.size-4} ед. изм.`:""}\n`;
+}
 /* РАЗБОР БЕЗ ЕДИНОЙ ПРАВКИ. Возвращает план: что добавится, что вырастет, что уменьшится, что
    совпало и что не принято. Порядок строк важен так же, как в _impPreflight: строка, заводящая
    новую позицию, должна быть видна следующим строкам того же файла — поэтому в pool кладётся
@@ -4860,13 +4912,9 @@ function _invPlan(rows){
       continue;
     }
     if(rawU && u == null){ bad(`непонятная единица «${rawU.slice(0,16)}»`); continue; }
-    /* parseNum на любом мусоре («нет», «—», «ок») честно отдаёт 0, а ноль здесь означает
-       «пусто на полке» — то есть списание в ноль. Поэтому сначала смотрим, число ли это. */
-    if(typeof row.qty !== "number" && !/^[+-]?[\d\s .,]+$/.test(rawQty)){
-      bad(`количество не число: «${rawQty.slice(0,16)}»`); continue;
-    }
-    const fact = roundQty(parseNum(row.qty));
-    if(!(fact >= 0)){ bad("количество меньше нуля"); continue; }
+    const q = _invParseFact(row.qty);
+    if(q.why){ bad(q.why); continue; }
+    const fact = q.qty;
     const found = _invFindStock(pool, name, type, u ? _impUnitKey(u) : null);
     if(found.why){ bad(found.why); continue; }
     const product = found.item;
@@ -5062,6 +5110,7 @@ function _invPreviewHtml(plan){
     ${list("Станет больше", plan.up, _invLine)}
     ${list("Станет меньше", plan.down, _invLine)}
     ${plan.same.length?`<div class="text-sm mt-2">Совпало с учётом: ${plan.same.length}</div>`:""}
+    ${_invTotalsText(plan)?`<div class="text-xs opacity-70 mt-2" style="white-space:pre-line">${esc(_invTotalsText(plan).trim())}</div>`:""}
     ${list("Не принято", plan.bad, b=>`<div class="text-xs opacity-80">• ${esc(b.name)}${b.at?` (${esc(b.at)})`:""} — ${esc(b.why)}</div>`, 10)}
     <div class="text-xs opacity-70 mt-2">Позиций склада, которых в файле нет: ${zeroCand.length}. По умолчанию они <b>не меняются</b> — «нет строки» значит «не проверяли».</div>
     ${zeroCand.length?`<label class="flex items-start gap-2 text-xs mt-2"><input type="checkbox" id="invZero"><span>Обнулить те, которых нет в файле (${zeroCand.length} поз.) — только в разделах из этого файла. Остаток спишется в ноль, карточки останутся.</span></label>`:""}
@@ -5154,6 +5203,7 @@ async function applyInventory(){
       + `Совпало с учётом: ${shown.same.length}\n`
       + `Строк без отметки (не проверяли): ${shown.empty.length}\n`
       + `Не принято строк: ${shown.bad.length}\n\n`
+      + _invTotalsText(shown) + `\n`
       + `Позиции, которых в файле нет, ${zeroOn ? `будут ОБНУЛЕНЫ — ${shownZero.length} поз. (см. следующий шаг)` : "останутся как есть"}.\n`
       + `Записи уйдут в журнал с пометкой «Опись ${day}» — по ней их можно найти и отменить.`,
       { yes:"Применить опись", no:"Отмена", title:"Подтверждение описи" }
