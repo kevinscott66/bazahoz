@@ -2687,12 +2687,19 @@ function taskRow(t, opts){
             ${prioBadge} ${dueBadge} ${timeBadge}
             ${t.repeat&&t.repeat!=="Нет"?`<span class="badge badge-gray">${ico("repeat",13)} ${esc(t.repeat)}</span>`:""}
             ${listBadge}
+            <!-- ПЕРЕСТАНОВКА — В СТРОКУ С БЕЙДЖАМИ, А НЕ КОЛОНКОЙ СПРАВА. Колонка отнимала 44 точки
+                 ширины на всю высоту карточки: вместе с чекбоксом на 320 px заголовку оставалось
+                 150 точек, и задача разворачивалась в пять-семь строк. Перестановка — редкое
+                 действие, заголовок — главное. Теперь стрелки прижаты к правому краю нижней строки
+                 (ml-auto) и переносятся вместе с бейджами: заголовок получает всю ширину, а высота
+                 карточки не растёт — строка бейджей и так была. Тап-цели 44×44 сохранены, а
+                 stopPropagation не даёт нажатию открыть форму задачи (как у пунктов чек-листа). -->
+            ${showMove?`<span class="flex gap-1 ml-auto shrink-0">
+              <button class="btn btn-ghost" style="min-width:44px;min-height:44px;padding:0" onclick="event.stopPropagation();moveTask('${t.id}',-1)" aria-label="Поднять выше">${ico("chevUp",18)}</button>
+              <button class="btn btn-ghost" style="min-width:44px;min-height:44px;padding:0" onclick="event.stopPropagation();moveTask('${t.id}',1)" aria-label="Опустить ниже">${ico("chevDown",18)}</button>
+            </span>`:""}
           </div>
         </div>
-        ${showMove?`<div class="flex flex-col gap-1">
-          <button class="btn btn-ghost px-2 py-0" onclick="moveTask('${t.id}',-1)" aria-label="Поднять выше">${ico("chevUp",18)}</button>
-          <button class="btn btn-ghost px-2 py-0" onclick="moveTask('${t.id}',1)" aria-label="Опустить ниже">${ico("chevDown",18)}</button>
-        </div>`:""}
       </div>
       ${listBlock}
     </div>`;
