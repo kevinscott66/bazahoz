@@ -1956,10 +1956,18 @@ function promptSheet(msg, def="", opts={}){
 function chooseSheet(msg, options){
   // options: [{label, value, color?}]
   return new Promise(resolve=>{
+    /* ДВЕ СТРОКИ — ДВЕ РАЗНЫЕ ВЕЩИ. Все вызовы шлют текст вида «о чём речь\nчто спрашиваем»
+       («Молоко ультрапастеризованное 3.2%\nКуда списать?»). Раньше обе строки рисовались одним
+       жирным абзацем (whitespace-pre-line): на 320 название занимало четыре строки, к которым
+       пятой прилипал вопрос — глаз не отделял предмет от вопроса и упирался в стену жирного.
+       Первую строку оставляем заголовком, остальное — обычным текстом под ним. Разбираем по
+       ПЕРВОМУ переводу строки, поэтому вызов без «\n» просто получает один заголовок, как и был. */
+    const _nl = String(msg==null?"":msg).indexOf("\n");
+    const _head = _nl<0 ? String(msg==null?"":msg) : String(msg).slice(0,_nl);
+    const _rest = _nl<0 ? "" : String(msg).slice(_nl+1);
     openSheet(`
-      <!-- whitespace-pre-line: почти все вызовы шлют двустрочный текст («Что делаем?\nПодробность»),
-           а без класса он склеивался в одну строку — как в confirmSheet/promptSheet, там класс был -->
-      <div class="font-bold text-lg mb-3 whitespace-pre-line">${esc(msg)}</div>
+      <div class="font-bold text-lg${_rest?"":" mb-3"}" style="overflow-wrap:anywhere">${esc(_head)}</div>
+      ${_rest?`<div class="text-sm opacity-80 mt-1 mb-3 whitespace-pre-line" style="overflow-wrap:anywhere">${esc(_rest)}</div>`:""}
       <div class="space-y-2">
         ${options.map((o,i)=>`<button class="btn ${o.color||"btn-primary"} w-full" data-choice="${i}">${esc(o.label)}</button>`).join("")}
         <button class="btn btn-ghost w-full" data-choice="-1">Отмена</button>
@@ -5826,7 +5834,8 @@ async function quickAdjust(id, sign){
     kind = "receipt"; label = "Сколько пришло?"; title = "Приход"; opNote = "(быстрая правка)";
   } else {
     const choice = await chooseSheet(
-      `${it.name}\nКуда списать?`,
+      // вопрос первой строкой — он и есть заголовок листа; имя позиции под ним уточняет, о чём речь
+      `Куда списать?\n${it.name}`,
       [
         /* ЦВЕТ ЗДЕСЬ — ЭТО СМЫСЛ, А НЕ ОФОРМЛЕНИЕ. Было наоборот: выдача красная, списание
            оранжевое. Выдача — рутина каждой смены, товар просто ушёл по назначению; списание —
@@ -5857,7 +5866,7 @@ async function quickAdjust(id, sign){
         value: b.id, color: "btn-success"
       }));
       opts.push({ label: "➕ Новая партия (свой срок/место)", value: "__new__", color: "btn-primary" });
-      const choice = await chooseSheet(`${it.name}\nКуда добавить?`, opts);
+      const choice = await chooseSheet(`Куда добавить?\n${it.name}`, opts);
       if(!choice) return;
       if(choice==="__new__"){
         // спросим срок/место (короткая форма через 2 prompts)
@@ -5889,7 +5898,7 @@ async function quickAdjust(id, sign){
         value: b.id, color: kind==="issue"?"btn-warn":"btn-danger"
       }));
       if(!opts.length){ toast("Нет партий с остатком"); return; }
-      const choice = await chooseSheet(`${it.name}\nС какой партии?`, opts);
+      const choice = await chooseSheet(`С какой партии?\n${it.name}`, opts);
       if(!choice) return;
       targetBatch = batches.find(b=>b.id===choice);
     }
@@ -5989,13 +5998,17 @@ function openStockEdit(id, typeDefault){
       </div>
     </div>` : "";
   openSheet(`
-    <div class="flex items-center justify-between gap-2 mb-3">
-      <!-- min-w-0 + truncate: заголовок «Редактировать продукт» рядом с кнопкой «Партия» (shrink-0)
-           не помещался на 360 px и выдавливал ряд за край листа -->
-      <div class="font-bold text-xl min-w-0 truncate">${id?"Редактировать":"Новый"} ${esc(typeMeta(tk).addLabel.toLowerCase())}</div>
-      ${id?`<div class="flex gap-2 shrink-0">
+    <!-- ЗАГОЛОВОК — ОТДЕЛЬНОЙ СТРОКОЙ. Раньше он делил строку с «⇄» и «＋ Партия» (обе shrink-0),
+         и чтобы ряд не выдавливало за край листа, ему поставили min-w-0 + truncate. Ряд встал на
+         место, но заголовок срезало на ВСЕХ телефонных ширинах: «Редактировать хозтовар» читалось
+         как «Редак…» на 320 и «Редактироват…» на 360 и 390 — то есть человек не видел, продукт он
+         правит, хозтовар или инструмент. Кнопки уезжают на свою строку: тогда заголовку достаётся
+         вся ширина листа и резать нечего. -->
+    <div class="mb-3">
+      <div class="font-bold text-xl" style="overflow-wrap:anywhere">${id?"Редактировать":"Новый"} ${esc(typeMeta(tk).addLabel.toLowerCase())}</div>
+      ${id?`<div class="flex gap-2 mt-2">
         ${(!hasBatches(it) && roundQty(it.qty||0)>0)?`<button class="btn btn-ghost" onclick="openMove('${id}','')" aria-label="Перенести на другое место">${ico("move",18)}</button>`:""}
-        <button class="btn btn-warn" onclick="openBatchAdd('${id}')">${ico("plus",18)} Партия</button>
+        <button class="btn btn-warn flex-1" onclick="openBatchAdd('${id}')">${ico("plus",18)} Партия</button>
       </div>`:""}
     </div>
     <div class="space-y-3">
