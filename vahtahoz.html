@@ -1103,19 +1103,36 @@ function openProfilesSheet(){
   if(roleBaseLocked()){ toast("Переключение и управление базами недоступно для вашей роли"); return; }   // начальник заперт на своей базе (+ защита от гонки роли)
   const rows = visibleProfiles().slice().sort(sortBases).map(p=>{
     const isActive = p.id===profiles.activeId;
-    return `<div class="flex items-center gap-2 text-sm py-2 border-b border-gray-800" data-profid="${esc(p.id)}">
-      <span class="flex-1 min-w-0 truncate ${isActive?"font-bold":""}">${isActive?ico("check",16)+" ":""}${esc(p.name)}</span>
-      ${isActive
-        ? `<span class="badge badge-green">текущая</span>`
-        : `<button class="btn btn-primary text-xs" data-profact="switch">Открыть</button>`}
-      <button class="btn btn-ghost text-xs" data-profact="rename" aria-label="Переименовать базу" title="Переименовать">${ico("edit")}</button>
-      ${isActive?"":`<button class="btn btn-ghost text-xs" data-profact="delete" aria-label="Удалить базу" title="Удалить">${ico("trash")}</button>`}
+    /* ИМЯ — ОТДЕЛЬНОЙ СТРОКОЙ, НАД КНОПКАМИ. Раньше строка базы была одним флексом, где «Открыть» +
+       карандаш + корзина забирали всю ширину, а имени доставалось `flex-1 min-w-0 truncate`: на 320
+       под имя оставалось 34 точки — «Кедровая» превращалась в «Ке…», на 390 срезалась и «Северная
+       промбаза №4». Человек выбирал, куда переключиться, не видя названия. Теперь имя занимает всю
+       ширину листа и ПЕРЕНОСИТСЯ (overflow-wrap:anywhere — базы называют одним длинным словом с
+       номером, оно иначе распирало бы лист), а кнопки идут второй строкой.
+       УДАЛЕНИЕ не стало доступнее случайному тапу: корзина осталась того же размера и на прежнем
+       месте — у правого края, ДАЛЬШЕ всех от разросшегося «Открыть», между ними ещё и карандаш плюс
+       дополнительный отступ. Само удаление по-прежнему за двумя подтверждениями (deleteProfile). */
+    return `<div class="text-sm py-2 border-b border-gray-800" data-profid="${esc(p.id)}">
+      <div class="flex items-start gap-2 mb-2">
+        <span class="flex-1 min-w-0 ${isActive?"font-bold":""}" style="overflow-wrap:anywhere">${isActive?ico("check",16)+" ":""}${esc(p.name)}</span>
+        ${isActive?`<span class="badge badge-green">текущая</span>`:""}
+      </div>
+      <div class="flex items-center gap-2">
+        ${isActive?"":`<button class="btn btn-primary text-xs flex-1" data-profact="switch">Открыть</button>`}
+        <span class="flex items-center gap-2 ${isActive?"flex-1":""}" style="${isActive?"":"margin-left:6px"}">
+          <button class="btn btn-ghost text-xs ${isActive?"flex-1":""}" data-profact="rename" aria-label="Переименовать базу" title="Переименовать">${ico("edit")}${isActive?" Переименовать":""}</button>
+          ${isActive?"":`<button class="btn btn-ghost text-xs" data-profact="delete" aria-label="Удалить базу" title="Удалить">${ico("trash")}</button>`}
+        </span>
+      </div>
     </div>`;
   }).join("");
   openSheet(`
     <div class="font-bold text-xl mb-1">${ico("home",20)} Базы</div>
     <div class="text-xs opacity-70 mb-3">У каждой базы свой склад, журналы и места хранения. Переключение сохраняет текущую базу и открывает выбранную.</div>
-    <div class="space-y-1 max-h-72 overflow-y-auto" id="profList">${rows||`<div class="opacity-70 text-sm py-2">Баз пока нет</div>`}</div>
+    <!-- Строка базы стала выше (имя отдельной строкой), и прежние max-h-72 = 288 точек показывали
+         меньше трёх баз. Отдаём списку половину экрана: остальное листу нужно под заголовок и
+         «Новая база / Закрыть», которые должны остаться видны без прокрутки. -->
+    <div class="space-y-1 overflow-y-auto" id="profList" style="max-height:50vh;max-height:50svh">${rows||`<div class="opacity-70 text-sm py-2">Баз пока нет</div>`}</div>
     <div class="flex gap-2 pt-3">
       ${canAddLocalBase()?`<button class="btn btn-primary flex-1" id="profAddBtn">${ico("plus",18)} Новая база</button>`:""}
       <button class="btn btn-ghost ${canAddLocalBase()?"":"flex-1"}" data-close>Закрыть</button>
