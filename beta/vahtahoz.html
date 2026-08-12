@@ -232,7 +232,19 @@
   .uppercase{ text-transform:uppercase; }
   .tracking-wide{ letter-spacing:.025em; }
   .select-none{ user-select:none; -webkit-user-select:none; }
-  .break-words{ overflow-wrap:break-word; word-break:break-word; }
+  /* ДЛИННОЕ СЛОВО РВЁМ ПО СЛОГАМ, А НЕ ПОСЕРЕДИНЕ БУКВ. На 320 «Молоко ультрапастеризованное 3.2%»
+     переносилось как «ультрапастеризованно|е» — читается как опечатка. Замер: контейнер этой
+     карточки 186 точек, слово требует 191, то есть оно и правда не влезает и разорвано будет в
+     любом случае — вопрос лишь в том, будет ли виден дефис. hyphens:auto ставит его по слогам
+     («ультрапастеризо-ванное») везде, где у движка есть русский словарь переносов: iOS Safari и
+     Chrome на Android — а это и есть наши телефоны. Где словаря нет (headless-Chromium, которым
+     снимались замеры), поведение прежнее, хуже не станет.
+     word-break:break-word отсюда убран: это устаревший псевдоним overflow-wrap:anywhere, который
+     разрешает разрыв внутри слова уже при расчёте минимальной ширины и мешал бы переносам по
+     слогам. Проверено обходом всех .break-words на дашборде и складе (57 надписей, 320/360/390):
+     без него ни один разрыв внутри слова не добавился и ни один не исчез — от переполнения держит
+     overflow-wrap:break-word, он и остаётся. */
+  .break-words{ overflow-wrap:break-word; hyphens:auto; -webkit-hyphens:auto; }
   /* видимый фокус только при навигации с клавиатуры — тач/мышь не затрагивает */
   .btn:focus-visible, .chip:focus-visible, .nav-btn:focus-visible, .input:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
   /* косметика: кнопки в 3-колоночной сетке (типы склада) — компактнее, чтобы подписи не обрезались на узком iPhone */
@@ -2592,7 +2604,12 @@ function renderDashboard(){
 
     ${showTasks?`<button class="btn btn-primary w-full mt-2" onclick="openTaskEdit()">＋ Задача</button>`:""}
     <div class="grid grid-cols-3 gap-2 mt-2">
-      ${visibleStockTypes().map(t=>`<button class="btn ${t.key==='product'?'btn-success':(t.key==='household'?'btn-warn':'btn-ghost')}" onclick="openStockEdit(null,'${t.key}')">＋ ${t.short}</button>`).join("")}
+      <!-- Подпись — addLabel (единственное число), как на самом складе. Было t.short: «＋ Инструменты»
+           не помещалось в треть 320-пиксельного экрана и переносилось в две строки, когда соседи
+           стояли в одну — ряд выглядел сломанным. Заодно ушло расхождение: кнопка делает ровно то
+           же, что «＋ Инструмент» на складе, а называлась иначе. И она добавляет ОДНУ позицию,
+           так что единственное число тут и по смыслу вернее. -->
+      ${visibleStockTypes().map(t=>`<button class="btn ${t.key==='product'?'btn-success':(t.key==='household'?'btn-warn':'btn-ghost')}" onclick="openStockEdit(null,'${t.key}')">＋ ${t.addLabel}</button>`).join("")}
     </div>
 
     ${showTasks && todayTasks.length?`
@@ -6031,7 +6048,18 @@ function openStockEdit(id, typeDefault){
 
       <div>
         <div class="text-sm opacity-70 mb-1">Категория</div>
-        <div class="scroll-x flex gap-2">${(state.categories[tk]||[]).map(c=>`<button class="chip ${it.category===c?"active":""}" data-cat="${esc(c)}" onclick="${CHIP_PICK}">${esc(c)}</button>`).join("")}</div>
+        <!-- ПЕРЕНОС ПО СТРОКАМ, А НЕ ЛЕНТА ВБОК. У продуктов пятнадцать категорий, и в scroll-x
+             они выстраивались в одну горизонтальную ленту: чтобы добраться до «Заморозки»
+             (последняя), приходилось мотать её пальцем вбок, не видя, сколько ещё осталось. В
+             листе фильтров тот же выбор давно сделан переносом по строкам (_fRow) — здесь теперь
+             так же. Лист и без того прокручивается по вертикали, это привычнее.
+             Счётчиков, как в фильтрах, не добавляем намеренно: там они говорят, сколько найдётся,
+             а здесь категорию НАЗНАЧАЮТ — число рядом ни на что не влияет и только шумит.
+             white-space:normal обязателен вместе с переносом строк: у .chip стоит nowrap, и без
+             него «Приправы, специи и кондитерские ингредиенты» на 320 px оказывается шире листа —
+             в ленте её можно было домотать вбок, а в переносе она просто обрезалась бы за краем
+             (у .sheet-body overflow-x:hidden). Точно так же сделано у чипов листа фильтров. -->
+        <div class="flex flex-wrap gap-2">${(state.categories[tk]||[]).map(c=>`<button class="chip ${it.category===c?"active":""}" style="white-space:normal;text-align:left;max-width:100%;border-radius:16px" data-cat="${esc(c)}" onclick="${CHIP_PICK}">${esc(c)}</button>`).join("")}</div>
       </div>
       <div>
         <div class="text-sm opacity-70 mb-1">Место хранения${batched?" (из партий)":""}</div>
