@@ -10373,9 +10373,21 @@ async function cloudPull(cid){
       // подпись настроек = только что загруженное → не будем зря пере-выгружать на следующем push
       try{ saveSyncSig(cid,"settings",{ v:_sigOf({ locations:state.locations, categories:state.categories, deletedLocations:state.delLoc, deletedCategories:state.delCat }) }); }catch(_){}
     }
-    cloud._pullSaving = true;
-    try{ saveState(); }finally{ cloud._pullSaving = false; }   // без ложного dirty от saveState
     // снимок = СЫРОЕ облачное (до сверки) + raw stockVals; jr — до relink
+    /* СНИМОК ПОДПИСЕЙ ПИШЕТСЯ ДО СОХРАНЕНИЯ НА ДИСК, А НЕ ПОСЛЕ. Порядок был обратный, и это
+       стоило человеку входа в базу. _stateStorageJSON режет журнал до JOURNAL_STORE_SOFT_CAP
+       записей на вид только тогда, когда _uploadedJrIds() отдаёт непустой снимок подписей: всё,
+       что уже в облаке, второй копией на диске не нужно. У телефона, впервые открывшего облачную
+       базу, снимка нет вовсе — и saveState, стоявший ВЫШЕ saveSyncSig(cid,"jr"), клал на диск
+       JSON.stringify(state) целиком, со всей только что скачанной историей.
+       Замер на синтетике (600 позиций, 3000 записей на вид): без снимка 2 078 596 байт, со
+       снимком 394 095. При типовой квоте телефона в 5 МБ это ровно то «⛔ Память телефона
+       переполнена», которое человек, переведённый на другую базу, получал прямо на входе.
+       Смысл _pullSaving перестановка не меняет: его читает только cloudMaybePush (чтобы
+       saveState из pull не поставил ложную метку «не синхронизировано»), и он по-прежнему
+       обнимает ровно вызов saveState. Хуже при отказе записи снимка тоже не станет: saveSyncSig
+       глотает ошибку внутри себя и сбрасывает кэш, _uploadedJrIds перечитает старое или пустое —
+       то есть ровно прежнее поведение. */
     try{
       saveStockSig(cid, pulledStSig, pulledVals);
       // allowed-снимки = то, что RLS реально отдал этой роли (иначе type-restricted
@@ -10385,6 +10397,8 @@ async function cloudPull(cid){
       saveSyncSig(cid,"jr",pulledJSig);
       saveAllowedSig(cid,"jrAllowed",pulledJSig,_restricted);
     }catch(_){}
+    cloud._pullSaving = true;
+    try{ saveState(); }finally{ cloud._pullSaving = false; }   // без ложного dirty от saveState
     // исправления сверки (только у редакторов) — помечаем к выгрузке, чтобы облако тоже обновилось
     if(_reconChanged){ markDirty(cid); }
     setSyncStatus("synced","Загружено из облака");
