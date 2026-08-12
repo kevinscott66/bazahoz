@@ -32,6 +32,42 @@
 
 begin;
 
+-- ── Предпосылка (добавлена 2026-08-12, round 12) ─────────────────────────────────
+-- Политики ниже отображают ЛЮБОЙ тип вне трёх известных в ключ '__other__', а он
+-- разворачивается в can_see_type(base, NULL). Совпадение этого отображения с прежним
+-- построчным `can_see_type(base_id, type)` держится не «по замыслу», а на КОНКРЕТНОЙ
+-- редакции can_see_type — той, что пришла с 2026-08-01d_handover_round9_fixes.sql
+-- (маркер @round9): там неизвестный тип разбирается ОТДЕЛЬНОЙ веткой, одинаково для
+-- NULL и для 'spare'.
+--
+-- С более старой редакцией (2026-07-08_rls_functions_snapshot.sql) отображение
+-- РАСХОДИТСЯ и политики становятся ШИРЕ прежних. Воспроизведено на стенде:
+--   старый предикат can_see_type(base,'spare') для механика = false
+--   новый  предикат '__other__' → can_see_type(base, NULL)  = true
+--   → delete from stock_items where id='<позиция type=spare>'  →  DELETE 1
+-- То есть механик получал доступ к позициям вне своей типовой границы. Поэтому
+-- применять этот файл на базе без round9 нельзя, и молчать об этом тоже нельзя.
+do $pre$
+begin
+  if not exists (
+    select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public' and p.proname = 'can_see_type'
+       and p.prosrc like '%@round9%'
+  ) then
+    raise exception
+      'Сначала примените 2026-08-01d_handover_round9_fixes.sql: политики этого файла '
+      'отображают неизвестный тип в ключ __other__, и это рассчитано на round9-редакцию '
+      'can_see_type. На более старой редакции политики получаются ШИРЕ прежних '
+      '(механик получает доступ к позициям вне своей типовой границы).';
+  end if;
+  if to_regprocedure('public.is_member(uuid)') is null
+     or to_regprocedure('public.has_perm(uuid,text)') is null then
+    raise exception 'Нет public.is_member(uuid) / has_perm(uuid,text) — сначала примените '
+                    '2026-08-12_core_rls_baseline.sql';
+  end if;
+end
+$pre$;
+
 -- Список баз, где у текущего пользователя есть указанное право.
 create or replace function public.my_perm_bases(p_perm text)
 returns setof uuid
@@ -43,14 +79,27 @@ $$;
 -- Пары «база + вид имущества», доступные текущему пользователю.
 -- '__other__' — это ветка «вид не из трёх известных» (включая NULL): именно так
 -- её разбирает can_see_type, поэтому неизвестные виды сводим к этому ключу.
+--
+-- ИСПРАВЛЕНО 2026-08-12 (round 12): добавлен предфильтр is_member. В первой редакции
+-- проверки причастности к базе здесь не было вовсе — функция объявлена SECURITY DEFINER,
+-- поэтому читала bases МИМО политики bases_select, а can_see_type для человека без
+-- членства возвращает true (ветка coalesce(..., true)). Итог: любой залогиненный получал
+-- через POST /rest/v1/rpc/my_visible_types перечень UUID ВСЕХ баз организации, хотя
+-- select из bases отдавал ему 0 строк. Воспроизведено на стенде.
+-- is_member — надмножество has_perm по любому праву, поэтому политики ниже, которые и так
+-- пересекаются с my_perm_bases, от этого фильтра не сужаются (перебор 96 пар: нарушений 0).
+-- Тело обязано совпадать с редакцией из 2026-08-12_audit_round12_fixes.sql — тогда порядок
+-- применения этих двух файлов не имеет значения.
 create or replace function public.my_visible_types()
 returns table(base_id uuid, t text)
 language sql stable security definer set search_path to 'public'
 as $$
+  -- @round12: предфильтр is_member. Без него функция служила перечислителем всех баз.
   select b.id, k.t
   from public.bases b
-  cross join (values ('product'),('household'),('tool'),('__other__')) as k(t)
-  where public.can_see_type(b.id, case when k.t = '__other__' then null else k.t end);
+  cross join (values ('product'), ('household'), ('tool'), ('__other__')) as k(t)
+  where public.is_member(b.id)
+    and public.can_see_type(b.id, case when k.t = '__other__' then null else k.t end);
 $$;
 
 revoke all on function public.my_perm_bases(text) from public;

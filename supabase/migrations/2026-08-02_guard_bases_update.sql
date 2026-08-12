@@ -12,6 +12,23 @@
 -- (колонка settings). Ограничение по колонкам держит грант
 -- (UPDATE только на settings), а триггер страхует на случай, если грант
 -- когда-нибудь расширят.
+--
+-- ИСПРАВЛЕНО 2026-08-12 (round 12) — ПЕРВАЯ РЕДАКЦИЯ ЭТОГО ТРИГГЕРА НЕ РАБОТАЛА ВООБЩЕ.
+-- В ней первой строкой тела стояло:
+--     IF current_user IN ('service_role','postgres','supabase_admin','supabase_auth_admin')
+--     THEN RETURN NEW; END IF;
+-- Функция объявлена SECURITY DEFINER, а внутри такой функции current_user — это ВЛАДЕЛЕЦ
+-- функции (postgres), а не вызывающий. Условие было истинно ВСЕГДА, триггер немедленно
+-- возвращал NEW и ни одной проверки не делал. Воспроизведено на локальном PG16: после
+-- выдачи authenticated колоночного гранта на name/party_id хозрабочий успешно выполнил
+-- и переименование базы, и перенос её в другой отряд (оба запроса — UPDATE 1).
+-- Дыры на проде при этом не было: имя и отряд держал колоночный грант из
+-- 2026-06-19_profiles_column_grants.sql. Но обещанного ВТОРОГО рубежа не существовало.
+--
+-- Признак вызывающего внутри SECURITY DEFINER — только auth.uid() и is_backend_role().
+-- Ровно так это сделано в handover_shift и stock_qty_restore. Тело обязано совпадать с
+-- редакцией из 2026-08-12_audit_round12_fixes.sql — тогда порядок применения этих двух
+-- файлов не имеет значения.
 
 create or replace function public.guard_bases_update()
 returns trigger
@@ -20,8 +37,11 @@ security definer
 set search_path to 'public'
 as $function$
 BEGIN
-  -- Служебные роли (edge-функции, миграции) не трогаем: у них нет auth.uid().
-  IF current_user IN ('service_role','postgres','supabase_admin','supabase_auth_admin') THEN
+  -- @round12 (маркер редакции: по нему видно, что дыра с определением роли закрыта)
+
+  -- Служебные пути (Edge Function под service_role, миграции из SQL Editor, pg_cron):
+  -- у них нет auth.uid(), и роль подтверждается позитивным признаком.
+  IF auth.uid() IS NULL AND coalesce(public.is_backend_role(), false) THEN
     RETURN NEW;
   END IF;
   -- Политика bases_update пускает сюда любого с edit_stock — это нужно ради синка
@@ -39,6 +59,9 @@ BEGIN
   END IF;
   RETURN NEW;
 END $function$;
+
+-- Триггерную функцию не должен вызывать никто, кроме самого триггера (round 12).
+revoke all on function public.guard_bases_update() from public, anon, authenticated;
 
 drop trigger if exists guard_bases_update on public.bases;
 create trigger guard_bases_update
