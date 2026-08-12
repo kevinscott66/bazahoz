@@ -625,7 +625,8 @@ function _trimJournalKeepPending(arr, limit, uploaded, kind){
    записи. Иначе при провале всех уровней на диске оставался ПОЛНЫЙ журнал (от прошлого
    успешного сохранения), а в памяти — усечённый, и аварийный экспорт, который тут же
    предлагает _quotaBlock(), отдавал бы неполный файл. */
-function _saveStateTrimmed(){
+function _saveStateTrimmed(failedBytes){
+  if(!(failedBytes > 0)) failedBytes = Infinity;   // длину отказавшего снимка не узнали — пробуем все ступени
   const uploaded = _uploadedJrIds();
   const cut = (logLimit, jrLimit) => {
     const j = { ...(state.journals || {}) };
@@ -639,21 +640,67 @@ function _saveStateTrimmed(){
     return { ...state, log: lg, journals: j, journalsTrunc: !!(state.journalsTrunc || dropped) };
   };
   const commit = (snap) => { state.log = snap.log; state.journals = snap.journals; state.journalsTrunc = snap.journalsTrunc; _quotaBlocked=false; };
-  // Уровень 1: лог до 200, журналы до 2000 (архив есть в облаке при синке; новые — в начале)
-  const lvl1 = cut(200, 2000);
-  try{ localStorage.setItem(STORE_KEY, JSON.stringify(lvl1)); commit(lvl1);
-       try{ toast("Память телефона заполнена — старые записи журнала удалены"); }catch(_){}
-       return; }catch(_){}
-  // Уровень 2: журналы ЖЁСТКО до 500, лог почти полностью — только бы сохранить текущие остатки
-  const lvl2 = cut(50, 500);
-  try{ localStorage.setItem(STORE_KEY, JSON.stringify(lvl2)); commit(lvl2);
-       try{ toast("Память почти заполнена — часть старых записей удалена. Сделайте экспорт"); }catch(_){}
-       return; }catch(e3){
-    // Последняя операция НЕ легла на диск → потеряется при перезагрузке. НЕ молчим —
-    // блокирующее предупреждение + экспорт. state остался ПОЛНЫМ: экспорт отдаст всё.
-    console.error("saveState escalated failure:", e3);
-    _quotaBlock();
+  /* СТУПЕНЬ ОБЯЗАНА БЫТЬ СТРОГО МЕНЬШЕ ТОГО, ЧТО ТОЛЬКО ЧТО НЕ ВЛЕЗЛО. Прежняя лестница этому
+     не отвечала и почти ничего не давала. Обычное сохранение (_stateStorageJSON) у облачной базы
+     уже пишет JOURNAL_STORE_SOFT_CAP = 500 записей на вид плюс всё невыгруженное, а первым
+     аварийным уровнем стояло cut(200, 2000) — при журнале длиннее 500 на вид это ГАРАНТИРОВАННО
+     больше отказавшего снимка, то есть заведомо провальная попытка ценой ещё одной полной
+     сериализации. Второй уровень cut(50, 500) отличался от отказавшего снимка только урезкой
+     state.log — десятки килобайт, которые ничего не решают, если места не хватило из-за склада.
+     ЗАМЕР (синтетика: 3000 позиций склада, 3000 записей на вид, всё выгружено, лог 500):
+       обычное сохранение, которое отказало . 986 994 Б
+       старый уровень 1 (200, 2000) ........ 2 070 695 Б  (+110 % — провал гарантирован)
+       старый уровень 2 (50, 500) ...........  948 345 Б  (−3,9 % — почти ничего)
+       новая ступень 1 (200, 200) ...........  742 495 Б  (−24,8 %)
+       новая ступень 2 (50, 50) .............  621 095 Б  (−37,1 %)
+       новая ступень 3 (0, 0) ...............  581 370 Б  (−41,1 %; пол — сам склад, 580 181 Б)
+     Ступень 3 не пустая даже при нуле: _trimJournalKeepPending всегда оставляет записи, которых
+     в облаке нет вовсе или чья облачная версия устарела, — они существуют в одном экземпляре.
+     failedBytes — длина снимка, который только что не поместился: ступень крупнее него мы даже
+     не пытаемся записать, чтобы не тратить впустую полную сериализацию (замер в комментарии ниже:
+     624 мс против 8-10 мс обычного сохранения). */
+  const LADDER = [ {log:200, jr:200}, {log:50, jr:50}, {log:0, jr:0} ];
+  const _jrCount = (j)=>{ let n=0; for(const k of JOURNAL_KEYS) n += (j?.[k] || []).length; return n; };
+  const jrWas = _jrCount(state.journals), logWas = (state.log || []).length;
+  let lastErr = null;
+  for(const step of LADDER){
+    const snap = cut(step.log, step.jr);
+    let json; try{ json = JSON.stringify(snap); }catch(e){ lastErr = e; continue; }
+    if(json.length >= failedBytes) continue;   // не меньше отказавшего — писать бессмысленно
+    try{ localStorage.setItem(STORE_KEY, json); }catch(e){ lastErr = e; continue; }
+    commit(snap);
+    /* ЧЕЛОВЕК ДОЛЖЕН ПОНЯТЬ, ЧТО ИМЕННО У НЕГО ЗАБРАЛИ. Прежний текст говорил только про
+       «старые записи журнала» — и молчал о том, что уровень 2 навсегда выбрасывал из state.log
+       записи 51…500. state.log нигде не синхронизируется: это единственная копия списка
+       действий, и уходила она молча. Записи журнала у ОБЛАЧНОЙ базы — другое дело: они лежат в
+       общей базе и вернутся первой же загрузкой, об этом и говорим. У базы без облака (uploaded
+       пуст) телефон — единственная копия, там потеря настоящая и разговор блокирующий. */
+    const jrLost = jrWas - _jrCount(snap.journals);
+    const logLost = logWas - (snap.log || []).length;
+    const parts = [];
+    if(jrLost) parts.push(uploaded
+      ? `${jrLost} старых записей журнала убрано с телефона — они есть в общей базе и вернутся при синхронизации`
+      : `${jrLost} старых записей журнала удалено НАВСЕГДА — эта база не связана с облаком, копии не осталось`);
+    if(logLost) parts.push(`список действий (${logLost} записей) стёрт — он нигде не сохраняется`);
+    const what = parts.length ? parts.join("; ") : "освобождено место";
+    try{ toast(`Памяти телефона не хватило: ${what}`); }catch(_){}
+    if(logLost || (jrLost && !uploaded)){
+      // безвозвратная потеря — коротким тостом на 1,8 с тут не отделаться
+      setTimeout(async()=>{
+        try{
+          const go = await confirmSheet(
+            `Памяти телефона не хватило, чтобы сохранить базу целиком.\n\nЧтобы текущие остатки склада не потерялись, приложение освободило место:\n• ${parts.join("\n• ")}\n\nСделайте резервную копию и освободите память: удалите ненужные базы или лишние файлы на телефоне.`,
+            { yes:"Сохранить копию", no:"Позже", title:"Часть данных удалена с телефона" });
+          if(go && typeof exportData==="function") exportData({localOnly:true});
+        }catch(_){}
+      }, 50);
+    }
+    return;
   }
+  // Ни одна ступень не легла на диск → последняя операция потеряется при перезагрузке. НЕ молчим —
+  // блокирующее предупреждение + экспорт. state остался ПОЛНЫМ: экспорт отдаст всё.
+  console.error("saveState escalated failure:", lastErr);
+  _quotaBlock();
 }
 /* СКОЛЬКО ХВОСТА ЖУРНАЛА ДЕРЖИМ НА ДИСКЕ у ОБЛАЧНОЙ базы (на вид движения). В памяти журнал полный —
    до JOURNAL_LOCAL_CAP; это про то, что пишется в localStorage при каждом сохранении. Значение —
@@ -701,9 +748,12 @@ function _stateStorageJSON(){
   return JSON.stringify({ ...state, journals: j, journalsTrunc: true });
 }
 function saveState(){
-  try { localStorage.setItem(STORE_KEY, _stateStorageJSON()); _quotaBlocked=false; }   // успех — снимаем флаг переполнения (память освободилась)
+  // длину снимка держим отдельно: аварийной лестнице она нужна как порог «строго меньше того,
+  // что не влезло» — без него ступень крупнее отказавшей стоила бы ещё одной полной сериализации
+  let _json = null;
+  try { _json = _stateStorageJSON(); localStorage.setItem(STORE_KEY, _json); _quotaBlocked=false; }   // успех — снимаем флаг переполнения (память освободилась)
   catch(e){
-    if(isQuotaErr(e)) _saveStateTrimmed();
+    if(isQuotaErr(e)) _saveStateTrimmed(_json ? _json.length : 0);
     else {
       // Любой сбой setItem означает, что данных на диске нет (приватный режим, отключённое
       // хранилище, SecurityError). Молчать здесь нельзя — потеря так же реальна, как при квоте.
