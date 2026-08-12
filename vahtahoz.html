@@ -72,8 +72,16 @@
   .btn-primary:active{ background:var(--accent-press); }
   .btn-ghost{ background:rgba(255,255,255,.06); color:inherit; }
   .btn-danger{ background:#dc2626; color:#fff; }
-  .btn-success{ background:#16a34a; color:#fff; }
-  .btn-warn{ background:#d97706; color:#fff; }
+  /* КНОПКИ РАБОТАЮТ НА СОЛНЦЕ. Надпись на них — белая, 17px/600, то есть по AA нужны 4,5:1.
+     Прежние #16a34a (3,30:1) и #d97706 (3,19:1) нормы не давали ни в тёмной теме, ни в светлой:
+     цвет фона кнопки от темы не зависит, а .light-переопределений у этих двух классов нет.
+     Это «＋ Приход» на каждой карточке склада, «＋ Продукты», «＋ Хозка», «Скачать всё — Excel»,
+     «Сохранить ВСЕ базы» и пункты листов — всё, чем пользуются на улице.
+     Берём те же тона, что уже выверены у бейджей выше: #15803d = 5,02:1 (он же .badge-green),
+     #b45309 = 5,02:1. Оба остаются узнаваемо зелёным и оранжевым и не сливаются с #dc2626
+     (btn-danger, 4,83:1) — предупреждение по-прежнему отличается от опасности. */
+  .btn-success{ background:#15803d; color:#fff; }
+  .btn-warn{ background:#b45309; color:#fff; }
   .input{ width:100%; min-height:52px; padding:12px 14px; border-radius:14px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.1); color:inherit; font-size:17px; outline:none; }
   .input:focus{ border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-weak); }
   .card{ background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08); border-radius:18px; padding:16px; box-shadow:0 1px 2px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.04); }
@@ -1770,13 +1778,14 @@ let currentView = "dashboard";
    трогал — человек с плитки «Сроки истекают (3)» попадал в «Выдачу» или в пустой список по чужой
    категории и читал это как «товары пропали». Сбрасываем всё, что сужает выдачу, и включаем ровно
    тот фильтр, которому плитка соответствует. */
-function navStock(expiryFilter){
+function navStock(expiryFilter, low){
   stockMode = "stock";
   stockTab = "all";
   stockCat = "";
   stockSearch = "";
   stockLimit = 100;
   stockExpiryFilter = expiryFilter || "all";
+  stockLow = !!low;   // плитка «Низкий запас» приходит сюда с low=true; все прочие входы гасят флаг
   // отложенный обработчик поиска держит ссылку на СТАРОЕ поле ввода и через 250 мс вернул бы
   // набранный текст обратно в stockSearch — сброс отменялся бы сам собой
   clearTimeout(stockSearchT);
@@ -1788,7 +1797,7 @@ function navStock(expiryFilter){
 function navStockOrReset(){
   if(currentView!=="stock"){ nav("stock"); return; }
   const dirty = stockTab!=="all" || stockCat!=="" || stockSearch.trim()!=="" ||
-                stockExpiryFilter!=="all" || stockMode!=="stock";
+                stockExpiryFilter!=="all" || stockLow || stockMode!=="stock";
   navStock();
   _scrollTop();
   if(dirty) toast("Фильтры сброшены");
@@ -2165,14 +2174,15 @@ function stockExpScope(){
   // тот же срез, что считали чипы сроков: категория + ТОТ ЖЕ поиск, что и в renderStockList
   const terms = searchTerms(stockSearch);
   const scope = base.filter(s=> (!stockCat || s.category===stockCat) && stockMatches(s, terms));
-  let expired=0, soon=0;
+  let expired=0, soon=0, low=0;
   for(const s of scope){
+    if(isLowStock(s)) low++;   // остаток считаем независимо от срока — у позиции может не быть срока вовсе
     if(!inStock(s) || !s.expiry) continue;
     const d = daysLeft(s.expiry);
     if(d===null) continue;
     if(d<0) expired++; else if(d<=14) soon++;
   }
-  return { allowed, base, scope, expired, soon };
+  return { allowed, base, scope, expired, soon, low };
 }
 function filterChipState(){
   if(currentView==="tasks"){
@@ -2186,13 +2196,17 @@ function filterChipState(){
     // exp14 — приход с плитки «Сроки истекают»: просрочка И «скоро» одновременно, одно значение
     if(stockExpiryFilter==="expired") parts.push("Просрочка");
     else if(stockExpiryFilter==="soon") parts.push("Скоро");
-    else if(stockExpiryFilter==="exp14") parts.push("Сроки ≤14 дн.");
+    else if(stockExpiryFilter==="exp14") parts.push("Сроки ≤14 дн");
+    if(stockLow) parts.push("Низкий запас");
     if(STOCK_TYPE_KEYS.includes(stockTab)){
       const _vt = visibleStockTypes();
       const t = _vt.find(x=>x.key===stockTab);
       if(t && _vt.length>1) parts.push(t.short);   // роль с одним типом — это не «фильтр»
     }
     if(stockCat) parts.push(stockCat);
+    /* Точку в конце перечисления НЕ ставим сами: следующее предложение начинается со своей, и
+       скринридер читал «Сроки ≤14 дн.. Просрочено позиций: 3» — двойная точка слышна как заминка.
+       Поэтому и в самой метке фильтра сокращение без точки («≤14 дн»). */
     return { on:parts.length>0, n:parts.length, red:c.expired,
       aria:`Фильтры склада${parts.length?": "+parts.join(", "):""}${c.expired?`. Просрочено позиций: ${c.expired}`:""}` };
   }
@@ -2359,7 +2373,7 @@ function openStockFilterSheet(){
      подсвечивались оба чипа), а нажатие на любой из них сужает выборку до него одного. */
   const expBad  = stockExpiryFilter==="expired" || stockExpiryFilter==="exp14";
   const expSoon = stockExpiryFilter==="soon"    || stockExpiryFilter==="exp14";
-  const dirty = stockTab!=="all" || stockExpiryFilter!=="all" || !!stockCat;
+  const dirty = stockTab!=="all" || stockExpiryFilter!=="all" || stockLow || !!stockCat;
   openSheet(`
     ${_fHead("Фильтры склада", dirty?`data-fstockreset="1"`:"")}
     ${_vis.length>1 ? `<div class="text-sm opacity-70 mb-2">Тип</div>
@@ -2372,6 +2386,14 @@ function openStockFilterSheet(){
       _fChip(stockExpiryFilter==="all", "Все сроки", `data-fexp="all"`)
       + _fChip(expBad,  `${ico("ban",15)} Просрочка (${c.expired})`, `data-fexp="expired"`)
       + _fChip(expSoon, `${ico("clock",15)} Скоро, до 14 дней (${c.soon})`, `data-fexp="soon"`)
+    )}
+    <!-- ОСТАТОК. Отдельная группа, а не ещё один пункт в «Сроках»: у позиции может не быть срока
+         вовсе, а минимум задан — по срокам она не находилась никогда. Плитка «Низкий запас» на
+         дашборде ведёт именно сюда. Сочетается с любым фильтром сроков. -->
+    <div class="text-sm opacity-70 mt-4 mb-2">Остаток</div>
+    ${_fRow(
+      _fChip(!stockLow, "Любой остаток", `data-flow="0"`)
+      + _fChip(stockLow, `${ico("alert",15)} Низкий запас (${c.low})`, `data-flow="1"`)
     )}
     ${cats.length ? `<div class="text-sm opacity-70 mt-4 mb-2">Категория</div>
     ${_fRow(
@@ -2544,7 +2566,11 @@ function renderDashboard(){
         <div class="text-2xl font-bold mt-1">${expiringSoon.length}</div>
         <div class="text-sm opacity-70">Сроки истекают</div>
       </button>
-      <button class="card tap text-left" onclick="navStock('all')">
+      <!-- Плитка обещает число и обязана привести ровно к этим позициям. Раньше здесь стояло
+           navStock('all') — открывался ВЕСЬ склад, а сортировка выносила наверх просрочку: экран
+           получался неотличим от «Сроки истекают», кнопка фильтра не подсвечивалась, и позиций с
+           низким запасом на первом экране не было вовсе. Теперь включаем настоящий фильтр. -->
+      <button class="card tap text-left" onclick="navStock('all',true)">
         <div style="color:#dc2626">${ico("alert",30)}</div>
         <div class="text-2xl font-bold mt-1">${lowStock.length}</div>
         <div class="text-sm opacity-70">Низкий запас</div>
@@ -2874,6 +2900,14 @@ let stockMode = "stock"; // stock | receipt | issue | writeoff | order
 let stockLimit = 100;    // сколько карточек показываем (чанкинг)
 let stockSearchT = null; // debounce таймер
 let stockExpiryFilter = "all"; // all | expired | soon (≤14дн) | exp14 (просрочка + скоро, приход с плитки дашборда)
+/* НИЗКИЙ ЗАПАС — ОТДЕЛЬНОЕ измерение, а не ещё одно значение stockExpiryFilter. Срок и остаток
+   независимы: «просроченное И на минимуме» — осмысленный запрос, а одна переменная заставила бы
+   выбирать. Поэтому булев флаг, который спокойно сочетается с любым фильтром сроков и переживает
+   переключение вкладки типа (вкладка сужает список, флаг сужает его дальше — конфликта нет).
+   Условие ровно то же, что у плитки дашборда и у бейджа на карточке (см. dashSets/stockStatus):
+   есть заданный минимум и остаток НЕ БОЛЬШЕ него. */
+let stockLow = false;
+const isLowStock = (s) => inStock(s) && s.minStock!=="" && s.minStock!=null && totalQtyOf(s) <= Number(s.minStock);
 
 /* ПОИСК ПО СКЛАДУ — одна реализация на список и на счётчики чипов сроков. Раньше их было две:
    список искал по имени, месту карточки и местам/примечаниям партий, а счётчик на чипе — только
@@ -2953,11 +2987,12 @@ function renderStock(){
     clearTimeout(stockSearchT);
     stockSearchT = setTimeout(()=>{
       stockSearch = inp.value;
-      // Начал искать — фильтр сроков снимаем: он выставляется шитом «Сроки» и жил всю сессию,
-      // из-за чего позиция В НАЛИЧИИ «пропадала» из поиска (искали по всему складу, а фильтр
-      // молча показывал только просрочку). Ищут всегда по всему складу.
-      if(stockExpiryFilter!=="all" && inp.value.trim()){
-        stockExpiryFilter = "all";
+      // Начал искать — фильтры сроков и остатка снимаем: они выставляются листом фильтров и жили
+      // всю сессию, из-за чего позиция В НАЛИЧИИ «пропадала» из поиска (искали по всему складу, а
+      // фильтр молча показывал только просрочку). Ищут всегда по всему складу. «Низкий запас»
+      // прячет так же незаметно и приходит с плитки дашборда — снимаем его на тех же основаниях.
+      if((stockExpiryFilter!=="all" || stockLow) && inp.value.trim()){
+        stockExpiryFilter = "all"; stockLow = false;
         renderStock(); renderFilterChip();   // кнопку фильтра тоже обновить, иначе она врёт про сроки
         // renderStock пересоздал input — вернуть фокус и каретку, чтобы набор не прервался
         const ni = document.getElementById("stockSearchInp");
@@ -2988,6 +3023,8 @@ function renderStockList(){
   // списком (окно ≤14 дней вместе с минусом). Отдельного чипа не заводим — подсвечиваем оба
   // существующих, а нажатие на любой из них сужает выборку до него одного.
   else if(stockExpiryFilter==="exp14") list = list.filter(s=>{ if(!inStock(s)) return false; const d=s.expiry?daysLeft(s.expiry):null; return d!==null && d<=14; });
+  // Остаток — измерение, независимое от сроков: сужаем ПОСЛЕ них, а не вместо
+  if(stockLow) list = list.filter(isLowStock);
   if(stockSearch.trim()){
     const _terms = searchTerms(stockSearch);   // общая с чипами сроков реализация: имя + место карточки + места/примечания партий, ё≡е, И по словам
     list = list.filter(s=> stockMatches(s, _terms));
@@ -2998,15 +3035,19 @@ function renderStockList(){
   const inCount  = total - outCount;
   const shown = list.slice(0, stockLimit);
   if(!total){
-    const noFilters = !stockSearch.trim() && !stockCat && stockExpiryFilter==="all";
+    const noFilters = !stockSearch.trim() && !stockCat && stockExpiryFilter==="all" && !stockLow;
     // Пустой список обязан НАЗВАТЬ активные фильтры: «Ничего не найдено» при включённой
     // «Просрочке» читалось как «товары пропали», хотя они просто отфильтрованы.
     const parts = [];
     if(stockExpiryFilter==="expired") parts.push("фильтр «Просрочка»");
     if(stockExpiryFilter==="soon") parts.push("фильтр «Скоро»");
     if(stockExpiryFilter==="exp14") parts.push("фильтр «сроки ≤ 14 дней»");
+    if(stockLow) parts.push("фильтр «низкий запас»");
     if(stockCat) parts.push(`категория «${esc(stockCat)}»`);
-    const hint = parts.length ? `<div class="text-xs opacity-60 mt-1">Активен ${parts.join(" и ")} — снимите, чтобы увидеть весь склад</div>` : "";
+    /* Перечисление собираем «A, B и C», а не «A и B и C»: фильтров стало три (срок, остаток,
+       категория), и цепочка из «и» читается как оговорка. Согласуем и глагол по числу. */
+    const _list = parts.length>1 ? parts.slice(0,-1).join(", ")+" и "+parts[parts.length-1] : parts[0];
+    const hint = parts.length ? `<div class="text-xs opacity-60 mt-1">${parts.length>1?"Активны":"Активен"} ${_list} — снимите, чтобы увидеть весь склад</div>` : "";
     box.innerHTML = `<div class="card text-center opacity-70">${noFilters
       ? "Склад пуст. Нажмите «＋» вверху, чтобы добавить первую позицию."
       : "Ничего не найдено"+hint}</div>`;
@@ -5716,6 +5757,14 @@ function stockRow(it){
     ? `<span class="badge badge-gray">${esc(st.text)}</span>`
     : st.color==="red" ? `<span class="badge badge-red">${esc(st.text)}</span>`
     : st.color==="yellow" ? `<span class="badge badge-yellow">${esc(st.text)}</span>` : "";
+  /* «Низкий запас» — ВТОРЫМ бейджем, когда первый занят сроком. stockStatus отдаёт ОДИН статус, и
+     срок в нём всегда перебивает остаток (rank 0–2 против 3) — это правильно, просрочка важнее.
+     Но из-за этого позиция, у которой и минимум пробит, и срок подходит, ничем не показывала, что
+     она на минимуме: человек, пришедший с плитки «Низкий запас», видел карточки, помеченные
+     только сроком, и не понимал, почему они здесь. Когда основной бейдж и так «Низкий запас»
+     (rank 3), второго не рисуем — дубля не будет. */
+  const lowBadge = (!out && st.rank!==3 && isLowStock(it))
+    ? `<span class="badge badge-yellow">${ico("alert",13)} Низкий запас</span>` : "";
   const icon = ico(typeMeta(it.type).icon, 22);
   const totalQ = totalQtyOf(it);
   const left = `${fmtQty(totalQ)} ${esc(it.unit||"")}`;
@@ -5756,7 +5805,7 @@ function stockRow(it){
           <div class="font-semibold break-words${out?" line-through opacity-80":""}">${esc(it.name)}</div>
           <div class="text-xs opacity-70 mt-1 flex flex-wrap gap-2 items-center">
             ${qtyBadge}
-            ${cat} ${loc} ${exp} ${badge}
+            ${cat} ${loc} ${exp} ${badge} ${lowBadge}
           </div>
           ${batchPanel}
         </div>
@@ -8437,7 +8486,7 @@ function toggleNotifs(){ if(currentView==="notifs") closeNotifs(); else openNoti
 function notifGo(go){
   if(go==="tasks"){ taskFilter.cat="Все"; nav("tasks"); return; }
   if(go==="exp14"){ navStock("exp14"); return; }
-  if(go==="low"){ navStock("all"); return; }
+  if(go==="low"){ navStock("all", true); return; }
   if(go==="more"){ nav("more"); return; }
 }
 function notifOpenItem(id){
@@ -8725,6 +8774,8 @@ document.addEventListener("click", e=>{
   if(fTab){ stockTab = fTab.dataset.ftab; stockCat=""; stockLimit=100; render(); reopenFilterSheet(openStockFilterSheet); return; }
   const fExp = e.target.closest("[data-fexp]");
   if(fExp){ stockExpiryFilter = fExp.dataset.fexp; stockLimit=100; render(); reopenFilterSheet(openStockFilterSheet); return; }
+  const fLow = e.target.closest("[data-flow]");
+  if(fLow){ stockLow = fLow.dataset.flow==="1"; stockLimit=100; render(); reopenFilterSheet(openStockFilterSheet); return; }
   const fCat = e.target.closest("[data-fcat]");
   if(fCat){ stockCat = fCat.dataset.fcat; stockLimit=100; render(); reopenFilterSheet(openStockFilterSheet); return; }
   const fTaskCat = e.target.closest("[data-ftaskcat]");
@@ -8738,7 +8789,7 @@ document.addEventListener("click", e=>{
     render(); reopenFilterSheet(openTaskFilterSheet); return;
   }
   if(e.target.closest("[data-fstockreset]")){
-    stockTab = "all"; stockExpiryFilter = "all"; stockCat = ""; stockLimit = 100;
+    stockTab = "all"; stockExpiryFilter = "all"; stockLow = false; stockCat = ""; stockLimit = 100;
     render(); reopenFilterSheet(openStockFilterSheet); return;
   }
   const catAct = e.target.closest("[data-cat-action]");
