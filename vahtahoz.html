@@ -5032,7 +5032,20 @@ function _invApply(plan, zeroList){
     move(p, e.type, delta);
     if(delta > 0) raised++; else lowered++;
   }
-  for(const s of (zeroList||[])){ move(s, s.type, -totalQtyOf(s)); zeroed++; }
+  /* ОБНУЛЕНИЕ СОХРАНЯЕТ МЕСТО И СРОК. Обычное списание в ноль их стирает (clearExpiryOnZero) —
+     и правильно делает: позиция кончилась, «срок до 3 марта» у пустой карточки врёт. Но опись
+     говорит другое: «сейчас на полке пусто», позиция живая, и адрес, по которому товар положат
+     обратно, — свойство склада, а не остатка. Хуже того, откат записи журнала возвращает только
+     количество: место и срок не вернул бы никто, а обещано было, что карточка остаётся целой.
+     Ложных «просрочено» это не создаёт: и список сроков, и статус карточки считают только то,
+     что есть в наличии (inStock). */
+  for(const s of (zeroList||[])){
+    const keepLoc = s.location || "", keepExp = s.expiry || "";
+    move(s, s.type, -totalQtyOf(s));
+    if(keepLoc && !s.location) s.location = keepLoc;
+    if(keepExp && !s.expiry)   s.expiry   = keepExp;
+    zeroed++;
+  }
   /* Потолок журнала — тот же общий помощник и тот же предел, что у импорта накладной:
      режем только то, что заведомо уже лежит в облаке, и честно ставим journalsTrunc. */
   let jrTrimmed = 0;
@@ -5116,9 +5129,33 @@ function _invPreviewHtml(plan){
     ${zeroCand.length?`<label class="flex items-start gap-2 text-xs mt-2"><input type="checkbox" id="invZero"><span>Обнулить те, которых нет в файле (${zeroCand.length} поз.) — только в разделах из этого файла. Остаток спишется в ноль, карточки останутся.</span></label>`:""}
     <div class="flex gap-2 mt-3">
       <button class="btn btn-ghost flex-1" onclick="cancelInventory()">Отмена</button>
-      <button class="btn btn-primary flex-1" id="invApplyBtn" onclick="applyInventory()" ${touched?"":"disabled"}>Применить опись</button>
+      <button class="btn btn-primary flex-1" id="invApplyBtn" onclick="applyInventory()" ${(touched||zeroCand.length)?"":"disabled"}>Применить опись</button>
     </div>
-    ${touched?"":`<div class="text-xs opacity-70 mt-2">Менять нечего: ни одной строки с расхождением.</div>`}`;
+    ${(touched||zeroCand.length)?"":`<div class="text-xs opacity-70 mt-2">Менять нечего: ни одной строки с расхождением.</div>`}`;
+}
+/* Подтверждение обнуления — СВОЙ лист, а не confirmSheet, ради одного: список должен быть
+   ПОЛНЫМ. Раньше показывались первые шесть имён и «…и ещё 194» — на сплошной описи человек
+   подтверждал вслепую единственное необратимое действие описи. Здесь список едет в собственной
+   прокрутке, а кнопки остаются на виду, и «Не обнулять» стоит первой. */
+function _invConfirmZero(list){
+  const sum = list.reduce((s,x)=> s + totalQtyOf(x), 0);
+  const rows = list.map(s=>`<div class="text-xs opacity-80 flex justify-between gap-2 py-1 border-b border-white/5">
+      <span class="truncate">${esc(s.name)}</span><span style="white-space:nowrap">${esc(fmtQty(totalQtyOf(s)))} ${esc(s.unit||"")}</span></div>`).join("");
+  return new Promise(resolve=>{
+    openSheet(`
+      <div class="font-bold text-lg mb-2">Обнуление отсутствующих</div>
+      <div class="text-sm mb-2">Списать в ноль <b>${list.length}</b> поз., которых нет в файле — всего ${esc(fmtQty(sum))} ед. Список полный:</div>
+      <div style="max-height:38vh;overflow-y:auto;padding-right:4px" class="mb-3">${rows}</div>
+      <div class="text-xs opacity-70 mb-3">Отсутствие строки в файле обычно значит «не считали», а не «пусто». Обнуляйте, только если опись СПЛОШНАЯ — пересчитан весь раздел целиком. Позиции останутся в каталоге вместе с местом хранения и сроком. Отменить одной кнопкой нельзя — только разбором журнала по метке описи.</div>
+      <div class="flex gap-2">
+        <button class="btn btn-ghost flex-1" id="_invZeroNo">Не обнулять</button>
+        <button class="btn btn-danger flex-1" id="_invZeroYes">Да, обнулить</button>
+      </div>`);
+    if(_sheetRefused){ resolve(false); return; }        // лист не открылся (виден экран входа) — как отказ
+    _sheetOnClose = ()=>resolve(false);
+    document.getElementById("_invZeroNo").onclick = ()=>{ closeSheet(); };
+    document.getElementById("_invZeroYes").onclick = ()=>{ _sheetOnClose=null; closeSheet(); resolve(true); };
+  });
 }
 /* ШАГ 1 — разбор и предпросмотр. Ничего не пишет: только читает файл и складывает план в
    _invPending. Второй шаг — applyInventory по отдельной кнопке. */
@@ -5209,18 +5246,7 @@ async function applyInventory(){
       { yes:"Применить опись", no:"Отмена", title:"Подтверждение описи" }
     );
     if(!go) return;
-    if(shownZero.length){
-      const sum = shownZero.reduce((s,x)=> s + totalQtyOf(x), 0);
-      const names = shownZero.slice(0,6).map(s=>`• ${s.name} — ${fmtQty(totalQtyOf(s))} ${s.unit||""}`).join("\n");
-      const ok2 = await confirmSheet(
-        `Списать в ноль ${shownZero.length} поз., которых нет в файле (всего ${fmtQty(sum)} ед.)?\n\n`
-        + `${names}${shownZero.length>6?`\n…и ещё ${shownZero.length-6}`:""}\n\n`
-        + `Отсутствие строки в файле обычно значит «не считали», а не «пусто». Обнуляйте, только если опись СПЛОШНАЯ — пересчитан весь раздел целиком.\n`
-        + `Позиции останутся в каталоге. Отменить одной кнопкой нельзя — только разбором журнала.`,
-        { yes:"Да, обнулить", no:"Не обнулять", title:"Обнуление отсутствующих", danger:true }
-      );
-      if(!ok2) return;
-    }
+    if(shownZero.length && !(await _invConfirmZero(shownZero))) return;
     /* ЗАПИСЬ — ОДНИМ СИНХРОННЫМ КУСКОМ, БЕЗ AWAIT ВНУТРИ. Пересчитываем план по тем же строкам
        файла (заодно берём ЖИВЫЕ объекты карточек — прежние могли осиротеть после pull) и сверяем
        отпечаток с тем, что человек подтвердил. Разошлось хоть в одном числе — не пишем ничего и
