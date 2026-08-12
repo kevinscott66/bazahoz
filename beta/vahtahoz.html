@@ -4546,6 +4546,413 @@ async function importReceiptsExcel(ev){
     `Импортировано: ${ok}. В журнале поступлений накопилось больше ${JOURNAL_LOCAL_CAP} записей — ${jrTrimmed} самых старых убрано с телефона. Они уже в общей базе и вернутся при синхронизации.`;
 }
 
+/* ===================== ОПИСЬ СКЛАДА (ИНВЕНТАРИЗАЦИЯ ФАЙЛОМ) =====================
+   Зачем. Раз в вахту склад пересчитывают руками, на бумаге, а потом кто-то вбивает сотни цифр
+   в телефон по одной. Опись — тот же пересчёт, но файлом: скачал бланк, заполнил на компьютере,
+   залил обратно.
+
+   ЧЕМ ЭТО НЕ ИМПОРТ НАКЛАДНОЙ. Приход ДОБАВЛЯЕТ к остатку, опись ЗАДАЁТ остаток: в файле стоит
+   то, что реально лежит на полке. Раз операция переписывает остатки пачкой, все правила ниже —
+   в сторону осторожности:
+     • строки НЕТ в файле — значит «не проверяли», а не «ноль»: такие позиции не трогаются вовсе.
+       Обнуление есть, но это отдельная галочка с отдельным предупреждением, по умолчанию снятая,
+       и действует она только в тех разделах склада, которые в файле реально были;
+     • позиция НИКОГДА не удаляется — даже обнулённая карточка остаётся в каталоге со своими
+       минимальным запасом, категорией и местом;
+     • два шага: сперва разбор и предпросмотр с числами, и только потом отдельное подтверждение.
+       До нажатия «Применить» в базу не уходит ни одной цифры;
+     • одна кривая строка не валит весь файл — она попадает в список непринятых с причиной,
+       остальные принимаются;
+     • совпадение с карточкой — только по ТОЧНОМУ имени (регистр и лишние пробелы не в счёт).
+       Никакого «похоже на»: в приходе ошибка сопоставления даёт лишнюю карточку, а в описи —
+       переписанный не тому товару остаток;
+     • позиции с партиями (срок годности) опись не трогает: у них остаток — сумма партий, и
+       переписать его одним числом значит потерять сроки. Тот же запрет, что в «Сверке склада».
+
+   ЖУРНАЛ. Каждое изменение — обычная запись «Поступление» или «Списание» с пометкой
+   «Опись ДД.ММ.ГГГГ #МЕТКА». Пачка ищется по метке, разбирается по строкам и откатывается
+   штатным удалением записи журнала. Отдельной сущности «опись» в базе НЕТ намеренно: на
+   телефонах и в APK стоят сборки постарше, они читают ту же базу и о новых сущностях не знают,
+   а записи журнала понимают все.
+
+   ПРАВА — как у «Сверки склада»: операция того же веса. На общей базе это начальник участка и
+   выше (canManageBase), на локальной — тот, кто её правит: там человек сам себе начальник.
+   Кнопки роли без права не показываются вовсе (см. renderFiles), но каждая точка входа
+   проверяет право ещё раз — разметку видно из консоли. */
+function canInventoryStock(){
+  if(!canEditStock()) return false;
+  if(!activeCloudId()) return true;   // локальная база — правило уровня телефона
+  return canManageBase();             // общая база: начальник участка и выше
+}
+/* Заголовки бланка описи. Отдельно от _IMP_HEADER_MAP: там «Количество» значит «сколько
+   пришло», здесь — «сколько лежит», и мешать эти два смысла в одном словаре нельзя. */
+const _INV_HEADER_MAP = {
+  name:     ["наименование","название","товар","номенклатура","позиция","name","item","product"],
+  qty:      ["фактическийостаток","фактическийостатокшт","фактостаток","факт","фактически","фактическоеколичество",
+             "остаток","количество","колво","кол","факт(остаток)","qty","quantity","stock","fact","actual"],
+  unit:     ["едизм","ед","единица","единицаизмерения","unit","uom"],
+  type:     ["тип","типпозиции","типсклада","раздел","type","kind"],
+  category: ["категория","группа","category","group"],
+  expiry:   ["срокгодности","срок","годендо","expiry","expirydate","bestbefore"],
+  location: ["место","локация","ячейка","location","place"],
+  note:     ["примечание","коммент","комментарий","note","comment"],
+};
+/* Шапка не обязана быть первой строкой: в распечатанной описи сверху бывает «Опись склада от…»,
+   номер участка и пустые строки. Ищем строку, где есть И наименование, И фактический остаток. */
+function _invParseAoa(aoa){
+  let hdr = -1, hmap = null;
+  for(let r=0; r<Math.min(15, aoa.length); r++){
+    const m = _impMapHeaders((aoa[r]||[]).map(x=>String(x)), _INV_HEADER_MAP);
+    const f = Object.values(m);
+    if(f.includes("name") && f.includes("qty")){ hdr = r; hmap = m; break; }
+  }
+  if(hdr < 0) return { rows:[], error:"Не найдены столбцы «Наименование» и «Фактический остаток». Скачайте бланк описи и заполните его." };
+  const idxOf = {};
+  (aoa[hdr]||[]).forEach((h,i)=>{ const f = hmap[String(h)]; if(f && idxOf[f]==null) idxOf[f] = i; });
+  const rows = [];
+  for(let r=hdr+1; r<aoa.length; r++){
+    const arr = aoa[r]; if(!arr || !arr.length) continue;
+    const get = (f)=> idxOf[f]!=null ? arr[idxOf[f]] : "";
+    const nm = String(get("name")??"").trim();
+    if(!nm) continue;                       // пустая строка-разделитель — не ошибка, молча мимо
+    if(/^итого|^всего/i.test(nm)) continue; // подытоги распечатанной описи
+    rows.push({
+      name:nm, qty:get("qty"), unit:get("unit"), type:get("type"), category:get("category"),
+      expiry:get("expiry"), location:get("location"), note:get("note"),
+      rowNo: r+1,                           // номер строки как её видит человек в Excel
+    });
+  }
+  return { rows };
+}
+/* Поиск карточки под строку описи. Строго по имени; тип — как в приходе: сперва свой раздел,
+   потом остальные разрешённые роли (тот же товар, заведённый когда-то не в тот раздел, лучше
+   найти, чем задвоить). В своём разделе несовпадение единицы и двойник — ОТКАЗ строки с
+   причиной; в чужих разделах это просто «не нашли», иначе чужая карточка с тем же именем
+   мешала бы завести позицию в своём разделе. */
+function _invFindStock(pool, name, type, unitKey){
+  const n = stockNormName(name);
+  const allowed = allowedTypeKeys();
+  const order = allowed.includes(type) ? [[type], allowed.filter(x=> x!==type)] : [allowed];
+  for(let i=0; i<order.length; i++){
+    const strict = (i===0);
+    const types = order[i];
+    if(!types.length) continue;
+    let c = pool.filter(s=> types.includes(s.type) && stockNormName(s.name)===n);
+    if(!c.length) continue;
+    if(unitKey){
+      const same = c.filter(s=> _impUnitKey(s.unit)===unitKey);
+      if(!same.length){
+        if(strict) return { why:`единица «${unitKey}» не сходится с карточкой «${c[0].unit||"шт"}»` };
+        continue;
+      }
+      c = same;
+    }
+    if(c.length > 1){
+      if(strict) return { why:"на складе несколько карточек с таким названием — сначала объедините дубли" };
+      continue;
+    }
+    return { item:c[0] };
+  }
+  return { item:null };
+}
+/* РАЗБОР БЕЗ ЕДИНОЙ ПРАВКИ. Возвращает план: что добавится, что вырастет, что уменьшится, что
+   совпало и что не принято. Порядок строк важен так же, как в _impPreflight: строка, заводящая
+   новую позицию, должна быть видна следующим строкам того же файла — поэтому в pool кладётся
+   заглушка, а повторная строка про ту же позицию отбивается как «уже встречалась» (иначе две
+   строки на один товар молча дали бы два разных «фактических» остатка, и победил бы последний). */
+function _invPlan(rows){
+  const plan = { rows, add:[], up:[], down:[], same:[], bad:[], empty:[], types:new Set() };
+  const pool = (state.stock||[]).slice();
+  const seen = new Set();
+  for(const row of rows){
+    const name = cleanNameImport(row.name);
+    const bad = (why)=> plan.bad.push({
+      name: (name || String(row.name||"").trim()).slice(0,44) || "(без наименования)",
+      why, at: row.rowNo ? `стр. ${row.rowNo}` : "",
+    });
+    if(!name){ bad("нет наименования"); continue; }
+    const t = _impRowType(row);
+    if(t.why){ bad(t.why); continue; }
+    const type = t.type;
+    const rawU = String(row.unit||"").trim();
+    const u = rawU ? _impMapUnit(rawU) : null;
+    /* ПУСТАЯ КЛЕТКА «ФАКТИЧЕСКИЙ ОСТАТОК» — ЭТО «НЕ СЧИТАЛИ»: не ноль и не ошибка. В бланке
+       описи заранее стоит весь склад, и незаполненных строк там больше всего — ругаться на
+       каждую значит утопить настоящие ошибки в списке из трёхсот «претензий». Карточку при
+       этом всё равно ищем: чтобы галочка «обнулить отсутствующих» не сочла эту позицию
+       отсутствующей — строка в файле есть, её просто не пересчитали. */
+    const rawQty = String(row.qty==null ? "" : row.qty).trim();
+    if(rawQty===""){
+      const f = _invFindStock(pool, name, type, u ? _impUnitKey(u) : null);
+      plan.empty.push({ name, product: f.item || null });
+      continue;
+    }
+    if(rawU && u == null){ bad(`непонятная единица «${rawU.slice(0,16)}»`); continue; }
+    /* parseNum на любом мусоре («нет», «—», «ок») честно отдаёт 0, а ноль здесь означает
+       «пусто на полке» — то есть списание в ноль. Поэтому сначала смотрим, число ли это. */
+    if(typeof row.qty !== "number" && !/^[+-]?[\d\s .,]+$/.test(rawQty)){
+      bad(`количество не число: «${rawQty.slice(0,16)}»`); continue;
+    }
+    const fact = roundQty(parseNum(row.qty));
+    if(!(fact >= 0)){ bad("количество меньше нуля"); continue; }
+    const found = _invFindStock(pool, name, type, u ? _impUnitKey(u) : null);
+    if(found.why){ bad(found.why); continue; }
+    const product = found.item;
+    if(!product){
+      // новой позиции единица нужна: карточка без единицы потом не сойдётся ни с одной накладной
+      if(!u){ bad("новой позиции нужна единица измерения"); continue; }
+      const stub = { id:"_inv_"+pool.length, type, name, unit:u, qty:fact, batches:[] };
+      pool.push(stub); seen.add(stub.id);
+      plan.types.add(type);
+      plan.add.push({ name, type, unit:u, was:0, now:fact, delta:fact, product:null, row });
+      continue;
+    }
+    if(seen.has(product.id)){ bad("эта позиция в файле уже была выше"); continue; }
+    seen.add(product.id);
+    if(hasBatches(product)){ bad("позиция с партиями (срок годности) — правится вручную"); continue; }
+    const was = totalQtyOf(product);
+    plan.types.add(product.type);
+    const e = { name:product.name, type:product.type, unit:product.unit||u||"", was, now:fact,
+                delta:roundQty(fact - was), product, row };
+    if(Math.abs(e.delta) < 1e-9) plan.same.push(e);
+    else if(e.delta > 0) plan.up.push(e);
+    else plan.down.push(e);
+  }
+  return plan;
+}
+/* Кандидаты на обнуление — только при явной галочке. Ограничены разделами, которые в файле
+   РЕАЛЬНО были: опись продуктов не должна обнулять инструменты, которых в ней и не было.
+   Партийные позиции и здесь не трогаем, а нулевые в кандидаты не идут — списывать нечего. */
+function _invZeroCandidates(plan){
+  const inFile = new Set();
+  // строки без отметки (plan.empty) — тоже «в файле»: их не считали, обнулять их нельзя
+  for(const e of plan.add.concat(plan.up, plan.down, plan.same, plan.empty)) if(e.product) inFile.add(e.product.id);
+  const allowed = allowedTypeKeys();
+  return (state.stock||[]).filter(s=> s && plan.types.has(s.type) && allowed.includes(s.type)
+                                   && !inFile.has(s.id) && !hasBatches(s) && totalQtyOf(s) > 0);
+}
+/* ПРИМЕНЕНИЕ. Единственное место, которое что-то меняет, и зовётся оно только из applyInventory —
+   после предпросмотра и подтверждения. Разница «факт − учёт» проводится обычным движением:
+   плюс → «Поступление», минус → «Списание», обе записи с одной пометкой описи. */
+function _invApply(plan, zeroList){
+  const day = todayStr();
+  const human = day.split("-").reverse().join(".");
+  const tag = String(uid()).replace(/[^0-9a-z]/gi,"").slice(-4).toUpperCase();
+  const note = `Опись ${human} #${tag}`;
+  const ts = new Date().toISOString();
+  let added = 0, raised = 0, lowered = 0, zeroed = 0;
+  const move = (product, type, delta)=>{
+    if(!delta) return;
+    const kind = delta > 0 ? "receipt" : "writeoff";
+    const op = {
+      id:uid(), ts, productId:product.id, productName:product.name,
+      qty: roundQty(Math.abs(delta)), unit: product.unit||"", note,
+      stockType: journalStockType(product, type),
+    };
+    applyStockDelta(product, delta > 0 ? 1 : -1, Math.abs(delta), note, op);
+    state.journals[kind] = state.journals[kind] || [];
+    state.journals[kind].unshift(op);
+  };
+  for(const e of plan.add){
+    const p = createCatalogStockItem(e.type, e.name, e.unit);
+    const cat = cleanCatName(e.row && e.row.category);
+    if(cat){
+      state.categories[e.type] = state.categories[e.type] || [];
+      if(!state.categories[e.type].includes(cat)) state.categories[e.type].push(cat);
+      p.category = cat;
+    }
+    const loc = cleanCatName(e.row && e.row.location); if(loc) p.location = loc;
+    const exp = _impParseDate(e.row && e.row.expiry);  if(exp) p.expiry = exp;
+    state.stock.push(p);
+    added++;
+    move(p, e.type, e.now);   // 0 — карточка просто заводится, движения нет
+  }
+  for(const e of plan.up.concat(plan.down)){
+    const p = e.product;
+    // место и срок из описи ДОПОЛНЯЮТ карточку, но не затирают: опись считает штуки, а не сроки
+    const loc = cleanCatName(e.row && e.row.location); if(loc && !p.location) p.location = loc;
+    const exp = _impParseDate(e.row && e.row.expiry);  if(exp && !p.expiry)  p.expiry = exp;
+    move(p, e.type, e.delta);
+    if(e.delta > 0) raised++; else lowered++;
+  }
+  for(const s of (zeroList||[])){ move(s, s.type, -totalQtyOf(s)); zeroed++; }
+  /* Потолок журнала — тот же общий помощник и тот же предел, что у импорта накладной:
+     режем только то, что заведомо уже лежит в облаке, и честно ставим journalsTrunc. */
+  let jrTrimmed = 0;
+  const _upl = _uploadedJrIds();
+  if(_upl){
+    for(const k of ["receipt","writeoff"]){
+      if(!Array.isArray(state.journals[k]) || state.journals[k].length <= JOURNAL_LOCAL_CAP) continue;
+      const was = state.journals[k].length;
+      state.journals[k] = _trimJournalKeepPending(state.journals[k], JOURNAL_LOCAL_CAP, _upl, k);
+      jrTrimmed += was - state.journals[k].length;
+    }
+    if(jrTrimmed) state.journalsTrunc = true;
+  }
+  logOp("INVENTORY", `Опись ${human} #${tag}: новых ${added}, больше ${raised}, меньше ${lowered}`
+        + (zeroed ? `, обнулено ${zeroed}` : "") + (jrTrimmed ? ` · журнал урезан на ${jrTrimmed}` : ""));   // logOp сам зовёт saveState
+  try{ cloudMaybePush(); }catch(_){}
+  try{ render(); }catch(_){}
+  return { added, raised, lowered, zeroed, tag, note, human, jrTrimmed };
+}
+
+/* ---------- Опись: экран в разделе «Файлы» ---------- */
+/* Разобранный файл, ждущий подтверждения. Живёт до применения или до «Отмены»; в базе от него
+   ничего нет. renderFiles перерисовывает по нему предпросмотр — иначе пришедший в этот момент
+   pull из облака стирал бы с экрана то, что человек читает, оставляя план невидимым. */
+let _invPending = null;
+const _invEl = ()=> document.getElementById("invOut");
+function _invSay(html){ const el = _invEl(); if(el) el.innerHTML = html; }
+async function downloadInventoryTemplate(){
+  if(!canInventoryStock()){ toast("Опись доступна начальнику участка и выше"); return; }
+  let XLSX; try{ XLSX = await ensureXlsx(); }catch(e){ toast("Не удалось загрузить Excel-модуль (нужна сеть в первый раз)"); return; }
+  /* В бланк подставлен ТЕКУЩИЙ склад с ПУСТОЙ клеткой «Фактический остаток». Так и задумано:
+     пустая клетка означает «не проверяли» и ничего не меняет, зато наименования и единицы уже
+     стоят точь-в-точь как в базе — человеку остаётся вписать посчитанное. Набирать названия
+     руками — главный источник дублей: одна опечатка заводит новую карточку вместо правки старой.
+     Первой строкой идёт пример: он показывает, что писать. Наименование у примера НАРОЧНО
+     не похоже на товар — забытая строка-пример должна бросаться в глаза в предпросмотре
+     («новая позиция ПРИМЕР…»), а не тихо переписать остаток настоящей манной крупы. */
+  const rows = [{
+    "Тип":"Продукты", "Наименование":"ПРИМЕР (удалите эту строку)", "Ед. изм.":"кг", "Фактический остаток":12.5,
+    "Место":"Склад А", "Срок годности":"", "Примечание":"так выглядит заполненная строка: пишем то, что реально посчитали",
+  }];
+  const allowed = allowedTypeKeys();
+  for(const s of sortedStock((state.stock||[]).filter(x=> allowed.includes(x.type))).slice(0, IMP_MAX_ROWS-1)){
+    rows.push({
+      "Тип": typeMeta(s.type).label, "Наименование": s.name, "Ед. изм.": s.unit||"",
+      "Фактический остаток":"",                       // заполняет человек; пусто = не проверяли
+      "Место": locationsOf(s).join("; "), "Срок годности": nearestExpiryOf(s)||"",
+      "Примечание": hasBatches(s) ? "позиция с партиями — опись её не меняет" : "",
+    });
+  }
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws["!cols"] = [{wch:12},{wch:40},{wch:10},{wch:20},{wch:18},{wch:14},{wch:34}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Опись");
+  saveXlsx(wb, `vahtahoz-опись-${todayStr()}.xlsx`, "Бланк описи сохранён");
+}
+// строчка предпросмотра «было → стало»
+const _invLine = (e)=> `<div class="text-xs opacity-80 truncate">• ${esc(e.name)}: ${esc(fmtQty(e.was))} → <b>${esc(fmtQty(e.now))}</b> ${esc(e.unit||"")}</div>`;
+function _invPreviewHtml(plan){
+  const zeroCand = _invZeroCandidates(plan);
+  const touched = plan.add.length + plan.up.length + plan.down.length;
+  const list = (title, arr, render, max)=> !arr.length ? "" : `
+    <div class="mt-2"><div class="text-sm font-bold">${esc(title)}: ${arr.length}</div>
+    ${arr.slice(0,max||6).map(render).join("")}
+    ${arr.length>(max||6)?`<div class="text-xs opacity-60">…и ещё ${arr.length-(max||6)}</div>`:""}</div>`;
+  return `
+    <div class="text-sm"><b>Разобрано: ${esc(plan.file||"файл")}</b></div>
+    <div class="text-sm">Строк с отметкой: ${touched + plan.same.length} · без отметки (не проверяли): ${plan.empty.length} · не принято: ${plan.bad.length}</div>
+    ${list("Новых позиций", plan.add, e=>`<div class="text-xs opacity-80 truncate">• ${esc(e.name)} — ${esc(fmtQty(e.now))} ${esc(e.unit)} (${esc(typeMeta(e.type).short)})</div>`)}
+    ${list("Станет больше", plan.up, _invLine)}
+    ${list("Станет меньше", plan.down, _invLine)}
+    ${plan.same.length?`<div class="text-sm mt-2">Совпало с учётом: ${plan.same.length}</div>`:""}
+    ${list("Не принято", plan.bad, b=>`<div class="text-xs opacity-80">• ${esc(b.name)}${b.at?` (${esc(b.at)})`:""} — ${esc(b.why)}</div>`, 10)}
+    <div class="text-xs opacity-70 mt-2">Позиций склада, которых в файле нет: ${zeroCand.length}. По умолчанию они <b>не меняются</b> — «нет строки» значит «не проверяли».</div>
+    ${zeroCand.length?`<label class="flex items-start gap-2 text-xs mt-2"><input type="checkbox" id="invZero"><span>Обнулить те, которых нет в файле (${zeroCand.length} поз.) — только в разделах из этого файла. Остаток спишется в ноль, карточки останутся.</span></label>`:""}
+    <div class="flex gap-2 mt-3">
+      <button class="btn btn-ghost flex-1" onclick="cancelInventory()">Отмена</button>
+      <button class="btn btn-primary flex-1" onclick="applyInventory()" ${touched?"":"disabled"}>Применить опись</button>
+    </div>
+    ${touched?"":`<div class="text-xs opacity-70 mt-2">Менять нечего: ни одной строки с расхождением.</div>`}`;
+}
+/* ШАГ 1 — разбор и предпросмотр. Ничего не пишет: только читает файл и складывает план в
+   _invPending. Второй шаг — applyInventory по отдельной кнопке. */
+async function importInventoryExcel(ev){
+  const inputEl = ev.target;
+  const f = (inputEl.files && inputEl.files[0]) || null;
+  inputEl.value = "";                                   // чтобы тот же файл можно было выбрать снова
+  if(!f) return;
+  if(!canInventoryStock()){ toast("Опись доступна начальнику участка и выше"); return; }
+  _invPending = null;
+  if(f.size > IMP_MAX_BYTES){ _invSay(`Файл слишком большой (макс. ${Math.round(IMP_MAX_BYTES/1024/1024)} МБ).`); return; }
+  _invSay("Чтение файла…");
+  let XLSX;
+  try{ XLSX = await ensureXlsx(); }
+  catch(e){ _invSay("Не удалось загрузить Excel-модуль (нужна сеть в первый раз)."); return; }
+  let buf;
+  try{
+    buf = await new Promise((resolve,reject)=>{
+      const rd = new FileReader();
+      rd.onload = ()=> resolve(new Uint8Array(rd.result));
+      rd.onerror = ()=> reject(new Error("read"));
+      rd.readAsArrayBuffer(f);
+    });
+  }catch(e){ _invSay("Ошибка чтения файла."); return; }
+  let read;
+  try{ read = _impReadAoa(XLSX, buf, f.name); }
+  catch(e){ console.warn("опись: разбор", f.name, e); _invSay(`Не удалось прочитать «${esc(f.name)}».`); return; }
+  if(read.error){ _invSay(esc(read.error)); return; }
+  const parsed = _invParseAoa(read.aoa);
+  if(parsed.error){ _invSay(esc(parsed.error)); return; }
+  if(!parsed.rows.length){ _invSay("В файле нет строк с наименованием."); return; }
+  const plan = _invPlan(parsed.rows);
+  plan.file = f.name;
+  _invPending = plan;
+  _invSay(_invPreviewHtml(plan));
+}
+function cancelInventory(){ _invPending = null; _invSay(""); toast("Опись отменена — ничего не изменилось"); }
+/* ШАГ 2 — подтверждение и применение. */
+async function applyInventory(){
+  const p = _invPending;
+  if(!p){ toast("Сначала выберите файл описи"); return; }
+  if(!canInventoryStock()){ toast("Опись доступна начальнику участка и выше"); return; }
+  const zeroOn = !!(document.getElementById("invZero") || {}).checked;
+  /* Склад мог измениться, пока человек читал предпросмотр: пришёл pull из облака, кладовщик
+     провёл выдачу с другого телефона. Пересобираем план по тем же строкам файла и, если числа
+     разошлись, показываем НОВЫЙ предпросмотр вместо того, чтобы молча применить старый. */
+  const fresh = _invPlan(p.rows);
+  fresh.file = p.file;
+  const cnt = (x)=> `${x.add.length}/${x.up.length}/${x.down.length}/${x.bad.length}`;
+  const stale = cnt(fresh)!==cnt(p)
+    || fresh.up.concat(fresh.down).some((e,i)=>{ const o=p.up.concat(p.down)[i]; return !o || o.was!==e.was; });
+  _invPending = fresh;
+  if(stale){
+    _invSay(_invPreviewHtml(fresh));
+    toast("Склад изменился — проверьте числа ещё раз");
+    return;
+  }
+  const zeroList = zeroOn ? _invZeroCandidates(fresh) : [];
+  const day = todayStr().split("-").reverse().join(".");
+  const go = await confirmSheet(
+    `Файл: ${fresh.file}\n\n`
+    + `Новых позиций: ${fresh.add.length}\n`
+    + `Остаток вырастет: ${fresh.up.length}\n`
+    + `Остаток уменьшится: ${fresh.down.length}\n`
+    + `Совпало с учётом: ${fresh.same.length}\n`
+    + `Строк без отметки (не проверяли): ${fresh.empty.length}\n`
+    + `Не принято строк: ${fresh.bad.length}\n\n`
+    + `Позиции, которых в файле нет, ${zeroOn ? "будут ОБНУЛЕНЫ (см. следующий шаг)" : "останутся как есть"}.\n`
+    + `Записи уйдут в журнал с пометкой «Опись ${day}» — по ней их можно найти и отменить.`,
+    { yes:"Применить опись", no:"Отмена", title:"Подтверждение описи" }
+  );
+  if(!go) return;
+  if(zeroList.length){
+    const sum = zeroList.reduce((s,x)=> s + totalQtyOf(x), 0);
+    const names = zeroList.slice(0,6).map(s=>`• ${s.name} — ${fmtQty(totalQtyOf(s))} ${s.unit||""}`).join("\n");
+    const ok2 = await confirmSheet(
+      `Списать в ноль ${zeroList.length} поз., которых нет в файле (всего ${fmtQty(sum)} ед.)?\n\n`
+      + `${names}${zeroList.length>6?`\n…и ещё ${zeroList.length-6}`:""}\n\n`
+      + `Отсутствие строки в файле обычно значит «не считали», а не «пусто». Обнуляйте, только если опись СПЛОШНАЯ — пересчитан весь раздел целиком.\n`
+      + `Позиции останутся в каталоге. Отменить одной кнопкой нельзя — только разбором журнала.`,
+      { yes:"Да, обнулить", no:"Не обнулять", title:"Обнуление отсутствующих", danger:true }
+    );
+    if(!ok2) return;
+  }
+  // план гасим ДО применения: _invApply перерисовывает экран, и живой _invPending вернул бы
+  // на него предпросмотр уже применённой описи — как будто её надо применить ещё раз
+  _invPending = null;
+  const r = _invApply(fresh, zeroList);
+  const parts = [`новых ${r.added}`, `больше ${r.raised}`, `меньше ${r.lowered}`];
+  if(r.zeroed) parts.push(`обнулено ${r.zeroed}`);
+  toast(`Опись применена: ${parts.join(" · ")}`);
+  // тост живёт 1.8 с — метку пачки оставляем на экране: по ней ищут записи в журнале
+  _invSay(`<div class="text-sm">Опись применена. Метка в журнале: <b>${esc(r.note)}</b>.</div>
+    <div class="text-xs opacity-70 mt-1">Новых позиций: ${r.added} · стало больше: ${r.raised} · стало меньше: ${r.lowered}${r.zeroed?` · обнулено: ${r.zeroed}`:""}. Не принято строк: ${fresh.bad.length}.</div>
+    ${r.jrTrimmed?`<div class="text-xs opacity-70 mt-1">В журнале накопилось больше ${JOURNAL_LOCAL_CAP} записей — ${r.jrTrimmed} самых старых убрано с телефона. Они уже в общей базе и вернутся при синхронизации.</div>`:""}`);
+}
+
 function orderReceive(opId){
   if(!ensureCanEdit()) return;
   const op = state.journals.order.find(o=>o.id===opId); if(!op) return;
@@ -5816,6 +6223,8 @@ function renderMore(){
   data.push(row("Экспорт в Excel","openFiles('Export')",{ sub:"выгрузить склад и историю в файл" }));
   data.push(row("Резервная копия","openFiles('Backup')",{ sub:"сохранить базу целиком и восстановить" }));
   if(canEditStock()) data.push(row("Загрузка накладной из Excel","openFiles('Import')",{ sub:"приход по файлу вместо ручного ввода" }));
+  // опись — соседняя строка с накладной: оба входа в «Файлы», но операции разные (задать ≠ добавить)
+  if(canInventoryStock()) data.push(row("Загрузка описи склада","openFiles('Inventory')",{ sub:"инвентаризация по файлу" }));
   if(profiles.list.length>1 && !restricted && isOwner) data.push(row("Общий каталог баз","mergeCatalogs()"));
   data.push(row("Журнал операций","openJournalSheet()"));
 
@@ -5917,7 +6326,20 @@ function renderFiles(){
     <div id="impReceiptOut" class="text-sm whitespace-pre-line opacity-80"></div>
     <div class="text-xs opacity-70">Файл поставщика (УПД, счёт-фактура) подойдёт как есть, переделывать не нужно: наименование, количество, единицу и дату приложение возьмёт само. Можно выбрать сразу несколько файлов — до ${IMP_MAX_FILES}, всего до ${IMP_MAX_ROWS} строк, каждый до ${mb} МБ.</div>`);
 
-  /* 2. ВЫГРУЗИТЬ. Прежний openExportSheet: те же три действия и тот же порядок. */
+  /* 2. ОПИСЬ. Стоит ОТДЕЛЬНОЙ группой рядом с накладной, а не внутри неё: операции соседние по
+     виду («залил файл»), но противоположные по смыслу — накладная ДОБАВЛЯЕТ к остатку, опись
+     ЗАДАЁТ остаток. Смешать их в одном блоке значит однажды получить приход вместо пересчёта.
+     Группа рисуется только при праве (нач. участка и выше на общей базе) — см. canInventoryStock. */
+  const gInv = !canInventoryStock() ? "" : grp("Inventory", "Загрузка описи склада", `
+    <div class="text-sm opacity-80">Пересчитали склад руками — внесите результат файлом, а не по одной позиции. Приложение сверит файл с учётом и покажет, что изменится, до того как что-то менять.</div>
+    <div class="text-sm"><b>Опись ЗАДАЁТ остаток, а не добавляет.</b> Позиции, которых в файле нет, остаются нетронутыми: пустая строка — это «не проверяли», а не «ноль».</div>
+    <button class="btn btn-ghost w-full" onclick="downloadInventoryTemplate()">${ico("inbox",18)} Скачать бланк описи .xlsx</button>
+    <div class="text-xs opacity-70">В бланке уже стоит весь ваш склад — остаётся вписать столбец «Фактический остаток». Названия набирать не нужно: от опечатки заводится новая карточка вместо правки старой. Столбцы: Тип · Наименование · Ед. изм. · Фактический остаток · Место · Срок годности · Примечание.</div>
+    <label class="btn btn-primary w-full">${ico("outbox",18)} Выбрать файл описи<input type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hidden" onchange="importInventoryExcel(event)"></label>
+    <div id="invOut" class="text-sm"></div>
+    <div class="text-xs opacity-70">Ничего не запишется, пока вы не нажмёте «Применить опись» на разборе. Позиции с партиями (срок годности) опись не трогает — их правят вручную. Всё изменённое уйдёт в журнал пачкой с пометкой «Опись» и датой.</div>`);
+
+  /* 3. ВЫГРУЗИТЬ. Прежний openExportSheet: те же три действия и тот же порядок. */
   const gExport = grp("Export", "Выгрузить в файл", `
     <div class="text-sm opacity-80">Файл сохранится на телефон: отправьте его в контору, откройте на компьютере или распечатайте. Интернет не нужен.</div>
     <button class="btn btn-success w-full" onclick="exportXlsx()">${ico("chart",18)} Скачать всё — Excel</button>
@@ -5926,7 +6348,7 @@ function renderFiles(){
     <button class="btn btn-ghost w-full" onclick="exportXlsxFiltered()">Часть склада — Excel…</button>
     <div class="text-xs opacity-70">«Часть» — срез по месту хранения, категории, сроку годности и наличию: например, только просроченное на складе А.</div>`);
 
-  /* 3. КОПИЯ. Прежний openBackupSheet целиком, вместе с восстановлением и обеими подсказками
+  /* 4. КОПИЯ. Прежний openBackupSheet целиком, вместе с восстановлением и обеими подсказками
      про общую базу; текст переписан на человеческий, состав и права — прежние. */
   const gBackup = grp("Backup", "Резервная копия", `
     <div class="text-sm opacity-80">На случай, если телефон потеряют, разобьют или сбросят. Файл .json открывать не нужно — он только для восстановления. Делайте копию регулярно.</div>
@@ -5952,7 +6374,14 @@ function renderFiles(){
       <div class="font-bold text-xl" style="flex:1;min-width:0">Файлы</div>
     </div>
     <div class="text-sm opacity-70">Здесь всё, что приходит файлом и уходит файлом.</div>
-    ${gImport}${gExport}${gBackup}`;
+    ${gImport}${gInv}${gExport}${gBackup}`;
+
+  /* Разобранная, но ещё не подтверждённая опись переживает перерисовку. render() зовут и pull
+     из облака, и любая правка склада — без этого предпросмотр, который человек в этот момент
+     читает, молча исчезал бы с экрана, а план оставался бы в памяти невидимым. */
+  if(_invPending && document.getElementById("invOut")){
+    try{ document.getElementById("invOut").innerHTML = _invPreviewHtml(_invPending); }catch(_){}
+  }
 
   /* Подкрутка к нужной группе — только когда пришли по строке, которая её и обещала («Резервная
      копия» лежит ниже сгиба на 320px, и человек, нажавший её, должен увидеть именно её).
@@ -7869,6 +8298,7 @@ Object.assign(window,{openFilterSheet,openTaskFilterSheet,openStockFilterSheet,r
   openAboutSheet,openFaqSheet,openPrivacySheet,openTermsSheet,openRecoveryEmailSheet,
   openMove,doMove,
   openReceiptImportSheet,downloadReceiptTemplate,importReceiptsExcel,
+  downloadInventoryTemplate,importInventoryExcel,applyInventory,cancelInventory,
   openMembersSheet,openMemberRole,setMemberRole,memberRotate,memberRemove,openAddMember,openResetPwd,
   openShift,openHandover,doHandover,
   openOrgRolesSheet,openAddOrgMember,doAddOrgMember,_omToggleParty,openAssignExisting,_aeToggleParty,doAssignExisting,orgRoleRemove,
