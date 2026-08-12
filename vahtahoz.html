@@ -1831,8 +1831,17 @@ function nav(view){
   document.querySelectorAll("#views > section").forEach(s=>{
     s.classList.toggle("hidden", s.dataset.view!==view);
   });
+  /* Подраздел подсвечивает кнопку своего родителя. «Файлы» — экран, а не вкладка панели: он
+     открывается только строками из «Ещё» (и переходниками openExportSheet/openBackupSheet,
+     которые ведут оттуда же). Пока он был открыт, в панели не горело НИЧЕГО — человек терял
+     ответ на вопрос «где я» и путь назад, кроме единственной кнопки «‹».
+     «Уведомления» сюда намеренно не добавлены: их открывает колокольчик из шапки на ЛЮБОМ
+     экране, и подсветить «Ещё» значило бы соврать про то, откуда пришли (закрытие и так
+     возвращает по _notifBack). */
+  const NAV_PARENT = { files:"more" };
+  const navHi = NAV_PARENT[view] || view;
   document.querySelectorAll("#navbar .nav-btn").forEach(b=>{
-    b.classList.toggle("active", b.dataset.nav===view);
+    b.classList.toggle("active", b.dataset.nav===navHi);
   });
   if(view==="more" && cloud.session?.access_token){
     cloudRefreshRecoveryProfile().finally(()=>render());
@@ -4649,7 +4658,12 @@ function openReceiptImportSheet(){
 async function downloadReceiptTemplate(){
   let XLSX; try{ XLSX = await ensureXlsx(); }catch(e){ toast("Не удалось загрузить Excel-модуль (нужна сеть в первый раз)"); return; }
   /* Колонка «Тип» — чтобы одним файлом можно было завезти и еду, и хозку, и инструмент.
-     Оставить её пустой можно: тогда тип берётся с той вкладки склада, где человек стоит. */
+     Оставить её пустой можно: тогда строка уйдёт в раздел, ВЫБРАННЫЙ КНОПКАМИ рядом с «Выбрать
+     файл» (_impTypeChoice → _impDefaultStockType). Здесь было написано «берётся с той вкладки
+     склада, где человек стоит» — это устарело: вкладку молча наследовать перестали как раз
+     потому, что накладная поставщика без столбца «Тип» уезжала в раздел последней открытой
+     вкладки. Со «Склада» кнопки лишь ПРЕДустанавливаются на текущую вкладку, в «Файлах» — на
+     «Продукты», и в обоих случаях выбор виден на экране и в подтверждении. */
   const sample = [
     { "Тип":"Продукты", "Наименование":"Манная крупа", "Количество":7, "Ед. изм.":"кг", "Категория":"Крупы", "Срок годности":"", "Место":"Склад А", "Примечание":"", "Дата":"2026-07-22" },
     { "Тип":"Продукты", "Наименование":"Молоко сгущённое", "Количество":24, "Ед. изм.":"шт", "Категория":"Молочные продукты", "Срок годности":"2027-01-15", "Место":"", "Примечание":"Поставщик X", "Дата":"2026-07-24" },
@@ -6767,10 +6781,15 @@ function renderMore(){
     data.push(row("Места хранения","openLocationsEdit()"));
     data.push(row("Категории","openCategoriesEdit()"));
   }
-  /* Обе строки ведут в ОДИН раздел «Файлы» — к своей группе внутри него. Названия оставлены
-     прежними намеренно: владелец ищет глазами «Резервная копия», и переименовать её в «Файлы»
-     значит отобрать у него привычный путь. Двух разных мест с одним смыслом при этом нет:
-     прежние листы больше не открываются, openExportSheet/openBackupSheet — переходники сюда же. */
+  /* Строки ниже ведут в ОДИН раздел «Файлы» — каждая к своей группе внутри него. Названия
+     оставлены прежними намеренно: владелец ищет глазами «Резервная копия», и переименовать её в
+     «Файлы» значит отобрать у него привычный путь. Двух разных мест с одним смыслом при этом нет:
+     прежние листы больше не открываются, openExportSheet/openBackupSheet — переходники сюда же.
+     НО СЛОВА «ФАЙЛЫ» ЗДЕСЬ НЕ БЫЛО ВООБЩЕ. В раздел вели четыре разные строки, и ни одна так не
+     называлась: кому по телефону сказали «зайди в Файлы», тот его не находил — искал слово,
+     которого на экране нет. Первой строкой ставим сам раздел под его собственным именем, а
+     четыре прежние остаются прямыми входами внутрь. */
+  data.push(row("Файлы","openFiles()",{ sub:"всё, что приходит и уходит файлом" }));
   data.push(row("Экспорт в Excel","openFiles('Export')",{ sub:"выгрузить склад и историю в файл" }));
   data.push(row("Резервная копия","openFiles('Backup')",{ sub:"сохранить базу целиком и восстановить" }));
   if(canEditStock()) data.push(row("Загрузка накладной из Excel","openFiles('Import')",{ sub:"приход по файлу вместо ручного ввода" }));
@@ -6856,6 +6875,12 @@ function openFiles(anchor){
   nav("files");
 }
 function closeFiles(){ nav(_filesBack||"more"); }
+/* Прыжок по оглавлению внутри уже открытого экрана. Отдельно от _filesAnchor: тот срабатывает
+   один раз ПОСЛЕ отрисовки при входе, а здесь экран уже нарисован и перерисовывать его незачем. */
+function filesJumpTo(id){
+  const el = document.getElementById("filesGrp"+id);
+  if(el) try{ el.scrollIntoView({ block:"start", behavior:"smooth" }); }catch(_){ el.scrollIntoView(); }
+}
 /* Переходники со старых имён. Прежние листы удалены, но имена остались в window и в разметке
    («Память телефона» → «Резервная копия»). Ведут туда же, куда строки в «Ещё». */
 function openExportSheet(){ openFiles("Export"); }
@@ -6913,13 +6938,49 @@ function renderFiles(){
     <div class="text-xs opacity-70">${restricted
       ? "Сохраняется ваша база — склад и вся история движений."
       : "«Эту базу» — только ту, что открыта сейчас. «Все базы» — один файл со всеми базами телефона: это главная страховка, с него восстанавливается всё."}</div>
-    <label class="btn btn-ghost w-full">Восстановить из файла<input type="file" accept="application/json" class="hidden" onchange="importData(event)"></label>
+    <!-- ПРЕДУПРЕЖДЕНИЕ — НАД КНОПКОЙ, А НЕ ПОД НЕЙ. Обе подсказки стояли ниже «Восстановить из
+         файла» мелким текстом, а вторая из них — про общую базу — как раз и говорит, что разбор
+         откажет. Человек без права успевал открыть проводник, найти файл, выбрать его — и только
+         после этого читал, что ему нельзя. Теперь оба предупреждения читаются ДО выбора файла. -->
     <div class="text-xs opacity-70">${restricted
       ? "Приложение проверит файл и спросит подтверждение, прежде чем что-то менять."
       : "Подходит любой из этих двух файлов — приложение само разберётся, какой из них дали, и спросит подтверждение."}</div>
     ${cloudBase?`<div class="text-xs opacity-70">${canImp
       ? "База общая: то, что вы зальёте из файла, увидит вся бригада. Файл «все базы» остаётся на этом телефоне и в облако не уходит."
-      : "Заливать файл поверх общей базы приложение даёт начальнику участка и выше: ошибиться файлом легко, а отката нет. Файл «все базы» на этом телефоне восстановить можно — в облако он не уходит."}</div>`:""}`);
+      : "Заливать файл поверх общей базы приложение даёт начальнику участка и выше: ошибиться файлом легко, а отката нет. Файл «все базы» на этом телефоне восстановить можно — в облако он не уходит."}</div>`:""}
+    <label class="btn btn-ghost w-full">Восстановить из файла<input type="file" accept="application/json" class="hidden" onchange="importData(event)"></label>`);
+
+  /* ОГЛАВЛЕНИЕ. Экран длинный: на 390 px это 2240 точек, почти три экрана, и «Резервная копия» —
+     последняя группа — лежит в самом низу. Человек, пришедший «сделать копию», мотал вслепую.
+     Четыре чипа по существующим якорям: они уже были нужны для _filesAnchor, здесь тот же прыжок,
+     только вручную. Состав чипов повторяет состав групп — у роли без прав загрузки чипа на неё
+     нет, потому что нет и самой группы (иначе чип вёл бы в пустоту). Меньше двух групп — чипы не
+     рисуем вовсе: оглавление из одного пункта только занимает место. */
+  const toc = [
+    gImport ? ["Import",    "Загрузить"]    : null,
+    gInv    ? ["Inventory", "Опись"]        : null,
+    gExport ? ["Export",    "Выгрузить"]    : null,
+    gBackup ? ["Backup",    "Резервная копия"] : null,
+  ].filter(Boolean);
+  /* Значок «вниз» — не украшение. Ниже на этом же экране стоят чипы выбора раздела для строк без
+     столбца «Тип», и без него оба набора выглядят одинаковыми круглыми чипами: один прокручивает,
+     другой меняет настройку импорта. Стрелка сразу говорит, что чип ведёт вниз по странице. */
+  const gToc = toc.length<2 ? "" : `<div class="flex flex-wrap gap-2" id="filesToc">${
+    toc.map(([id,label])=>`<button class="chip" data-filesgo="${id}" onclick="filesJumpTo('${id}')">${ico("chevDown",14)} ${esc(label)}</button>`).join("")}</div>`;
+
+  /* ЧЕГО ЗДЕСЬ НЕТ И ПОЧЕМУ. Группы загрузки роли без прав просто не рисовались, и экран выглядел
+     так, будто загрузки из файла в приложении нет вовсе: работник не знал, что она существует, и
+     не мог даже попросить доступ. Одна серая строка внизу называет недостающее и того, у кого оно
+     есть. Права этим НЕ трогаются — это только надпись.
+     Формулировки две, потому что и права два разных: накладную заливает всякий, кому открыта
+     правка склада (canEditStock), а опись на ОБЩЕЙ базе — начальник участка и выше
+     (canInventoryStock → canManageBase). Обещать одно вместо другого нельзя: человек пойдёт
+     просить не тот доступ. */
+  const gLocked = !canEdit
+    ? `<div class="text-xs opacity-60 px-1 pb-2">Загрузка из файла — приход по накладной и опись склада — доступна тем, кому открыта правка склада. Доступ выдаёт начальник участка.</div>`
+    : (!canInventoryStock()
+      ? `<div class="text-xs opacity-60 px-1 pb-2">Загрузка описи склада доступна начальнику участка и выше.</div>`
+      : "");
 
   v.innerHTML = `
     <div class="flex items-center gap-2">
@@ -6930,7 +6991,9 @@ function renderFiles(){
       <div class="font-bold text-xl" style="flex:1;min-width:0">Файлы</div>
     </div>
     <div class="text-sm opacity-70">Здесь всё, что приходит файлом и уходит файлом.</div>
-    ${gImport}${gInv}${gExport}${gBackup}`;
+    ${gToc}
+    ${gImport}${gInv}${gExport}${gBackup}
+    ${gLocked}`;
 
   /* Разобранная, но ещё не подтверждённая опись переживает перерисовку. render() зовут и pull
      из облака, и любая правка склада — без этого предпросмотр, который человек в этот момент
@@ -8867,7 +8930,7 @@ Object.assign(window,{openFilterSheet,openTaskFilterSheet,openStockFilterSheet,r
   toggleCheck,addCheck,resetChecklist,removeCheck,
   exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,exportJournalsMonth,clearLog,wipeAll,toggleTheme,setTheme,
   doPendingSave,   // вызывается из onclick шита сохранения — обязателен в window
-  openCloudSheet,openExportSheet,openBackupSheet,openFiles,closeFiles,openJournalSheet,openStockReconcileSheet,openGrantBasesSheet,doGrantBases,openBroadcastSheet,sendBroadcast,
+  openCloudSheet,openExportSheet,openBackupSheet,openFiles,closeFiles,filesJumpTo,openJournalSheet,openStockReconcileSheet,openGrantBasesSheet,doGrantBases,openBroadcastSheet,sendBroadcast,
   openAboutSheet,openFaqSheet,openPrivacySheet,openTermsSheet,openRecoveryEmailSheet,
   openMove,doMove,
   openReceiptImportSheet,downloadReceiptTemplate,importReceiptsExcel,setImportType,
