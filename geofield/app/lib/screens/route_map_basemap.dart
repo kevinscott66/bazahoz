@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../data/tile_cache.dart';
 import '../models/observation_point.dart';
 import '../models/sample.dart' show SyncStatus;
 import '../theme/tokens.dart';
@@ -19,13 +20,15 @@ import '../util/route_geo.dart' show sk42Georef;
 /// — подложка пуста (фон темы), но точки/трек/привязка уже работают; заготовка
 /// тайлов Магадана и Якутии и скачивание регионами — следующий заход.
 
-/// Провайдер тайлов из локального кэша `{dir}/{z}/{x}/{y}.png`. Тайла нет —
-/// прозрачная плитка (просвечивает фон карты). НИКОГДА не ходит в сеть.
+/// Провайдер тайлов из локального кэша `{dir}/{z}/{x}/{y}.png`. Наличие тайла —
+/// по индексу [TileCacheIndex] (Set-поиск, БЕЗ синхронного existsSync на каждый
+/// тайл в горячем пути — долг аудита закрыт). Тайла нет — прозрачная плитка.
+/// НИКОГДА не ходит в сеть.
 class OfflineRasterTileProvider extends TileProvider {
-  OfflineRasterTileProvider(this.cacheDir);
+  OfflineRasterTileProvider(this.index);
 
-  /// Каталог офлайн-тайлов. null — тайлов нет вовсе (пустая подложка).
-  final Directory? cacheDir;
+  /// Индекс офлайн-тайлов. null — тайлов нет вовсе (пустая подложка).
+  final TileCacheIndex? index;
 
   // 1×1 прозрачный PNG (8-бит RGBA) — плитка-заглушка, когда тайла в кэше нет.
   static final Uint8List _blank = base64Decode(
@@ -34,11 +37,13 @@ class OfflineRasterTileProvider extends TileProvider {
 
   @override
   ImageProvider getImage(TileCoordinates coordinates, TileLayer options) {
-    final dir = cacheDir;
-    if (dir != null) {
-      final f = File(
-          '${dir.path}/${coordinates.z}/${coordinates.x}/${coordinates.y}.png');
-      if (f.existsSync()) return FileImage(f);
+    final idx = index;
+    final dir = idx?.baseDir;
+    if (idx != null &&
+        dir != null &&
+        idx.has(coordinates.z, coordinates.x, coordinates.y)) {
+      return FileImage(File(
+          '${dir.path}/${coordinates.z}/${coordinates.x}/${coordinates.y}.png'));
     }
     return MemoryImage(_blank);
   }
@@ -50,15 +55,51 @@ class RouteBasemapView extends StatelessWidget {
     required this.points,
     required this.samplesByPoint,
     required this.onTapPoint,
-    this.tileCacheDir,
+    this.tileIndex,
   });
 
   final List<ObservationPoint> points;
   final Map<String, int> samplesByPoint;
   final void Function(ObservationPoint) onTapPoint;
 
-  /// Каталог офлайн-тайлов (null — подложки нет, только точки/трек).
-  final Directory? tileCacheDir;
+  /// Индекс офлайн-тайлов (null — подложки нет, только точки/трек).
+  final TileCacheIndex? tileIndex;
+
+  /// Честная метка состояния подложки по РЕАЛЬНОМУ покрытию охвата маршрута
+  /// тайлами (а не по «каталог задан/нет»): нет тайлов → «не загружены»,
+  /// неполно → «частично N%», полно → без метки. Крупный охват (оценка тайлов
+  /// не влезает) — молча без метки, чтобы не пугать.
+  String? _tileNotice(List<LatLng> coords) {
+    final idx = tileIndex;
+    if (idx == null || idx.isEmpty) {
+      return 'Офлайн-тайлы не загружены — только точки';
+    }
+    if (coords.isEmpty) return null;
+    var minLat = coords.first.latitude, maxLat = minLat;
+    var minLon = coords.first.longitude, maxLon = minLon;
+    for (final c in coords) {
+      minLat = c.latitude < minLat ? c.latitude : minLat;
+      maxLat = c.latitude > maxLat ? c.latitude : maxLat;
+      minLon = c.longitude < minLon ? c.longitude : minLon;
+      maxLon = c.longitude > maxLon ? c.longitude : maxLon;
+    }
+    try {
+      final needed = tilesForRegion(
+        west: minLon,
+        south: minLat,
+        east: maxLon,
+        north: maxLat,
+        minZoom: 10,
+        maxZoom: 12,
+        maxTiles: 20000,
+      );
+      final cov = idx.coverage(needed);
+      if (cov >= 0.999) return null; // полное покрытие — без метки
+      return 'Тайлы загружены частично (${(cov * 100).round()}%)';
+    } on ArgumentError {
+      return null; // охват слишком крупный для быстрой оценки — без метки
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -69,6 +110,7 @@ class RouteBasemapView extends StatelessWidget {
         .toList()
       ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
     final coords = [for (final p in located) LatLng(p.lat!, p.lon!)];
+    final notice = _tileNotice(coords);
 
     return Stack(
       children: [
@@ -93,7 +135,7 @@ class RouteBasemapView extends StatelessWidget {
           ),
           children: [
             TileLayer(
-              tileProvider: OfflineRasterTileProvider(tileCacheDir),
+              tileProvider: OfflineRasterTileProvider(tileIndex),
               maxNativeZoom: 16,
               // Офлайн: без User-Agent-сети; провайдер не делает запросов.
               tileDisplay: const TileDisplay.instantaneous(),
@@ -128,11 +170,11 @@ class RouteBasemapView extends StatelessWidget {
             top: GfSpace.x8,
             child: _GeorefBadge(points: located),
           ),
-        if (tileCacheDir == null)
-          const Positioned(
+        if (notice != null)
+          Positioned(
             left: GfSpace.x12,
             bottom: GfSpace.x12,
-            child: _Chip('Офлайн-тайлы не загружены — только точки'),
+            child: _Chip(notice),
           ),
       ],
     );

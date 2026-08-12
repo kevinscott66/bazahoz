@@ -1,14 +1,17 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:geofield/data/tile_cache.dart';
 import 'package:geofield/models/observation_point.dart';
 import 'package:geofield/screens/route_map_basemap.dart';
 
 import 'helpers.dart';
 
 /// Каркас подложки карты (за флагом mapBasemap): точки/трек/георефер поверх
-/// офлайн-тайлов. Тайлов нет (cacheDir=null) — провайдер даёт прозрачную
-/// плитку, сеть не трогается; проверяем оверлеи и тап по точке.
+/// офлайн-тайлов. Тайлов нет (tileIndex=null) — провайдер даёт прозрачную
+/// плитку, сеть не трогается; проверяем оверлеи, тап по точке и метку покрытия.
 void main() {
   ObservationPoint pt(String id, double lat, double lon,
           {bool draft = false}) =>
@@ -26,7 +29,8 @@ void main() {
 
   Future<void> pumpMap(WidgetTester tester, List<ObservationPoint> points,
       {void Function(ObservationPoint)? onTap,
-      Map<String, int> samplesByPoint = const {}}) async {
+      Map<String, int> samplesByPoint = const {},
+      TileCacheIndex? tileIndex}) async {
     tallPhone(tester);
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
@@ -34,7 +38,7 @@ void main() {
           points: points,
           samplesByPoint: samplesByPoint,
           onTapPoint: onTap ?? (_) {},
-          tileCacheDir: null, // офлайн-тайлов нет — прозрачные плитки
+          tileIndex: tileIndex, // null — офлайн-тайлов нет, прозрачные плитки
         ),
       ),
     ));
@@ -77,12 +81,52 @@ void main() {
     expect(tapped?.id, 'p2');
   });
 
-  testWidgets('провайдер тайлов: есть кэш — FileImage, нет — прозрачная плитка',
+  testWidgets('провайдер: тайл в индексе → FileImage, вне — прозрачная плитка',
       (tester) async {
-    final provider = OfflineRasterTileProvider(null);
-    final img = provider.getImage(
-        const TileCoordinates(1, 2, 3), TileLayer(urlTemplate: ''));
-    expect(img, isA<MemoryImage>(),
-        reason: 'без каталога кэша — плитка-заглушка, не сетевой запрос');
+    // Индекс с одним тайлом z1/x2/y3 и каталогом (файл существовать не обязан:
+    // FileImage не читает диск при конструировании).
+    final idx = TileCacheIndex(Directory('/tmp/tiles'), {'1/2/3'});
+    final provider = OfflineRasterTileProvider(idx);
+    // TileCoordinates(x, y, z): (2,3,1) → z1/x2/y3 — есть в индексе.
+    expect(
+        provider.getImage(
+            const TileCoordinates(2, 3, 1), TileLayer(urlTemplate: '')),
+        isA<FileImage>());
+    // Отсутствующий тайл → заглушка, не сеть.
+    expect(
+        provider.getImage(
+            const TileCoordinates(9, 9, 9), TileLayer(urlTemplate: '')),
+        isA<MemoryImage>());
+    // null-индекс → всегда заглушка.
+    expect(
+        OfflineRasterTileProvider(null).getImage(
+            const TileCoordinates(2, 3, 1), TileLayer(urlTemplate: '')),
+        isA<MemoryImage>());
+  });
+
+  testWidgets('метка покрытия: полный кэш — без метки, частичный — «частично»',
+      (tester) async {
+    final points = [pt('p1', 62.781, 148.150), pt('p2', 62.784, 148.160)];
+    // Все тайлы охвата маршрута на z10..12 — что и считает _tileNotice.
+    final needed = tilesForRegion(
+        west: 148.150,
+        south: 62.781,
+        east: 148.160,
+        north: 62.784,
+        minZoom: 10,
+        maxZoom: 12);
+    final full = TileCacheIndex(
+        Directory('/tmp/tiles'), {for (final t in needed) t.key});
+
+    // Полное покрытие — метки нет.
+    await pumpMap(tester, points, tileIndex: full);
+    expect(find.textContaining('Тайлы загружены частично'), findsNothing);
+    expect(find.textContaining('не загружены'), findsNothing);
+
+    // Половина тайлов — честная метка «частично».
+    final half = TileCacheIndex(Directory('/tmp/tiles'),
+        {for (final t in needed.take(needed.length ~/ 2)) t.key});
+    await pumpMap(tester, points, tileIndex: half);
+    expect(find.textContaining('Тайлы загружены частично'), findsOneWidget);
   });
 }
