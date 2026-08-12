@@ -194,7 +194,12 @@ async function callerCaps(admin: any, uid: string): Promise<Caps> {
   if (be) throw new Error("caps_bm");
   for (const m of bms || []) {
     // ранг — ВСЕГДА от роли (не от изменяемого флага can_manage). Территория (право рулить базой) — по can_manage.
-    caps.rank = Math.max(caps.rank, rankOf(m.role || "site_manager"));
+    // Пустая/NULL-роль даёт 0, как role_rank() в БД. Раньше здесь стояло `m.role || "site_manager"`,
+    // и legacy-строка v134 с role = NULL поднимала человека до ранга 2 — в БД у той же строки
+    // role_rank(NULL) = 0. Расхождение опасно тем, что второго рубежа нет: create_member пишет
+    // под service_role, у которого auth.uid() пуст, и enforce_base_member_write выходит на первой
+    // строке (`if caller is null then return`). То есть ранг из этой функции — единственный гейт.
+    caps.rank = Math.max(caps.rank, rankOf(m.role || ""));
     if (m.can_manage) caps.bases.add(m.base_id);
   }
   return caps;

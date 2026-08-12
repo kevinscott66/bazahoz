@@ -77,7 +77,7 @@ dups as (
 enforce_ver as (
   select case
     when not exists (select 1 from enforce) then 'НЕТ ФУНКЦИИ'
-    -- маркер round6 — уникальный комментарий из 2026-08-01_audit_round6_fixes.sql
+    -- маркер round6 — уникальный комментарий из 2026-08-01b_audit_round6_fixes.sql
     when (select src from enforce) like '%legacy-строка чинится сменой роли%' then 'round6 (последняя)'
     -- маркер версии org_guard — уникальный комментарий из 2026-07-31_org_roles_preset_guard.sql
     when (select src from enforce) like '%тот же класс бага%' then 'org_guard'
@@ -157,7 +157,7 @@ checks(ord, migration, object, state) as (
     case when (select n from dups) = 0 then 'ок'
          else 'НЕТ — ДУБЛИ: ' || (select lst from dups)
               || '. Вызовы раннбука падают «is not unique» (обычно от повторного прогона '
-              || 'audit_round3 поверх 2026-08-01). Лечится 2026-08-01_audit_round6_fixes.sql'
+              || 'audit_round3 поверх 2026-08-01). Лечится 2026-08-01b_audit_round6_fixes.sql'
     end
 
   -- ── 2026-07-30_base_member_preset_all_roles.sql ──────────────────────────────
@@ -277,7 +277,7 @@ checks(ord, migration, object, state) as (
   union all select 50, 'auth_rate_per_ip', 'таблица public.auth_rate',
     case when to_regclass('public.auth_rate') is null then 'НЕТ' else 'есть' end
 
-  -- ── 2026-08-01_zeroing_report_fixes.sql ─────────────────────────────────────
+  -- ── 2026-08-01a_zeroing_report_fixes.sql ─────────────────────────────────────
   -- Без него отчёт ловит только уничтожение ≥99%, печатает НЕ то число, которое вернёт
   -- откат, шумит легальным расходом и не видит пересортицу вовсе.
   union all select 51, 'zeroing_fixes_0801', 'stock_zeroing_report: настраиваемый порог потери (p_min_frac)',
@@ -311,7 +311,7 @@ checks(ord, migration, object, state) as (
       else 'НЕТ — смена type у всей базы прячет позиции от повара/механика и ничем не откатывается'
     end
 
-  -- ── 2026-08-01_audit_round6_fixes.sql ───────────────────────────────────────
+  -- ── 2026-08-01b_audit_round6_fixes.sql ───────────────────────────────────────
   -- Проверки ПО СУЩЕСТВУ. Раньше здесь стояло только «функция есть» + «имя упомянуто»,
   -- и подмена is_backend_role на старую дырявую редакцию оставляла верификатор зелёным.
   union all select 70, 'audit_round6', 'is_backend_role: редакция (fail-closed, без NULL)',
@@ -332,7 +332,7 @@ checks(ord, migration, object, state) as (
         then 'есть (round6: fail-closed, ни одна ветка не возвращает NULL)'
       when strpos((select src from backend), 'session_user') = 0
         then 'НЕТ — «нет JWT-GUC ⇒ доверяем» это fail-OPEN: нужен позитивный признак по session_user'
-      else 'НЕТ — неизвестная редакция: проверьте текст функции вручную и примените 2026-08-01_audit_round6_fixes.sql'
+      else 'НЕТ — неизвестная редакция: проверьте текст функции вручную и примените 2026-08-01b_audit_round6_fixes.sql'
     end
   union all select 71, 'audit_round6', 'is_backend_role: SET search_path',
     case
@@ -385,7 +385,7 @@ checks(ord, migration, object, state) as (
       else 'ок (отозван)'
     end
 
-  -- ── ПЕРЕСМЕНКА: 2026-08-01_handover_consistency.sql + _handover_round9_fixes.sql ─
+  -- ── ПЕРЕСМЕНКА: 2026-08-01c_handover_consistency.sql + _handover_round9_fixes.sql ─
   -- Раньше этих строк здесь не было вовсе. handover_shift определяют ТРИ файла, и штатный
   -- 2026-07-28_journal_private_orphan_handover.sql молча откатывал более новые редакции —
   -- а верификатор после этого показывал «порядок соблюдён». Теперь откат ВИДЕН.
@@ -395,18 +395,18 @@ checks(ord, migration, object, state) as (
       when 'handover_consistency' then
         'НЕТ — редакция handover_consistency: повтор пересменки к ДРУГОМУ человеку молча '
         || 'возвращает 0, а задачи чужой базы уезжают к управляющему другой базы. '
-        || 'Применить 2026-08-01_handover_round9_fixes.sql'
+        || 'Применить 2026-08-01d_handover_round9_fixes.sql'
       when 'legacy 2026-07-28 (ОТКАЧЕНА)' then
         'ОТКАЧЕНА до 2026-07-28 (повторный прогон journal_private_orphan_handover): пересменка '
         || 'падает ''orphan'' на базах под управлением оргструктуры, гонка проходит обе, '
-        || 'авторизация fail-open. Применить 2026-08-01_handover_consistency.sql, затем '
-        || '2026-08-01_handover_round9_fixes.sql'
+        || 'авторизация fail-open. Применить 2026-08-01c_handover_consistency.sql, затем '
+        || '2026-08-01d_handover_round9_fixes.sql'
       else 'НЕТ ФУНКЦИИ — пересменка не работает совсем'
     end
   union all select 79, 'пересменка', 'журнал пересменок public.handover_log (повтор ≠ передача другому)',
     case
       when to_regclass('public.handover_log') is null
-        then 'НЕТ — второй вызов от того же уходящего к другому человеку вернёт «успех» и 0 задач. Применить 2026-08-01_handover_round9_fixes.sql'
+        then 'НЕТ — второй вызов от того же уходящего к другому человеку вернёт «успех» и 0 задач. Применить 2026-08-01d_handover_round9_fixes.sql'
       when has_table_privilege('authenticated', 'public.handover_log', 'SELECT')
         then 'ПРОБЛЕМА: SELECT выдан authenticated — revoke all on public.handover_log from authenticated'
       else 'есть'
@@ -421,6 +421,80 @@ checks(ord, migration, object, state) as (
            else 'pg_cron есть — проверьте задания: select jobname, schedule, active from cron.job where jobname like ''vahtahoz_%'';'
                 || ' если пусто, примените 2026-07-31_schedule_retention.sql'
       end)
+
+  -- ── 2026-08-12_audit_round12_fixes.sql ──────────────────────────────────────
+  -- Проверки ПО СУЩЕСТВУ, а не по факту существования объекта: обе находки round 12 —
+  -- это функции, которые СУЩЕСТВОВАЛИ и при этом не делали того, что обещали.
+  union all select 90, 'round12', 'can_see_type: редакция round 9 (границу типов не откатили)',
+    case
+      when not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                       where n.nspname = 'public' and p.proname = 'can_see_type')
+        then 'НЕТ ФУНКЦИИ'
+      when exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                   where n.nspname = 'public' and p.proname = 'can_see_type'
+                     and p.prosrc like '%@round9%')
+        then 'есть'
+      else 'НЕТ — редакция откачена (обычно повторным прогоном 2026-07-28_journal_private_orphan_handover.sql). '
+           || 'Начальник участка и хозрабочий теряют позиции с типом вне трёх известных; '
+           || 'а с самой старой редакцией политики склада 2026-08-02 становятся ШИРЕ. '
+           || 'Применить 2026-08-01d_handover_round9_fixes.sql'
+    end
+  union all select 91, 'round12', 'guard_bases_update: триггер реально проверяет (не current_user)',
+    case
+      when not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                       where n.nspname = 'public' and p.proname = 'guard_bases_update')
+        then 'НЕТ ФУНКЦИИ — применить 2026-08-02_guard_bases_update.sql'
+      when exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                   where n.nspname = 'public' and p.proname = 'guard_bases_update'
+                     and p.prosrc like '%current_user%')
+        then 'НЕТ — в теле остался current_user; внутри SECURITY DEFINER это ВЛАДЕЛЕЦ функции, '
+           || 'поэтому триггер пропускает ВСЕХ и не проверяет ничего. Применить 2026-08-12_audit_round12_fixes.sql'
+      when exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                   where n.nspname = 'public' and p.proname = 'guard_bases_update'
+                     and p.prosrc like '%@round12%')
+        then 'есть'
+      else 'НЕТ — редакция неизвестна, применить 2026-08-12_audit_round12_fixes.sql'
+    end
+  union all select 92, 'round12', 'guard_bases_update: триггер навешен на bases',
+    case
+      when exists (select 1 from pg_trigger t join pg_class c on c.oid = t.tgrelid
+                   where c.relname = 'bases' and t.tgname = 'guard_bases_update')
+        then 'есть'
+      else 'НЕТ — функция есть, а триггера нет: защита не работает. Применить 2026-08-12_audit_round12_fixes.sql'
+    end
+  union all select 93, 'round12', 'my_visible_types: не перечисляет чужие базы (предфильтр is_member)',
+    case
+      when not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                       where n.nspname = 'public' and p.proname = 'my_visible_types')
+        then 'НЕТ ФУНКЦИИ — применить 2026-08-02_rls_speed_stock.sql'
+      when exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                   where n.nspname = 'public' and p.proname = 'my_visible_types'
+                     and p.prosrc like '%is_member%')
+        then 'есть'
+      else 'НЕТ — любой залогиненный получает перечень UUID ВСЕХ баз организации через '
+           || 'POST /rest/v1/rpc/my_visible_types. Применить 2026-08-12_audit_round12_fixes.sql'
+    end
+  union all select 94, 'round12', 'базовые таблицы: RLS включён везде',
+    case
+      when exists (select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+                   where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity)
+        then 'НЕТ — есть таблицы без RLS: '
+           || (select string_agg(c.relname, ', ' order by c.relname)
+                 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+                where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity)
+           || '. Применить 2026-08-12_core_rls_baseline.sql'
+      else 'есть'
+    end
+  union all select 95, 'round12', 'базовые политики bases/base_members/profiles/tasks (ожидается 12)',
+    case
+      when (select count(*) from pg_policies where schemaname = 'public'
+             and tablename in ('bases', 'base_members', 'profiles', 'tasks')) >= 12
+        then 'есть'
+      else 'НЕТ — политик всего '
+           || (select count(*)::text from pg_policies where schemaname = 'public'
+                and tablename in ('bases', 'base_members', 'profiles', 'tasks'))
+           || ' из 12. Применить 2026-08-12_core_rls_baseline.sql'
+    end
 
   -- ── ГРАНТЫ: чего быть НЕ должно ─────────────────────────────────────────────
   union all select 60, 'ГРАНТЫ', 'stock_zeroing_report НЕ доступен authenticated',
@@ -466,7 +540,7 @@ checks(ord, migration, object, state) as (
     case
       when (select n from dups) > 0 then
         'СРОЧНО: у инструментов раннбука по НЕСКОЛЬКО перегрузок (' || (select lst from dups)
-        || ') — отчёт и откат падают «is not unique». Применить 2026-08-01_audit_round6_fixes.sql'
+        || ') — отчёт и откат падают «is not unique». Применить 2026-08-01b_audit_round6_fixes.sql'
       else
       case (select v from enforce_ver)
         when 'preset_all_roles' then
@@ -479,8 +553,8 @@ checks(ord, migration, object, state) as (
             else 'применить 2026-07-31_org_roles_preset_guard.sql (пресеты org-ролей + фикс пересменки по legacy custom)' end
         when 'org_guard' then
           case when not exists (select 1 from metarestore)
-            then 'применить 2026-08-01_zeroing_report_fixes.sql, затем 2026-08-01_audit_round6_fixes.sql'
-            else 'применить 2026-08-01_audit_round6_fixes.sql (is_backend_role fail-closed, откат не затирает поздние правки, отчёт и откат по одному множеству)' end
+            then 'применить 2026-08-01a_zeroing_report_fixes.sql, затем 2026-08-01b_audit_round6_fixes.sql'
+            else 'применить 2026-08-01b_audit_round6_fixes.sql (is_backend_role fail-closed, откат не затирает поздние правки, отчёт и откат по одному множеству)' end
         when 'round6 (последняя)' then
           -- триггерная функция может быть round6, а инструменты раннбука — откачены назад
           -- повторным прогоном старого файла. Тогда «порядок соблюдён» было бы ложью.
@@ -490,22 +564,22 @@ checks(ord, migration, object, state) as (
                  or coalesce((select src from metarestore), '') not like '%@round6%'
                  or coalesce((select src from backend),     '') not like '%@round6%'
             then 'ЧАСТИЧНО: триггерная функция round6, но инструменты раннбука откачены назад '
-                 || '(повторный прогон старого файла) — применить 2026-08-01_audit_round6_fixes.sql'
+                 || '(повторный прогон старого файла) — применить 2026-08-01b_audit_round6_fixes.sql'
             -- round9: ПЕРЕСМЕНКА живёт в отдельных файлах и откатывается штатным файлом
             -- репозитория. Пока она не round9, «порядок соблюдён» — ложь.
             when (select v from handover_ver) = 'legacy 2026-07-28 (ОТКАЧЕНА)'
             then 'ЧАСТИЧНО: ПЕРЕСМЕНКА ОТКАЧЕНА до редакции 2026-07-28 (повторный прогон '
-                 || 'journal_private_orphan_handover) — применить 2026-08-01_handover_consistency.sql, '
-                 || 'затем 2026-08-01_handover_round9_fixes.sql'
+                 || 'journal_private_orphan_handover) — применить 2026-08-01c_handover_consistency.sql, '
+                 || 'затем 2026-08-01d_handover_round9_fixes.sql'
             when (select v from handover_ver) = 'НЕТ ФУНКЦИИ'
             then 'ЧАСТИЧНО: функции handover_shift нет — пересменка не работает совсем. '
-                 || 'Применить 2026-08-01_handover_consistency.sql, затем 2026-08-01_handover_round9_fixes.sql'
+                 || 'Применить 2026-08-01c_handover_consistency.sql, затем 2026-08-01d_handover_round9_fixes.sql'
             when (select v from handover_ver) <> 'round9 (последняя)'
               or to_regclass('public.handover_log') is null
               or coalesce((select src from zeroing), '') not like '%@round9%'
               or coalesce((select src from restore), '') not like '%@round9%'
             then 'ЧАСТИЧНО: пакет round9 не доложен (пересменка и/или инструменты раннбука '
-                 || 'старой редакции) — применить 2026-08-01_handover_round9_fixes.sql'
+                 || 'старой редакции) — применить 2026-08-01d_handover_round9_fixes.sql'
             else 'порядок соблюдён — смотрите строки выше на «НЕТ»' end
         when 'НЕТ ФУНКЦИИ' then 'триггерной функции нет — база сильно отстала, применяйте миграции с самой ранней'
         else 'применить по порядку: preset_all_roles → stock_history_guard → _guard_fix → audit_round3'
