@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../data/tile_http.dart';
 import '../sync/hlc.dart';
 import '../sync/relay_client.dart';
 import '../sync/sync_engine.dart';
@@ -30,6 +31,7 @@ class SyncScreen extends StatefulWidget {
 class _SyncScreenState extends State<SyncScreen> {
   final _urlCtrl = TextEditingController();
   final _tokenCtrl = TextEditingController();
+  final _tileUrlCtrl = TextEditingController();
 
   int _pendingCount = 0;
   int _pendingBytes = 0;
@@ -48,6 +50,7 @@ class _SyncScreenState extends State<SyncScreen> {
   void dispose() {
     _urlCtrl.dispose();
     _tokenCtrl.dispose();
+    _tileUrlCtrl.dispose();
     super.dispose();
   }
 
@@ -66,6 +69,7 @@ class _SyncScreenState extends State<SyncScreen> {
   Future<void> _load() async {
     _urlCtrl.text = await _kv('relay_url') ?? '';
     _tokenCtrl.text = await _kv('relay_token') ?? '';
+    _tileUrlCtrl.text = await _kv('tile_server_url') ?? '';
     final sessionJson = await _kv('last_session');
     if (sessionJson != null) {
       try {
@@ -184,6 +188,24 @@ class _SyncScreenState extends State<SyncScreen> {
               decoration: _dec('Токен'),
             ),
             const SizedBox(height: GfSpace.x24),
+            Text('КАРТА (ОФЛАЙН)', style: GfText.sectionLabel),
+            const SizedBox(height: GfSpace.x8),
+            TextField(
+              controller: _tileUrlCtrl,
+              style: GfText.body,
+              keyboardType: TextInputType.url,
+              autocorrect: false,
+              onChanged: (v) {
+                // Хранится как настройка оператора (как relay_url); фабрика
+                // загрузчика сама отвергнет невалидный при использовании.
+                _setKv('tile_server_url', v.trim());
+                setState(() {});
+              },
+              decoration: _dec('https://tiles.example/{z}/{x}/{y}.png'),
+            ),
+            const SizedBox(height: GfSpace.x8),
+            _tileUrlStatus(),
+            const SizedBox(height: GfSpace.x24),
             if (_lastSession != null) _sessionCard(_lastSession!),
           ],
         ),
@@ -281,4 +303,23 @@ class _SyncScreenState extends State<SyncScreen> {
   }
 
   InputDecoration _dec(String hint) => gfInputDecoration(hint: hint);
+
+  /// Состояние адреса тайл-сервера: пусто — пояснение, валиден — принят,
+  /// иначе — конкретная ошибка (тот же валидатор, что фабрика загрузчика).
+  Widget _tileUrlStatus() {
+    final v = _tileUrlCtrl.text.trim();
+    if (v.isEmpty) {
+      return Text(
+        'Адрес тайл-сервера оператора для офлайн-подложки карты (ТЗ §6.2). '
+        'Пусто — карта работает без подложки (только точки/трек).',
+        style: GfText.hint,
+      );
+    }
+    final err = validateTileServerUrl(v);
+    return Text(
+      err ?? '✓ адрес принят — формат {z}/{x}/{y}',
+      style: GfText.hint
+          .copyWith(color: err == null ? GfColors.syncConfirmed : GfColors.error),
+    );
+  }
 }
