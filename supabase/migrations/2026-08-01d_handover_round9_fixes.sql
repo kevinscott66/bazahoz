@@ -1,6 +1,6 @@
 -- 2026-08-01 (round 9) — пересменка и инструменты восстановления: восемь находок.
 -- Кладётся ПОВЕРХ уже применённого состояния прода (APPLY_ALL_2026-07-31.sql +
--- 2026-08-01_audit_round6_fixes.sql + 2026-08-01_handover_consistency.sql).
+-- 2026-08-01b_audit_round6_fixes.sql + 2026-08-01c_handover_consistency.sql).
 -- Идемпотентно: только create-if-not-exists / create or replace / drop+create с зачисткой
 -- всех перегрузок. Проверено тремя прогонами подряд.
 -- Все восемь дефектов воспроизведены на локальном PostgreSQL 16 (минимальная модель ВахтаХоз
@@ -74,7 +74,7 @@
 --
 -- 3) HIGH — ФАЙЛ ПЕРЕСМЕНКИ ОТКАТЫВАЕТСЯ ШТАТНЫМ ФАЙЛОМ РЕПОЗИТОРИЯ, А ВЕРИФИКАТОР МОЛЧИТ.
 --    handover_shift определяли ДВА файла: 2026-07-28_journal_private_orphan_handover.sql
---    (раздел 6) и 2026-08-01_handover_consistency.sql. Первый затирал второй, при этом файл
+--    (раздел 6) и 2026-08-01c_handover_consistency.sql. Первый затирал второй, при этом файл
 --    пересменки не входил ни в APPLY_ALL, ни в список порядка README, а верификатор не
 --    проверял handover_shift вообще — после отката он показывал «порядок соблюдён».
 --    ФИКС (частью здесь, частью в соседних файлах):
@@ -160,7 +160,7 @@ begin;
 do $pre$
 begin
   if to_regprocedure('public.is_backend_role()') is null then
-    raise exception 'Сначала примените 2026-07-31_audit_round3_sql_fixes.sql и 2026-08-01_audit_round6_fixes.sql (нет public.is_backend_role)';
+    raise exception 'Сначала примените 2026-07-31_audit_round3_sql_fixes.sql и 2026-08-01b_audit_round6_fixes.sql (нет public.is_backend_role)';
   end if;
   if to_regprocedure('public.can_manage_base(uuid)') is null
      or to_regprocedure('public.has_perm(uuid,text)') is null then
@@ -918,7 +918,7 @@ commit;
 -- Редакция пересменки: должна быть round9.
 select case
          when p.prosrc like '%@round9%' then 'round9 (актуальная)'
-         when p.prosrc like '%is_backend_role%' then 'handover_consistency — примените 2026-08-01_handover_round9_fixes.sql'
+         when p.prosrc like '%is_backend_role%' then 'handover_consistency — примените 2026-08-01d_handover_round9_fixes.sql'
          else 'СТАРАЯ (2026-07-28) — пересменка ОТКАЧЕНА, примените файлы пересменки заново'
        end as "редакция handover_shift"
 from pg_proc p join pg_namespace n on n.oid = p.pronamespace

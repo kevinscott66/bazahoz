@@ -1,6 +1,6 @@
 -- 2026-08-01 (round 6) — исправления по адверсарному аудиту миграций 2026-07-31 / 2026-08-01.
 --
--- Кладётся ПОВЕРХ уже применённого пакета (APPLY_ALL_2026-07-31.sql + 2026-08-01_zeroing_report_fixes.sql).
+-- Кладётся ПОВЕРХ уже применённого пакета (APPLY_ALL_2026-07-31.sql + 2026-08-01a_zeroing_report_fixes.sql).
 -- ОДНА вставка в SQL Editor. Идемпотентен: проверен ТРЕМЯ прогонами подряд — ноль ошибок,
 -- ноль побочных эффектов. Все находки воспроизведены на локальном PG16 ДО правки и закрыты ПОСЛЕ.
 --
@@ -58,7 +58,7 @@
 --    Воспроизведено: вызовы раннбука падают `is not unique`, а верификатор
 --    2026-07-31_verify_applied_state.sql падает ЦЕЛИКОМ («more than one row returned by a
 --    subquery») — во время инцидента не работает даже диагностика.
---    Фикс: (а) в round3 и в 2026-08-01_zeroing_report_fixes добавлена зачистка ВСЕХ перегрузок
+--    Фикс: (а) в round3 и в 2026-08-01a_zeroing_report_fixes добавлена зачистка ВСЕХ перегрузок
 --    перед созданием своих версий — состояние не возникает; (б) этот файл делает такую же
 --    зачистку, т.е. чинит уже сломанную базу; (в) верификатор переписан так, что дубли не роняют
 --    его, а показываются ОТДЕЛЬНОЙ понятной строкой.
@@ -133,11 +133,11 @@ begin
                         'stock_meta_change_report', 'stock_meta_restore')
     order by 1
   loop
-    -- round9: этот файл СТАРШЕ 2026-08-01_handover_round9_fixes.sql и откатывает его редакцию
+    -- round9: этот файл СТАРШЕ 2026-08-01d_handover_round9_fixes.sql и откатывает его редакцию
     -- отчёта/отката. Внутри APPLY_ALL предупреждать не о чем — там round9 идёт следом.
     if r.src like '%@round9%'
        and coalesce(current_setting('vahtahoz.apply_all', true), '') <> '1' then
-      raise warning 'audit_round6 снял БОЛЕЕ НОВУЮ редакцию %. Следом обязательно примените 2026-08-01_handover_round9_fixes.sql', r.sig;
+      raise warning 'audit_round6 снял БОЛЕЕ НОВУЮ редакцию %. Следом обязательно примените 2026-08-01d_handover_round9_fixes.sql', r.sig;
     end if;
     execute 'drop function if exists ' || r.sig;
     n := n + 1;
@@ -325,7 +325,7 @@ end $$;
 revoke all on function public.enforce_base_member_write() from public, anon, authenticated;
 
 -- ── 4. stock_zeroing_report (п.1, 3, 6) ──────────────────────────────────────────
--- Новое по сравнению с 2026-08-01_zeroing_report_fixes:
+-- Новое по сравнению с 2026-08-01a_zeroing_report_fixes:
 --   • coalesce(is_backend_role(), false) — NULL больше не «пропуск проверки»;
 --   • типовой фильтр применяется ТОЛЬКО к клиентскому вызывающему; бэкенд и владелец видят всё,
 --     из-за чего множества отчёта и отката наконец сходятся;

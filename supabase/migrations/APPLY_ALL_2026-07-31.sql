@@ -5,8 +5,8 @@
 -- ноль ошибок и ноль предупреждений. В конце — диагностика: все строки должны быть
 -- «есть»/«ок», итог — «порядок соблюдён».
 --
--- ВНИМАНИЕ: на проде пакет по 2026-08-01_handover_consistency.sql включительно уже применён.
--- Чтобы доложить только новое, достаточно ОДНОЙ вставки 2026-08-01_handover_round9_fixes.sql —
+-- ВНИМАНИЕ: на проде пакет по 2026-08-01c_handover_consistency.sql включительно уже применён.
+-- Чтобы доложить только новое, достаточно ОДНОЙ вставки 2026-08-01d_handover_round9_fixes.sql —
 -- он самодостаточен и идемпотентен. Этот файл нужен для чистой базы или полной сверки.
 -- Ретеншн по расписанию (pg_cron) — отдельный файл 2026-07-31_schedule_retention.sql:
 -- он требует включённого расширения и сюда сознательно не включён.
@@ -22,6 +22,44 @@
 -- и обычно предупреждают, если сняли более новую редакцию. Внутри пакета это не проблема —
 -- следующий по порядку файл тут же вернёт актуальную версию, поэтому предупреждения глушим.
 set vahtahoz.apply_all = '1';
+
+-- ─────────────── app_private (из 2026-07-28_journal_private_orphan_handover.sql) ───────────────
+-- ДОБАВЛЕНО 2026-08-12 (round 12). Пакет ДВАЖДЫ вызывает app_private.journal_row_type
+-- (диагностика в конце секций handover_consistency и handover_round9), но схему и функцию
+-- сам не создавал — их заводит только 2026-07-28_journal_private_orphan_handover.sql,
+-- которого в этом пакете нет. На базе без него вставка обрывалась с ошибкой:
+--     ERROR:  schema "app_private" does not exist
+-- Воспроизведено на чистом PG16 — то есть обещанный README путь «одна вставка / восстановление
+-- базы с нуля» не работал, а шапка утверждала «проверено тремя прогонами — ноль ошибок».
+-- Здесь заводим ровно то, что нужно диагностике; сам файл от 28.07 остаётся источником истины
+-- для политик журнала и применяется отдельно (см. README, п.2).
+create schema if not exists app_private;
+revoke all on schema app_private from public;
+grant usage on schema app_private to authenticated, service_role;
+
+create or replace function app_private.journal_row_type(p_base uuid, p_data jsonb)
+returns text
+language sql
+stable
+security definer
+set search_path to 'public'
+as $ap$
+  select coalesce(
+    (select s.type from public.stock_items s
+      where s.base_id = p_base
+        and s.id = nullif(trim(coalesce(p_data->>'productId','')), '')
+      limit 1),
+    case
+      when nullif(trim(coalesce(p_data->>'stockType','')), '')
+           in ('product','household','tool')
+      then nullif(trim(p_data->>'stockType'), '')
+      else null
+    end,
+    '__none__'
+  );
+$ap$;
+revoke all on function app_private.journal_row_type(uuid, jsonb) from public;
+grant execute on function app_private.journal_row_type(uuid, jsonb) to authenticated, service_role;
 
 -- ─────────────────────────── 2026-07-30_base_member_preset_all_roles.sql ───────────────────────────
 -- 2026-07-30 (v203) — дыра: пресет флагов применялся НЕ ко всем известным ролям.
@@ -891,7 +929,7 @@ begin
     -- редакцию, поэтому там предупреждать не о чем (флаг ставит сам APPLY_ALL).
     if (r.src like '%p_min_frac%' or r.src like '%p_max_frac%' or r.src like '%@round6%' or r.src like '%@round9%')
        and coalesce(current_setting('vahtahoz.apply_all', true), '') <> '1' then
-      raise warning 'audit_round3 снял БОЛЕЕ НОВУЮ редакцию %. Следом обязательно примените 2026-08-01_zeroing_report_fixes.sql, 2026-08-01_audit_round6_fixes.sql и 2026-08-01_handover_round9_fixes.sql', r.sig;
+      raise warning 'audit_round3 снял БОЛЕЕ НОВУЮ редакцию %. Следом обязательно примените 2026-08-01a_zeroing_report_fixes.sql, 2026-08-01b_audit_round6_fixes.sql и 2026-08-01d_handover_round9_fixes.sql', r.sig;
     end if;
     execute 'drop function if exists ' || r.sig;
   end loop;
@@ -1405,7 +1443,7 @@ select '2026-07-31 org_roles: preset trigger + rank/territory guard + narrow nor
   from (select 1) d
   left join _org_roles_normalized_20260731 n on true;
 
--- ─────────────────────────── 2026-08-01_zeroing_report_fixes.sql ───────────────────────────
+-- ─────────────────────────── 2026-08-01a_zeroing_report_fixes.sql ───────────────────────────
 -- 2026-08-01 — ДОГОНЯЮЩАЯ миграция: детект обнуления доведён до реальных инцидентов.
 -- Применять ПОСЛЕ 2026-07-31_audit_round3_sql_fixes.sql и 2026-07-31_org_roles_preset_guard.sql
 -- (пакет APPLY_ALL_2026-07-31.sql уже применён на проде — этот файл кладётся ПОВЕРХ него).
@@ -1500,7 +1538,7 @@ begin
     -- актуальную редакцию, поэтому там предупреждать не о чем.
     if (r.src like '%@round6%' or r.src like '%@round9%')
        and coalesce(current_setting('vahtahoz.apply_all', true), '') <> '1' then
-      raise warning 'zeroing_report_fixes снял БОЛЕЕ НОВУЮ редакцию %. Следом обязательно примените 2026-08-01_audit_round6_fixes.sql и 2026-08-01_handover_round9_fixes.sql', r.sig;
+      raise warning 'zeroing_report_fixes снял БОЛЕЕ НОВУЮ редакцию %. Следом обязательно примените 2026-08-01b_audit_round6_fixes.sql и 2026-08-01d_handover_round9_fixes.sql', r.sig;
     end if;
     execute 'drop function if exists ' || r.sig;
   end loop;
@@ -1900,10 +1938,10 @@ commit;
 select '2026-08-01: zeroing report — tunable loss threshold, restore-matching qty_at_window_start, '
        'burst-based verdict (routine consumption filtered out), meta (type/name/unit) report + restore' as status;
 
--- ─────────────────────────── 2026-08-01_audit_round6_fixes.sql ───────────────────────────
+-- ─────────────────────────── 2026-08-01b_audit_round6_fixes.sql ───────────────────────────
 -- 2026-08-01 (round 6) — исправления по адверсарному аудиту миграций 2026-07-31 / 2026-08-01.
 --
--- Кладётся ПОВЕРХ уже применённого пакета (APPLY_ALL_2026-07-31.sql + 2026-08-01_zeroing_report_fixes.sql).
+-- Кладётся ПОВЕРХ уже применённого пакета (APPLY_ALL_2026-07-31.sql + 2026-08-01a_zeroing_report_fixes.sql).
 -- ОДНА вставка в SQL Editor. Идемпотентен: проверен ТРЕМЯ прогонами подряд — ноль ошибок,
 -- ноль побочных эффектов. Все находки воспроизведены на локальном PG16 ДО правки и закрыты ПОСЛЕ.
 --
@@ -1961,7 +1999,7 @@ select '2026-08-01: zeroing report — tunable loss threshold, restore-matching 
 --    Воспроизведено: вызовы раннбука падают `is not unique`, а верификатор
 --    2026-07-31_verify_applied_state.sql падает ЦЕЛИКОМ («more than one row returned by a
 --    subquery») — во время инцидента не работает даже диагностика.
---    Фикс: (а) в round3 и в 2026-08-01_zeroing_report_fixes добавлена зачистка ВСЕХ перегрузок
+--    Фикс: (а) в round3 и в 2026-08-01a_zeroing_report_fixes добавлена зачистка ВСЕХ перегрузок
 --    перед созданием своих версий — состояние не возникает; (б) этот файл делает такую же
 --    зачистку, т.е. чинит уже сломанную базу; (в) верификатор переписан так, что дубли не роняют
 --    его, а показываются ОТДЕЛЬНОЙ понятной строкой.
@@ -2036,11 +2074,11 @@ begin
                         'stock_meta_change_report', 'stock_meta_restore')
     order by 1
   loop
-    -- round9: этот файл СТАРШЕ 2026-08-01_handover_round9_fixes.sql и откатывает его редакцию
+    -- round9: этот файл СТАРШЕ 2026-08-01d_handover_round9_fixes.sql и откатывает его редакцию
     -- отчёта/отката. Внутри APPLY_ALL предупреждать не о чем — там round9 идёт следом.
     if r.src like '%@round9%'
        and coalesce(current_setting('vahtahoz.apply_all', true), '') <> '1' then
-      raise warning 'audit_round6 снял БОЛЕЕ НОВУЮ редакцию %. Следом обязательно примените 2026-08-01_handover_round9_fixes.sql', r.sig;
+      raise warning 'audit_round6 снял БОЛЕЕ НОВУЮ редакцию %. Следом обязательно примените 2026-08-01d_handover_round9_fixes.sql', r.sig;
     end if;
     execute 'drop function if exists ' || r.sig;
     n := n + 1;
@@ -2228,7 +2266,7 @@ end $$;
 revoke all on function public.enforce_base_member_write() from public, anon, authenticated;
 
 -- ── 4. stock_zeroing_report (п.1, 3, 6) ──────────────────────────────────────────
--- Новое по сравнению с 2026-08-01_zeroing_report_fixes:
+-- Новое по сравнению с 2026-08-01a_zeroing_report_fixes:
 --   • coalesce(is_backend_role(), false) — NULL больше не «пропуск проверки»;
 --   • типовой фильтр применяется ТОЛЬКО к клиентскому вызывающему; бэкенд и владелец видят всё,
 --     из-за чего множества отчёта и отката наконец сходятся;
@@ -2727,7 +2765,7 @@ select '2026-08-01 round6: is_backend_role fail-closed (no NULL) + search_path, 
        'report and restore on one item set (type filter only for client callers), burst counted before visibility, '
        'verdict honours loss scale, legacy base_members row fixable from UI, single overload per tool' as status;
 
--- ─────────────────────────── 2026-08-01_handover_consistency.sql ───────────────────────────
+-- ─────────────────────────── 2026-08-01c_handover_consistency.sql ───────────────────────────
 -- 2026-08-01 — пересменка (handover_shift): «чтобы всё сходилось».
 -- Применять ПОСЛЕ 2026-07-31_audit_round3_sql_fixes.sql и 2026-07-31_org_roles_preset_guard.sql
 -- (нужна public.is_backend_role). Идемпотентно: только create or replace + revoke/grant.
@@ -2761,7 +2799,7 @@ select '2026-08-01 round6: is_backend_role fail-closed (no NULL) + search_path, 
 --    Начальник партии/директор управляет базой полноценно: добавит человека, проведёт
 --    следующую пересменку. Отсутствие управляющего НА МЕСТЕ — повод для предупреждения,
 --    а не для запрета. Подробности и признак local_manager_left — в
---    2026-08-01_handover_round9_fixes.sql (п.5).
+--    2026-08-01d_handover_round9_fixes.sql (п.5).
 --
 -- 2) HIGH — ГОНКА: две пересменки от одного уходящего проходят ОБЕ, на базе оказываются ДВА
 --    заступивших, задачи достаются только первому. Воспроизведено: A→B и A→C параллельно →
@@ -2776,7 +2814,7 @@ select '2026-08-01 round6: is_backend_role fail-closed (no NULL) + search_path, 
 --    вызова. На нормальной базе, где на смене несколько человек, заступающий почти всегда уже
 --    активен — значит второй вызов от того же уходящего к ДРУГОМУ человеку молча возвращал 0,
 --    и владелец видел «Смена передана. Задач перенесено: 0». Воспроизведено на PG16.
---    Закрыто в 2026-08-01_handover_round9_fixes.sql (п.2): решение принимает журнал
+--    Закрыто в 2026-08-01d_handover_round9_fixes.sql (п.2): решение принимает журнал
 --    public.handover_log, а не состояние. Гонка при одном человеке на смене не ослаблена.
 --
 -- 3) MEDIUM — ЗАСТУПАЮЩИЙ ВИДИТ ПУСТОЙ СКЛАД. handover_shift ставил `active=true`, не трогая
@@ -2807,7 +2845,7 @@ select '2026-08-01 round6: is_backend_role fail-closed (no NULL) + search_path, 
 --   Пересменку В СТОРОНУ двухбазового человека функция пропускала, и дальше срабатывало ровно
 --   то, ради чего ограничение вводилось: задачи БАЗЫ 1 уезжали к управляющему БАЗЫ 2 — причём
 --   по пути, который предписывает раннбук («уберите работника из лишней базы»).
---   Воспроизведено на PG16. Закрыто в 2026-08-01_handover_round9_fixes.sql (п.1): симметричная
+--   Воспроизведено на PG16. Закрыто в 2026-08-01d_handover_round9_fixes.sql (п.1): симметричная
 --   проверка на заступающего (multi_base_to) + ловля обходного пути через журнал пересменок.
 --   БЕЗ ЭТОГО ФАЙЛА ДАВАТЬ ЧЕЛОВЕКУ ДОСТУП К ДВУМ БАЗАМ НЕЛЬЗЯ.
 -- • Разовых действий над данными (перевести конкретного человека) здесь нет — это не место
@@ -2836,14 +2874,14 @@ declare cur text := (
 );
 begin
   -- ДОБАВЛЕНО 2026-08-01 (round 9). Этот раздел пересоздавал handover_shift БЕЗУСЛОВНО и потому
-  -- откатывал более новую редакцию (2026-08-01_handover_round9_fixes.sql) — тот же дефект, из-за
+  -- откатывал более новую редакцию (2026-08-01d_handover_round9_fixes.sql) — тот же дефект, из-за
   -- которого файл 2026-07-28 молча откатывал этот файл. Ловушка настоящая: раннбук и бэклог
   -- советуют «вставить ПОВТОРНО handover_consistency», и такая повторная вставка ПОСЛЕ round 9
   -- вернула бы дыры round 9 (увод задач чужой базы, «успех» без пересменки).
   -- Теперь раздел выполняется, только если более новой редакции нет.
   if cur is not null and cur like '%@round9%' then
     if coalesce(current_setting('vahtahoz.apply_all', true), '') <> '1' then
-      raise warning 'На базе уже стоит БОЛЕЕ НОВАЯ редакция handover_shift (round9) — раздел 1 файла handover_consistency ПРОПУЩЕН, чтобы не откатить пересменку. Нужно переустановить — применяйте 2026-08-01_handover_round9_fixes.sql.';
+      raise warning 'На базе уже стоит БОЛЕЕ НОВАЯ редакция handover_shift (round9) — раздел 1 файла handover_consistency ПРОПУЩЕН, чтобы не откатить пересменку. Нужно переустановить — применяйте 2026-08-01d_handover_round9_fixes.sql.';
     end if;
     return;
   end if;
@@ -3003,19 +3041,42 @@ having count(*) > 1
 -- can_see_type для таких fail-closed → их видят только владелец и орг-роли. Это НЕ следствие
 -- пересменки и здесь НЕ чинится (ослаблять fail-closed нельзя): цифра нужна, чтобы отличить
 -- «заступающий не видит поступления из-за прав» от «эти строки не видит вообще никто в базе».
-select b.name as "база", je.kind as "журнал", count(*) as "строк не видно участникам"
-  from public.journal_entries je
-  join public.bases b on b.id = je.base_id
- where app_private.journal_row_type(je.base_id, je.data) not in ('product','household','tool')
- group by 1, 2
- order by 3 desc;
+-- round12: обёрнуто в DO. Раньше это был голый SELECT, и на базе без app_private он ронял
+-- ВЕСЬ пакет (ERROR: schema "app_private" does not exist) — прямо посреди вставки, уже после
+-- части закоммиченных секций. Диагностика не должна ронять миграцию ни при каком состоянии базы.
+do $diag1$
+declare r record; n int := 0;
+begin
+  if to_regprocedure('app_private.journal_row_type(uuid,jsonb)') is null then
+    raise notice 'Диагностика журнала пропущена: нет app_private.journal_row_type '
+                 '(примените 2026-07-28_journal_private_orphan_handover.sql)';
+    return;
+  end if;
+  for r in
+    select b.name as base_name, je.kind as kind, count(*) as cnt
+      from public.journal_entries je
+      join public.bases b on b.id = je.base_id
+     where app_private.journal_row_type(je.base_id, je.data) not in ('product','household','tool')
+     group by 1, 2
+     order by 3 desc
+  loop
+    raise notice 'НЕ ВИДНО УЧАСТНИКАМ | база % | журнал % | строк %', r.base_name, r.kind, r.cnt;
+    n := n + 1;
+  end loop;
+  if n = 0 then
+    raise notice 'Записей журнала с неопределимым типом нет — участники видят всё.';
+  end if;
+exception when undefined_column then
+  raise notice 'Диагностика журнала пропущена: в journal_entries нет колонки kind.';
+end
+$diag1$;
 
 select '2026-08-01 handover_consistency: orphan только для управляющих + гонка/повтор + пресет заступающему + is_backend_role' as status;
 
--- ─────────────────────────── 2026-08-01_handover_round9_fixes.sql ───────────────────────────
+-- ─────────────────────────── 2026-08-01d_handover_round9_fixes.sql ───────────────────────────
 -- 2026-08-01 (round 9) — пересменка и инструменты восстановления: восемь находок.
 -- Кладётся ПОВЕРХ уже применённого состояния прода (APPLY_ALL_2026-07-31.sql +
--- 2026-08-01_audit_round6_fixes.sql + 2026-08-01_handover_consistency.sql).
+-- 2026-08-01b_audit_round6_fixes.sql + 2026-08-01c_handover_consistency.sql).
 -- Идемпотентно: только create-if-not-exists / create or replace / drop+create с зачисткой
 -- всех перегрузок. Проверено тремя прогонами подряд.
 -- Все восемь дефектов воспроизведены на локальном PostgreSQL 16 (минимальная модель ВахтаХоз
@@ -3089,7 +3150,7 @@ select '2026-08-01 handover_consistency: orphan только для управл
 --
 -- 3) HIGH — ФАЙЛ ПЕРЕСМЕНКИ ОТКАТЫВАЕТСЯ ШТАТНЫМ ФАЙЛОМ РЕПОЗИТОРИЯ, А ВЕРИФИКАТОР МОЛЧИТ.
 --    handover_shift определяли ДВА файла: 2026-07-28_journal_private_orphan_handover.sql
---    (раздел 6) и 2026-08-01_handover_consistency.sql. Первый затирал второй, при этом файл
+--    (раздел 6) и 2026-08-01c_handover_consistency.sql. Первый затирал второй, при этом файл
 --    пересменки не входил ни в APPLY_ALL, ни в список порядка README, а верификатор не
 --    проверял handover_shift вообще — после отката он показывал «порядок соблюдён».
 --    ФИКС (частью здесь, частью в соседних файлах):
@@ -3175,7 +3236,7 @@ begin;
 do $pre$
 begin
   if to_regprocedure('public.is_backend_role()') is null then
-    raise exception 'Сначала примените 2026-07-31_audit_round3_sql_fixes.sql и 2026-08-01_audit_round6_fixes.sql (нет public.is_backend_role)';
+    raise exception 'Сначала примените 2026-07-31_audit_round3_sql_fixes.sql и 2026-08-01b_audit_round6_fixes.sql (нет public.is_backend_role)';
   end if;
   if to_regprocedure('public.can_manage_base(uuid)') is null
      or to_regprocedure('public.has_perm(uuid,text)') is null then
@@ -3933,7 +3994,7 @@ commit;
 -- Редакция пересменки: должна быть round9.
 select case
          when p.prosrc like '%@round9%' then 'round9 (актуальная)'
-         when p.prosrc like '%is_backend_role%' then 'handover_consistency — примените 2026-08-01_handover_round9_fixes.sql'
+         when p.prosrc like '%is_backend_role%' then 'handover_consistency — примените 2026-08-01d_handover_round9_fixes.sql'
          else 'СТАРАЯ (2026-07-28) — пересменка ОТКАЧЕНА, примените файлы пересменки заново'
        end as "редакция handover_shift"
 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
@@ -4001,12 +4062,33 @@ select coalesce(p.username, p.id::text) as "логин",
 
 -- Записи журнала, НЕВИДИМЫЕ участнику базы: тип строки не определяется. После round9 их видит
 -- и может удалить начальник участка (а также хозрабочий и бухгалтер) — раньше они застревали.
-select b.name as "база", je.kind as "журнал", count(*) as "строк с неопределимым типом"
-  from public.journal_entries je
-  join public.bases b on b.id = je.base_id
- where app_private.journal_row_type(je.base_id, je.data) not in ('product','household','tool')
- group by 1, 2
- order by 3 desc;
+-- round12: обёрнуто в DO — см. пояснение у первой такой диагностики выше.
+do $diag2$
+declare r record; n int := 0;
+begin
+  if to_regprocedure('app_private.journal_row_type(uuid,jsonb)') is null then
+    raise notice 'Диагностика журнала пропущена: нет app_private.journal_row_type '
+                 '(примените 2026-07-28_journal_private_orphan_handover.sql)';
+    return;
+  end if;
+  for r in
+    select b.name as base_name, je.kind as kind, count(*) as cnt
+      from public.journal_entries je
+      join public.bases b on b.id = je.base_id
+     where app_private.journal_row_type(je.base_id, je.data) not in ('product','household','tool')
+     group by 1, 2
+     order by 3 desc
+  loop
+    raise notice 'НЕОПРЕДЕЛИМЫЙ ТИП | база % | журнал % | строк %', r.base_name, r.kind, r.cnt;
+    n := n + 1;
+  end loop;
+  if n = 0 then
+    raise notice 'Записей журнала с неопределимым типом нет.';
+  end if;
+exception when undefined_column then
+  raise notice 'Диагностика журнала пропущена: в journal_entries нет колонки kind.';
+end
+$diag2$;
 
 select '2026-08-01 round9: журнал пересменок (повтор ≠ передача другому) + проверка заступающего и '
        'обходного пути между базами + откат учитывает автора поздней правки и выдаёт удалённые '
@@ -4094,7 +4176,7 @@ dups as (
 enforce_ver as (
   select case
     when not exists (select 1 from enforce) then 'НЕТ ФУНКЦИИ'
-    -- маркер round6 — уникальный комментарий из 2026-08-01_audit_round6_fixes.sql
+    -- маркер round6 — уникальный комментарий из 2026-08-01b_audit_round6_fixes.sql
     when (select src from enforce) like '%legacy-строка чинится сменой роли%' then 'round6 (последняя)'
     -- маркер версии org_guard — уникальный комментарий из 2026-07-31_org_roles_preset_guard.sql
     when (select src from enforce) like '%тот же класс бага%' then 'org_guard'
@@ -4174,7 +4256,7 @@ checks(ord, migration, object, state) as (
     case when (select n from dups) = 0 then 'ок'
          else 'НЕТ — ДУБЛИ: ' || (select lst from dups)
               || '. Вызовы раннбука падают «is not unique» (обычно от повторного прогона '
-              || 'audit_round3 поверх 2026-08-01). Лечится 2026-08-01_audit_round6_fixes.sql'
+              || 'audit_round3 поверх 2026-08-01). Лечится 2026-08-01b_audit_round6_fixes.sql'
     end
 
   -- ── 2026-07-30_base_member_preset_all_roles.sql ──────────────────────────────
@@ -4294,7 +4376,7 @@ checks(ord, migration, object, state) as (
   union all select 50, 'auth_rate_per_ip', 'таблица public.auth_rate',
     case when to_regclass('public.auth_rate') is null then 'НЕТ' else 'есть' end
 
-  -- ── 2026-08-01_zeroing_report_fixes.sql ─────────────────────────────────────
+  -- ── 2026-08-01a_zeroing_report_fixes.sql ─────────────────────────────────────
   -- Без него отчёт ловит только уничтожение ≥99%, печатает НЕ то число, которое вернёт
   -- откат, шумит легальным расходом и не видит пересортицу вовсе.
   union all select 51, 'zeroing_fixes_0801', 'stock_zeroing_report: настраиваемый порог потери (p_min_frac)',
@@ -4328,7 +4410,7 @@ checks(ord, migration, object, state) as (
       else 'НЕТ — смена type у всей базы прячет позиции от повара/механика и ничем не откатывается'
     end
 
-  -- ── 2026-08-01_audit_round6_fixes.sql ───────────────────────────────────────
+  -- ── 2026-08-01b_audit_round6_fixes.sql ───────────────────────────────────────
   -- Проверки ПО СУЩЕСТВУ. Раньше здесь стояло только «функция есть» + «имя упомянуто»,
   -- и подмена is_backend_role на старую дырявую редакцию оставляла верификатор зелёным.
   union all select 70, 'audit_round6', 'is_backend_role: редакция (fail-closed, без NULL)',
@@ -4349,7 +4431,7 @@ checks(ord, migration, object, state) as (
         then 'есть (round6: fail-closed, ни одна ветка не возвращает NULL)'
       when strpos((select src from backend), 'session_user') = 0
         then 'НЕТ — «нет JWT-GUC ⇒ доверяем» это fail-OPEN: нужен позитивный признак по session_user'
-      else 'НЕТ — неизвестная редакция: проверьте текст функции вручную и примените 2026-08-01_audit_round6_fixes.sql'
+      else 'НЕТ — неизвестная редакция: проверьте текст функции вручную и примените 2026-08-01b_audit_round6_fixes.sql'
     end
   union all select 71, 'audit_round6', 'is_backend_role: SET search_path',
     case
@@ -4402,7 +4484,7 @@ checks(ord, migration, object, state) as (
       else 'ок (отозван)'
     end
 
-  -- ── ПЕРЕСМЕНКА: 2026-08-01_handover_consistency.sql + _handover_round9_fixes.sql ─
+  -- ── ПЕРЕСМЕНКА: 2026-08-01c_handover_consistency.sql + _handover_round9_fixes.sql ─
   -- Раньше этих строк здесь не было вовсе. handover_shift определяют ТРИ файла, и штатный
   -- 2026-07-28_journal_private_orphan_handover.sql молча откатывал более новые редакции —
   -- а верификатор после этого показывал «порядок соблюдён». Теперь откат ВИДЕН.
@@ -4412,18 +4494,18 @@ checks(ord, migration, object, state) as (
       when 'handover_consistency' then
         'НЕТ — редакция handover_consistency: повтор пересменки к ДРУГОМУ человеку молча '
         || 'возвращает 0, а задачи чужой базы уезжают к управляющему другой базы. '
-        || 'Применить 2026-08-01_handover_round9_fixes.sql'
+        || 'Применить 2026-08-01d_handover_round9_fixes.sql'
       when 'legacy 2026-07-28 (ОТКАЧЕНА)' then
         'ОТКАЧЕНА до 2026-07-28 (повторный прогон journal_private_orphan_handover): пересменка '
         || 'падает ''orphan'' на базах под управлением оргструктуры, гонка проходит обе, '
-        || 'авторизация fail-open. Применить 2026-08-01_handover_consistency.sql, затем '
-        || '2026-08-01_handover_round9_fixes.sql'
+        || 'авторизация fail-open. Применить 2026-08-01c_handover_consistency.sql, затем '
+        || '2026-08-01d_handover_round9_fixes.sql'
       else 'НЕТ ФУНКЦИИ — пересменка не работает совсем'
     end
   union all select 79, 'пересменка', 'журнал пересменок public.handover_log (повтор ≠ передача другому)',
     case
       when to_regclass('public.handover_log') is null
-        then 'НЕТ — второй вызов от того же уходящего к другому человеку вернёт «успех» и 0 задач. Применить 2026-08-01_handover_round9_fixes.sql'
+        then 'НЕТ — второй вызов от того же уходящего к другому человеку вернёт «успех» и 0 задач. Применить 2026-08-01d_handover_round9_fixes.sql'
       when has_table_privilege('authenticated', 'public.handover_log', 'SELECT')
         then 'ПРОБЛЕМА: SELECT выдан authenticated — revoke all on public.handover_log from authenticated'
       else 'есть'
@@ -4483,7 +4565,7 @@ checks(ord, migration, object, state) as (
     case
       when (select n from dups) > 0 then
         'СРОЧНО: у инструментов раннбука по НЕСКОЛЬКО перегрузок (' || (select lst from dups)
-        || ') — отчёт и откат падают «is not unique». Применить 2026-08-01_audit_round6_fixes.sql'
+        || ') — отчёт и откат падают «is not unique». Применить 2026-08-01b_audit_round6_fixes.sql'
       else
       case (select v from enforce_ver)
         when 'preset_all_roles' then
@@ -4496,8 +4578,8 @@ checks(ord, migration, object, state) as (
             else 'применить 2026-07-31_org_roles_preset_guard.sql (пресеты org-ролей + фикс пересменки по legacy custom)' end
         when 'org_guard' then
           case when not exists (select 1 from metarestore)
-            then 'применить 2026-08-01_zeroing_report_fixes.sql, затем 2026-08-01_audit_round6_fixes.sql'
-            else 'применить 2026-08-01_audit_round6_fixes.sql (is_backend_role fail-closed, откат не затирает поздние правки, отчёт и откат по одному множеству)' end
+            then 'применить 2026-08-01a_zeroing_report_fixes.sql, затем 2026-08-01b_audit_round6_fixes.sql'
+            else 'применить 2026-08-01b_audit_round6_fixes.sql (is_backend_role fail-closed, откат не затирает поздние правки, отчёт и откат по одному множеству)' end
         when 'round6 (последняя)' then
           -- триггерная функция может быть round6, а инструменты раннбука — откачены назад
           -- повторным прогоном старого файла. Тогда «порядок соблюдён» было бы ложью.
@@ -4507,22 +4589,22 @@ checks(ord, migration, object, state) as (
                  or coalesce((select src from metarestore), '') not like '%@round6%'
                  or coalesce((select src from backend),     '') not like '%@round6%'
             then 'ЧАСТИЧНО: триггерная функция round6, но инструменты раннбука откачены назад '
-                 || '(повторный прогон старого файла) — применить 2026-08-01_audit_round6_fixes.sql'
+                 || '(повторный прогон старого файла) — применить 2026-08-01b_audit_round6_fixes.sql'
             -- round9: ПЕРЕСМЕНКА живёт в отдельных файлах и откатывается штатным файлом
             -- репозитория. Пока она не round9, «порядок соблюдён» — ложь.
             when (select v from handover_ver) = 'legacy 2026-07-28 (ОТКАЧЕНА)'
             then 'ЧАСТИЧНО: ПЕРЕСМЕНКА ОТКАЧЕНА до редакции 2026-07-28 (повторный прогон '
-                 || 'journal_private_orphan_handover) — применить 2026-08-01_handover_consistency.sql, '
-                 || 'затем 2026-08-01_handover_round9_fixes.sql'
+                 || 'journal_private_orphan_handover) — применить 2026-08-01c_handover_consistency.sql, '
+                 || 'затем 2026-08-01d_handover_round9_fixes.sql'
             when (select v from handover_ver) = 'НЕТ ФУНКЦИИ'
             then 'ЧАСТИЧНО: функции handover_shift нет — пересменка не работает совсем. '
-                 || 'Применить 2026-08-01_handover_consistency.sql, затем 2026-08-01_handover_round9_fixes.sql'
+                 || 'Применить 2026-08-01c_handover_consistency.sql, затем 2026-08-01d_handover_round9_fixes.sql'
             when (select v from handover_ver) <> 'round9 (последняя)'
               or to_regclass('public.handover_log') is null
               or coalesce((select src from zeroing), '') not like '%@round9%'
               or coalesce((select src from restore), '') not like '%@round9%'
             then 'ЧАСТИЧНО: пакет round9 не доложен (пересменка и/или инструменты раннбука '
-                 || 'старой редакции) — применить 2026-08-01_handover_round9_fixes.sql'
+                 || 'старой редакции) — применить 2026-08-01d_handover_round9_fixes.sql'
             else 'порядок соблюдён — смотрите строки выше на «НЕТ»' end
         when 'НЕТ ФУНКЦИИ' then 'триггерной функции нет — база сильно отстала, применяйте миграции с самой ранней'
         else 'применить по порядку: preset_all_roles → stock_history_guard → _guard_fix → audit_round3'

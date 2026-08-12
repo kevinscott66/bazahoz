@@ -35,34 +35,74 @@ revoke all on function app_private.journal_row_type(uuid, jsonb) from public;
 grant execute on function app_private.journal_row_type(uuid, jsonb) to authenticated, service_role;
 
 -- ── 3. can_see_type: неизвестный/__none__ — fail-closed (после admin/org) ─
-create or replace function public.can_see_type(p_base uuid, p_type text)
-returns boolean
-language sql
-stable
-security definer
-set search_path to 'public'
-as $$
-  select case
-    when exists (select 1 from profiles pr where pr.id = auth.uid() and pr.is_admin) then true
-    when exists (
-      select 1 from org_roles o
-      join bases b on b.id = p_base
-      where o.user_id = auth.uid() and o.active
-        and (o.party_id is null or o.party_id = b.party_id)
-    ) then true
-    when p_type is null or p_type not in ('product','household','tool') then false
-    else coalesce((
-      select case m.role
-        when 'mechanic' then (p_type = 'tool')
-        when 'cook'     then (p_type in ('product','household'))
-        else true
-      end
-      from public.base_members m
-      where m.base_id = p_base and m.user_id = auth.uid() and m.active
-      limit 1
-    ), true)
-  end;
-$$;
+--
+-- ИСПРАВЛЕНО 2026-08-12 (round 12). Здесь была ровно та же беда, что в разделе 6, только
+-- незамеченная: раздел БЕЗУСЛОВНО пересоздавал can_see_type и молча откатывал более новую
+-- редакцию из 2026-08-01d_handover_round9_fixes.sql. Воспроизведено на стенде: после прогона
+-- этого файла поверх применённого прода маркер @round9 у can_see_type пропадал, и начальник
+-- участка вместе с хозрабочим снова переставали видеть позиции с типом вне трёх известных
+-- (round 9 расширил им доступ ОСОЗНАННО — см. шапку того файла, п.8). Раздел 6 от такого
+-- отката был защищён с 01.08, раздел 3 — нет, а верификатор редакцию can_see_type не
+-- проверяет вовсе (единственное упоминание там — grep подстроки внутри stock_zeroing_report).
+--
+-- Отдельно важно: от редакции can_see_type зависит корректность политик склада из
+-- 2026-08-02_rls_speed_stock.sql. Они отображают любой неизвестный тип в ключ '__other__' →
+-- can_see_type(base, NULL), и это отображение рассчитано именно на round9-редакцию. С самой
+-- старой редакцией (2026-07-08_rls_functions_snapshot.sql, где ветка coalesce(..., true)
+-- покрывает и неизвестные типы) те же политики становятся ШИРЕ: на стенде механик получал
+-- доступ к позиции type='spare' и успешно её удалял. Поэтому откат этой функции — не
+-- косметика, а изменение границы доступа, и делать его молча нельзя.
+--
+-- Теперь раздел выполняется, ТОЛЬКО если на базе нет более новой редакции; иначе печатает
+-- WARNING и ничего не трогает. Внутри APPLY_ALL предупреждение глушится: там следующий по
+-- порядку файл всё равно вернёт актуальную версию.
+do $cst$
+declare cur text := (
+  select p.prosrc from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public' and p.proname = 'can_see_type'
+  order by p.oid desc limit 1
+);
+begin
+  if cur is not null and cur like '%@round9%' then
+    if coalesce(current_setting('vahtahoz.apply_all', true), '') <> '1' then
+      raise warning 'На базе уже стоит БОЛЕЕ НОВАЯ редакция can_see_type (@round9) — раздел 3 файла 2026-07-28 ПРОПУЩЕН, чтобы не сузить видимость типов. Если её нужно переустановить, применяйте 2026-08-01d_handover_round9_fixes.sql.';
+    end if;
+    return;
+  end if;
+
+  execute $f$
+    create or replace function public.can_see_type(p_base uuid, p_type text)
+    returns boolean
+    language sql
+    stable
+    security definer
+    set search_path to 'public'
+    as $function$
+      select case
+        when exists (select 1 from profiles pr where pr.id = auth.uid() and pr.is_admin) then true
+        when exists (
+          select 1 from org_roles o
+          join bases b on b.id = p_base
+          where o.user_id = auth.uid() and o.active
+            and (o.party_id is null or o.party_id = b.party_id)
+        ) then true
+        when p_type is null or p_type not in ('product','household','tool') then false
+        else coalesce((
+          select case m.role
+            when 'mechanic' then (p_type = 'tool')
+            when 'cook'     then (p_type in ('product','household'))
+            else true
+          end
+          from public.base_members m
+          where m.base_id = p_base and m.user_id = auth.uid() and m.active
+          limit 1
+        ), true)
+      end;
+    $function$;
+  $f$;
+end
+$cst$;
 
 revoke all on function public.can_see_type(uuid, text) from public, anon;
 grant execute on function public.can_see_type(uuid, text) to authenticated, service_role;
@@ -113,8 +153,8 @@ drop function if exists public.journal_entry_type(uuid, jsonb);
 -- tasks без base_id (скоуп аккаунта) — нельзя утащить задачи «чужой» базы.
 --
 -- ИСПРАВЛЕНО 2026-08-01 (round 9). Этот раздел БЕЗУСЛОВНО пересоздавал handover_shift и тем
--- самым откатывал более новые редакции (2026-08-01_handover_consistency.sql и
--- 2026-08-01_handover_round9_fixes.sql) до версии от 28 июля — молча. Файл штатный, лежит в
+-- самым откатывал более новые редакции (2026-08-01c_handover_consistency.sql и
+-- 2026-08-01d_handover_round9_fixes.sql) до версии от 28 июля — молча. Файл штатный, лежит в
 -- репозитории, применяется при разворачивании базы «с самого начала»; верификатор пересменку
 -- не проверял вовсе и после такого отката показывал «порядок соблюдён». Прод в этом состоянии
 -- уже был (см. docs/BACKLOG_SECURITY.md, «вставить ПОВТОРНО handover_consistency»).
@@ -131,7 +171,7 @@ declare cur text := (
 begin
   if cur is not null and (cur like '%@round9%' or cur like '%is_backend_role%') then
     if coalesce(current_setting('vahtahoz.apply_all', true), '') <> '1' then
-      raise warning 'На базе уже стоит БОЛЕЕ НОВАЯ редакция handover_shift — раздел 6 файла 2026-07-28 ПРОПУЩЕН, чтобы не откатить пересменку. Если пересменку нужно переустановить, применяйте 2026-08-01_handover_consistency.sql и 2026-08-01_handover_round9_fixes.sql.';
+      raise warning 'На базе уже стоит БОЛЕЕ НОВАЯ редакция handover_shift — раздел 6 файла 2026-07-28 ПРОПУЩЕН, чтобы не откатить пересменку. Если пересменку нужно переустановить, применяйте 2026-08-01c_handover_consistency.sql и 2026-08-01d_handover_round9_fixes.sql.';
     end if;
     return;
   end if;
