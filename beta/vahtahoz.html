@@ -3490,6 +3490,9 @@ function resolveIncomingProduct({ productId, manualName, unit, type, skipPropaga
   return product;
 }
 // Изменение остатка: для партийных карточек приход = новая партия (как при приёме заказа).
+/* Позиции, у которых остаток ушёл бы в минус. Пополняется в applyStockDelta, читается тем, кто
+   операцию затеял: единичный расход — сразу тостом, опись — одной строкой после всей пачки. */
+const _stockNegHits = [];
 function applyStockDelta(product, sign, qty, note, op){
   if(!product || !sign) return;
   if(sign > 0 && hasBatches(product)){
@@ -3505,9 +3508,14 @@ function applyStockDelta(product, sign, qty, note, op){
        остаток разойдутся навсегда — ровно та беда, от которой в этом файле защищаются везде.
        Поэтому число решается ВЫШЕ: расход проверяет «не хватает на складе» до вызова, приход
        всегда плюс, опись считает дельту от живой карточки и по построению приходит ровно к
-       факту. Здесь только громко жалуемся, если кто-то однажды нарушит это правило, — молчаливое
-       сползание в минус искать потом будет негде. */
-    if(sign < 0 && roundQty(_was - qty) < 0) console.error("applyStockDelta: остаток ушёл бы в минус", product.name, _was, "-", qty);
+       факту. Здесь мы только ловим нарушение этого правила — и не в одну лишь консоль, которую
+       на телефоне не видит никто: имена копятся в _stockNegHits, а вызывающий (он знает, одна
+       это операция или пачка) показывает их человеку и пишет в журнал операций. */
+    if(sign < 0 && roundQty(_was - qty) < 0){
+      console.error("applyStockDelta: остаток ушёл бы в минус", product.name, _was, "-", qty);
+      _stockNegHits.push(String(product.name||"").slice(0,40));
+      if(_stockNegHits.length > 50) _stockNegHits.length = 50;
+    }
     product.qty = roundQty(_was + sign*qty);
     clearExpiryOnZero(product, _was);   // расход в ноль — срок и место уходят вместе с остатком
   }
@@ -3926,12 +3934,14 @@ function saveOp(kind){
   };
   if(kind==="order") op.status = "pending";
 
+  _stockNegHits.length = 0;   // сторож минуса: проверка «не хватает» стоит выше, здесь ловим её обход
   if(product && m.sign!==0) applyStockDelta(product, m.sign, qty, note, m.sign>0 ? op : null);
   state.journals[kind] = state.journals[kind] || [];
   state.journals[kind].unshift(op);
-  logOp(kind.toUpperCase(), `${name} ${m.sign>0?"+":m.sign<0?"-":""}${qty} ${op.unit||""}`);
+  logOp(kind.toUpperCase(), `${name} ${m.sign>0?"+":m.sign<0?"-":""}${qty} ${op.unit||""}`
+        + (_stockNegHits.length ? " · ОСТАТОК В МИНУС" : ""));
   saveState(); closeSheet(); render();
-  toast(`${m.verb}: ${name}`);
+  toast(_stockNegHits.length ? `${m.verb}: ${name} — остаток ушёл в минус, это сбой` : `${m.verb}: ${name}`);
 }
 
 /* ===================== ИМПОРТ ПОСТУПЛЕНИЯ ИЗ EXCEL =====================
@@ -4998,6 +5008,16 @@ function _invNameKey(s){
    найти, чем задвоить). В своём разделе несовпадение единицы и двойник — ОТКАЗ строки с
    причиной; в чужих разделах это просто «не нашли», иначе чужая карточка с тем же именем
    мешала бы завести позицию в своём разделе. */
+/* Дешёвая подпись склада: сколько позиций и сколько всего единиц. Нужна, чтобы понять, надо ли
+   пересобирать разобранный план при перерисовке экрана (после pull или чужой правки). Полный
+   пересбор на КАЖДЫЙ render — это проход по всем строкам файла, на описи в 2000 строк секунды;
+   подпись же считается за один проход по складу. Точности «до байта» не требуется: подпись —
+   только повод пересчитать, а правду всё равно скажет отпечаток перед записью. */
+function _invStockSig(){
+  let n = 0, sum = 0;
+  for(const s of (state.stock||[])){ n++; sum += totalQtyOf(s); }
+  return n + ":" + roundQty(sum);
+}
 /* Индекс склада «тип|имя» на один разбор. Без него _invFindStock фильтровала ВЕСЬ склад на
    КАЖДУЮ строку файла: опись на 2000 строк по складу в 2000 карточек — это 4 млн нормализаций
    имён, секунды замершего экрана на телефоне. А теперь план строится трижды на одно применение
@@ -5217,13 +5237,18 @@ function _invZeroCandidates(plan){
    менялся вовсе, а записи в журнал уходили, и расхождение уезжало в облако.
    В отпечаток входит и список обнуления: без него именно случай (2) проходил как «свежий план». */
 function _invFingerprint(plan, zeroList){
-  const one = (x)=> `${x.product ? x.product.id : "+"+_invNameKey(x.name)}:${x.was}>${x.now}`;
+  /* В отпечаток входит и ЕДИНИЦА карточки. Если её нет в файле (столбец «Ед. изм.» не
+     обязателен), опись пишет движение в единице карточки — а напарник мог эту единицу
+     поменять, пока висел лист подтверждения: число подтверждённое, а единица уже чужая.
+     Окно узкое, но стоит одного поля в строке. */
+  const one = (x)=> `${x.product ? x.product.id : "+"+_invNameKey(x.name)}:${x.was}>${x.now}|${x.product ? (x.product.unit||"") : (x.unit||"")}`;
   return JSON.stringify({
     add:  plan.add.map(x=> `${_invNameKey(x.name)}|${x.type}|${x.unit}|${x.now}`).sort(),
     up:   plan.up.map(one).sort(),
     down: plan.down.map(one).sort(),
-    same: plan.same.length, empty: plan.empty.length, bad: plan.bad.length,
-    zero: (zeroList||[]).map(s=> `${s.id}:${totalQtyOf(s)}`).sort(),
+    same: plan.same.map(one).sort(),
+    empty: plan.empty.length, bad: plan.bad.length,
+    zero: (zeroList||[]).map(s=> `${s.id}:${totalQtyOf(s)}:${s.unit||""}`).sort(),
   });
 }
 /* ПРИМЕНЕНИЕ. Единственное место, которое что-то меняет, и зовётся оно только из applyInventory —
@@ -5231,6 +5256,7 @@ function _invFingerprint(plan, zeroList){
    Разница «факт − учёт» проводится обычным движением: плюс → «Поступление», минус → «Списание»,
    обе записи с одной пометкой описи. */
 function _invApply(plan, zeroList){
+  _stockNegHits.length = 0;   // сторож минуса: считаем нарушения именно этой пачки
   const day = todayStr();
   const human = day.split("-").reverse().join(".");
   const tag = String(uid()).replace(/[^0-9a-z]/gi,"").slice(-4).toUpperCase();
@@ -5305,11 +5331,13 @@ function _invApply(plan, zeroList){
     }
     if(jrTrimmed) state.journalsTrunc = true;
   }
+  const neg = _stockNegHits.slice(0, 5);
   logOp("INVENTORY", `Опись ${human} #${tag}: новых ${added}, больше ${raised}, меньше ${lowered}`
-        + (zeroed ? `, обнулено ${zeroed}` : "") + (jrTrimmed ? ` · журнал урезан на ${jrTrimmed}` : ""));   // logOp сам зовёт saveState
+        + (zeroed ? `, обнулено ${zeroed}` : "") + (jrTrimmed ? ` · журнал урезан на ${jrTrimmed}` : "")
+        + (neg.length ? ` · ОСТАТОК В МИНУС: ${neg.join(", ")}` : ""));   // logOp сам зовёт saveState
   try{ cloudMaybePush(); }catch(_){}
   try{ render(); }catch(_){}
-  return { added, raised, lowered, zeroed, tag, note, human, jrTrimmed };
+  return { added, raised, lowered, zeroed, tag, note, human, jrTrimmed, neg };
 }
 
 /* ---------- Опись: экран в разделе «Файлы» ---------- */
@@ -5372,8 +5400,14 @@ function _invPreviewHtml(plan){
   /* Запоминаем отпечаток ИМЕННО ТЕХ чисел, которые сейчас окажутся на экране. По нему
      applyInventory проверит, что человек нажимает «Применить» под тем, что прочитал: между
      разбором файла и нажатием мог прийти pull, и тогда предпросмотр обещает «обнулится 1»,
-     а обнулилось бы 6. Перерисовка (render после pull) обновит и числа, и отпечаток разом. */
+     а обнулилось бы 6.
+     Числа берутся ИЗ ПЛАНА — пересобирает его renderFiles, и только когда склад действительно
+     изменился (см. _invStockSig). Раньше здесь стояло обещание, что перерисовка обновит «и
+     числа, и отпечаток разом»: на деле обновлялся только список обнуления, а «было → станет»
+     оставалось старым. Нажатие при этом отбивалось, то есть опасности не было, но комментарий
+     врал следующему читателю. */
   plan.shownFp = _invFingerprint(plan, zeroCand);
+  plan.stockSig = _invStockSig();
   const list = (title, arr, render, max)=> !arr.length ? "" : `
     <div class="mt-2"><div class="text-sm font-bold">${esc(title)}: ${arr.length}</div>
     ${arr.slice(0,max||6).map(render).join("")}
@@ -5391,7 +5425,7 @@ function _invPreviewHtml(plan){
     ${zeroCand.length?`<label class="flex items-start gap-2 text-xs mt-2"><input type="checkbox" id="invZero"><span>Обнулить те, которых нет в файле (${zeroCand.length} поз.) — только в разделах из этого файла. Остаток спишется в ноль, карточки останутся.</span></label>`:""}
     <div class="flex gap-2 mt-3">
       <button class="btn btn-ghost flex-1" onclick="cancelInventory()">Отмена</button>
-      <button class="btn btn-primary flex-1" id="invApplyBtn" onclick="applyInventory()" ${(touched||zeroCand.length)?"":"disabled"}>Применить опись</button>
+      <button class="btn btn-primary flex-1" id="invApplyBtn" onclick="applyInventory()" ${(_invBusy || !(touched||zeroCand.length))?"disabled":""}>Применить опись</button>
     </div>
     ${(touched||zeroCand.length)?"":`<div class="text-xs opacity-70 mt-2">Менять нечего: ни одной строки с расхождением.</div>`}`;
 }
@@ -5505,7 +5539,12 @@ async function applyInventory(){
       + (shown.noType ? `Строки без столбца «Тип» (${shown.noType}) считаны как раздел «${typeMeta(_invDefaultType()).label}».\n\n` : "")
       + _invTotalsText(shown) + `\n`
       + `Позиции, которых в файле нет, ${zeroOn ? `будут ОБНУЛЕНЫ — ${shownZero.length} поз. (см. следующий шаг)` : "останутся как есть"}.\n`
-      + `Записи уйдут в журнал с пометкой «Опись ${day}» — по ней их можно найти и отменить.`,
+      + `Записи уйдут в журнал с пометкой «Опись ${day}» — по ней их можно найти и отменить.`
+      /* Запись идёт одним куском, без пауз: иначе между проверкой и правкой снова влезет pull.
+         Значит экран на это время замирает — на двух тысячах строк это несколько секунд, и
+         человек должен знать заранее, что телефон не завис. */
+      + ((shown.up.length + shown.down.length + shown.add.length + shownZero.length) > 300
+          ? `\n\nСтрок много — запись займёт несколько секунд, экран на это время замрёт. Не закрывайте приложение.` : ""),
       { yes:"Применить опись", no:"Отмена", title:"Подтверждение описи" }
     );
     if(!go) return;
@@ -5535,6 +5574,7 @@ async function applyInventory(){
     toast(`Опись применена: ${parts.join(" · ")}`);
     // тост живёт 1.8 с — метку пачки оставляем на экране: по ней ищут записи в журнале
     _invSay(`<div class="text-sm">Опись применена. Метка в журнале: <b>${esc(r.note)}</b>.</div>
+      ${r.neg.length?`<div class="text-sm" style="color:var(--danger,#ef4444)">Внимание: у ${esc(r.neg.join(", "))} остаток ушёл в минус — это сбой, покажите журнал начальству.</div>`:""}
       <div class="text-xs opacity-70 mt-1">Новых позиций: ${r.added} · стало больше: ${r.raised} · стало меньше: ${r.lowered}${r.zeroed?` · обнулено: ${r.zeroed}`:""}. Не принято строк: ${fresh.bad.length}.</div>
       ${r.jrTrimmed?`<div class="text-xs opacity-70 mt-1">В журнале накопилось больше ${JOURNAL_LOCAL_CAP} записей — ${r.jrTrimmed} самых старых убрано с телефона. Они уже в общей базе и вернутся при синхронизации.</div>`:""}`);
   } finally {
@@ -7080,9 +7120,18 @@ function renderFiles(){
 
   /* Разобранная, но ещё не подтверждённая опись переживает перерисовку. render() зовут и pull
      из облака, и любая правка склада — без этого предпросмотр, который человек в этот момент
-     читает, молча исчезал бы с экрана, а план оставался бы в памяти невидимым. */
+     читает, молча исчезал бы с экрана, а план оставался бы в памяти невидимым.
+     Если склад за это время изменился — пересобираем план по тем же строкам файла, иначе на
+     экране остались бы старые «было → станет» (нажатие отбилось бы, но числа врали бы). */
   if(_invPending && document.getElementById("invOut")){
-    try{ document.getElementById("invOut").innerHTML = _invPreviewHtml(_invPending); }catch(_){}
+    try{
+      if(_invPending.stockSig && _invPending.stockSig !== _invStockSig()){
+        const again = _invPlan(_invPending.rows);
+        again.file = _invPending.file;
+        _invPending = again;
+      }
+      document.getElementById("invOut").innerHTML = _invPreviewHtml(_invPending);
+    }catch(_){}
   }
 
   /* Подкрутка к нужной группе — только когда пришли по строке, которая её и обещала («Резервная
