@@ -3765,13 +3765,18 @@ const _IMP_HEADER_MAP = {
   location: ["место","локация","склад","ячейка","location","place"],
   note:     ["примечание","коммент","комментарий","note","comment","поставщик","supplier"],
   date:     ["дата","датапоступления","датаприхода","date","receiptdate"],
+  /* Тип склада (продукты/хозтовары/инструменты). Раньше колонки не было вовсе, и приход
+     хозтовара по файлу заводил карточку в «Продуктах» — см. _impRowType. */
+  type:     ["тип","типпозиции","типсклада","раздел","type","kind"],
 };
-function _impMapHeaders(headerRow){
+// dict — необязательный словарь заголовков (опись склада читает свой, _INV_HEADER_MAP)
+function _impMapHeaders(headerRow, dict){
+  dict = dict || _IMP_HEADER_MAP;
   const map = {};
   for(const raw of headerRow){
     const n = _impNormHeader(raw);
-    for(const field in _IMP_HEADER_MAP){
-      if(_IMP_HEADER_MAP[field].includes(n)){ map[raw] = field; break; }
+    for(const field in dict){
+      if(dict[field].includes(n)){ map[raw] = field; break; }
     }
   }
   return map;
@@ -3836,6 +3841,40 @@ function _impUnitKey(u){
   if(m) return m;
   if(!String(u||"").trim()) return "шт";
   return null;
+}
+/* Тип склада из ячейки файла. Пусто → null («в файле не сказано», решает вызывающий),
+   непонятное слово → undefined (fail-closed: это не повод молча записать в «Продукты»). */
+function _impMapType(v){
+  const s = String(v==null?"":v).trim().toLowerCase().replace(/ё/g,"е").replace(/\.$/,"");
+  if(!s) return null;
+  if(/^продукт|^еда|^пища|^пищев|^food|^product/.test(s)) return "product";
+  if(/^хоз|^быт|^химия|^household/.test(s)) return "household";
+  if(/^инструм|^инвентар|^оснастк|^tool/.test(s)) return "tool";
+  // ключ как есть («product»/«tool») — на случай файла, выгруженного самим приложением
+  if(STOCK_TYPE_KEYS.includes(s)) return s;
+  return undefined;
+}
+/* Тип «по умолчанию» — когда колонки типа в файле нет. Берём активную вкладку склада, как это
+   уже делает ручной ввод в saveOp: человек стоит на «Хозтоварах» и грузит накладную на хозтовары.
+   Вкладка «Все» / недоступный роли тип → «Продукты», а если и они не разрешены (Механик видит
+   только инструменты) — первый разрешённый: иначе импорт заводил бы то, чего человек не видит. */
+function _impDefaultStockType(){
+  const allowed = allowedTypeKeys();
+  if(STOCK_TYPE_KEYS.includes(stockTab) && allowed.includes(stockTab)) return stockTab;
+  if(allowed.includes("product")) return "product";
+  return allowed[0] || "product";
+}
+/* Тип одной строки импорта: сперва колонка файла, потом раздел/вкладка. Возвращает
+   { type } либо { why } — причину отказа для превью (строку молча не проглатываем).
+   ПРАВА: тип, недоступный роли (allowedTypeKeys ≈ серверный can_see_type), — отказ, а не
+   подмена на «Продукты»: импортом нельзя завести то, чего человеку не положено видеть. */
+function _impRowType(row){
+  const raw = String((row && row.type) || "").trim();
+  const t = _impMapType(raw);
+  if(t === undefined) return { why: `непонятный тип «${raw.slice(0,24)}»` };
+  const type = t || _impDefaultStockType();
+  if(!allowedTypeKeys().includes(type)) return { why: `нет доступа к разделу «${typeMeta(type).label}»` };
+  return { type };
 }
 // эвристика категории продукта по имени — только из списка категорий базы
 function guessProductCategory(name){
@@ -3949,13 +3988,33 @@ function _impTokenScore(a, b){
 /* pool0 — необязательный «склад», по которому искать. Нужен сухому прогону перед диалогом
    импорта (_impPreflight): он считает, что получится, ещё не тронув state, и должен видеть
    карточки, которые заведут ПРЕДЫДУЩИЕ строки того же файла. Без параметра — обычный поиск
-   по state.stock, поведение всех прежних вызовов не меняется. */
-function findStockForImport(name, unit, pool0){
-  const types = ["product"];
+   по state.stock, поведение всех прежних вызовов не меняется.
+
+   ТИПЫ. Здесь было жёстко `["product"]`, и поиск не видел ни хозтоваров, ни инструментов:
+   строка накладной на «Перчатки х/б», которые уже лежат на складе как хозтовар, не находила
+   их и заводила ВТОРУЮ карточку — в «Продуктах». Теперь ищем сначала среди позиций своего типа
+   (type — из колонки файла или с активной вкладки), а потом среди остальных РАЗРЕШЁННЫХ роли:
+   тот же товар, заведённый когда-то не в том разделе, лучше найти, чем задвоить. Чужие типы
+   (роль их не видит) не просматриваются вовсе — иначе приход лёг бы на невидимую карточку. */
+function findStockForImport(name, unit, pool0, type){
+  const allowed = allowedTypeKeys();
+  const primary = STOCK_TYPE_KEYS.includes(type) ? type : "product";
+  const order = allowed.includes(primary)
+    ? [[primary], allowed.filter(t=> t!==primary)]
+    : [allowed];
+  const src = pool0 || state.stock;
+  for(const types of order){
+    if(!types.length) continue;
+    const hit = _impFindInTypes(src, types, name, unit);
+    if(hit) return hit;
+  }
+  return null;
+}
+function _impFindInTypes(src, types, name, unit){
   const wantUnit = _impMapUnit(unit);   // import: пустая/unknown уже отсеяны в recordReceiptRow
   const exact = stockNormName(name);
   const key = stockKeyImport(name);
-  const pool = (pool0 || state.stock).filter(s=> types.includes(s.type));
+  const pool = src.filter(s=> types.includes(s.type));
   const rank = (s)=>{
     const sameU = _impUnitKey(s.unit)===wantUnit ? 1 : 0;
     const sameSz = _impSizeToken(s.name)===_impSizeToken(name) ? 1 : 0;
@@ -4063,20 +4122,24 @@ function _impPreflight(rows){
                      why: `непонятная единица «${String(row.unit||"").trim() || "пусто"}»` });
       continue;
     }
+    // тип — как в боевом цикле: колонка файла, иначе активная вкладка; чужой роли тип не пройдёт
+    const t = _impRowType(row);
+    if(t.why){ skipped.push({ name: name.slice(0,40), why: t.why }); continue; }
+    const type = t.type;
     const { qty, unit } = _impNormalizePackQty(name, qty0, u0);
-    let product = findStockForImport(name, unit, pool);
+    let product = findStockForImport(name, unit, pool, type);
     if(!product){
       const pack = _impPackSize(name);
       if(pack > 1){
         const alts = unit==="шт" ? ["кор","уп"] : (unit==="кор"||unit==="уп") ? ["шт"] : [];
-        for(const au of alts){ const cand = findStockForImport(name, au, pool); if(cand){ product = cand; break; } }
+        for(const au of alts){ const cand = findStockForImport(name, au, pool, type); if(cand){ product = cand; break; } }
       }
     }
     if(!product){
-      const twin = pool.find(s=> s.type==="product" && stockNormName(s.name)===stockNormName(name)
+      const twin = pool.find(s=> s.type===type && stockNormName(s.name)===stockNormName(name)
                                  && _impUnitKey(s.unit) !== unit);
       if(twin) dups.push({ name: name.slice(0,40), unit, have: twin.unit||"шт" });
-      pool.push({ id:"_pre_"+pool.length, type:"product", name, unit, qty:0, batches:[] });
+      pool.push({ id:"_pre_"+pool.length, type, name, unit, qty:0, batches:[] });
       ok.push(row);
       continue;
     }
@@ -4099,35 +4162,45 @@ function recordReceiptRow(row){
   let unit = _impMapUnit(row.unit);
   if(unit==null){ console.warn("import skip: неизвестная ед.", row.unit, name); return null; }
   ({ qty, unit } = _impNormalizePackQty(name, qty, unit));
+  /* ТИП ПОЗИЦИИ. Раньше здесь стояло жёсткое "product": строка с хозтоваром или инструментом
+     молча заводила дубль-карточку в «Продуктах», и найти её потом было негде — на вкладке
+     хозтоваров её нет, а на продуктах никто не ищет швабру. Теперь тип берётся из колонки
+     файла, а если её нет — из активной вкладки склада (_impRowType). */
+  const t = _impRowType(row);
+  if(t.why){ console.warn("import skip: тип", t.why, name); return null; }
+  const type = t.type;
   // только существующие; новое имя — лишь если в каталоге нет похожего
   // сначала same-unit; если нет — карточка с фасовкой (кор/уп↔шт), иначе align мёртв и плодятся дубли
-  let product = findStockForImport(name, unit);
+  let product = findStockForImport(name, unit, null, type);
   if(!product){
     const pack = _impPackSize(name);
     if(pack > 1){
       const alts = unit==="шт" ? ["кор","уп"] : (unit==="кор"||unit==="уп") ? ["шт"] : [];
-      for(const au of alts){ const cand = findStockForImport(name, au); if(cand){ product = cand; break; } }
+      for(const au of alts){ const cand = findStockForImport(name, au, null, type); if(cand){ product = cand; break; } }
     }
   }
   let created = false;
   if(!product){
-    product = createCatalogStockItem("product", name, unit);
+    product = createCatalogStockItem(type, name, unit);
     state.stock.push(product);
     created = true;
-    if(!row.skipPropagate){ try{ propagateName("product", name, product.unit); }catch(e){} }
+    if(!row.skipPropagate){ try{ propagateName(type, name, product.unit); }catch(e){} }
   } else {
     const aligned = _impAlignQtyToProduct(product, name, qty, unit);
     if(!aligned){ console.warn("import skip: ед. не сходятся без фасовки", name, unit, "→", product.unit); return null; }
     ({ qty, unit } = aligned);
   }
-  // категорию ставим только новой карточке или если у старой пусто/«Прочие»/ошибочные макароны у бульона
-  const guessed = guessProductCategory(product.name || name);
+  /* Категорию ставим только новой карточке или если у старой пусто/«Прочие»/ошибочные макароны
+     у бульона. Список категорий — СВОЙ У КАЖДОГО ТИПА (state.categories[type]): угаданная
+     «Крупы» в списке хозтоваров — мусор, поэтому эвристика по имени работает только для еды. */
+  const catList = product.type || type;
+  const guessed = catList==="product" ? guessProductCategory(product.name || name) : "";
   const curCat = String(product.category||"").trim();
   const weakCat = !curCat || /^проч/i.test(curCat) || (/макарон/i.test(curCat) && /бульон/i.test(product.name||name));
   const cat = cleanCatName(row.category) || (created || weakCat ? guessed : "");
   if(cat){
-    state.categories.product = state.categories.product || [];
-    if(!state.categories.product.includes(cat)) state.categories.product.push(cat);
+    state.categories[catList] = state.categories[catList] || [];
+    if(!state.categories[catList].includes(cat)) state.categories[catList].push(cat);
     if(created || weakCat) product.category = cat;
   }
   const note = (typeof row.note==="string" ? row.note.slice(0,200) : "").trim();
@@ -4138,7 +4211,7 @@ function recordReceiptRow(row){
   const op = {
     id:uid(), ts, productId:product.id, productName:product.name, qty,
     unit:product.unit||unit, note: note||"Импорт поступления",
-    stockType: journalStockType(product, "product"),
+    stockType: journalStockType(product, type),
   };
   applyStockDelta(product, 1, qty, op.note, op);
   if(hasBatches(product) && op.batchId){
@@ -4239,6 +4312,8 @@ function _impParseTemplateAoa(aoa){
     if(!nm) continue;
     rows.push({
       name:nm, qty:get("qty"), unit:get("unit"), category:get("category"),
+      // тип: пусто или колонки нет вовсе → решит _impRowType (активная вкладка склада)
+      type:get("type"),
       expiry:get("expiry"), location:get("location"), note:get("note"),
       receiptDate:get("date"), skipPropagate:true
     });
@@ -4253,7 +4328,8 @@ function _impParseTemplateAoa(aoa){
    `raw:true` на ЧТЕНИИ оставляет ячейки строками («0,5» так и остаётся «0,5»), а дальше их
    разбирает parseNum, который русскую запятую понимает правильно. Числа и даты от этого не
    страдают: и УПД-, и шаблонный разбор гоняют значения через parseNum/String. */
-function _impParseWorkbook(XLSX, data, fileHint, fileName){
+// Файл → таблица (массив строк). Отделено от разбора: тем же чтением пользуется опись склада.
+function _impReadAoa(XLSX, data, fileName){
   // именно fileName, а не fileHint: _impFileHint срезает расширение (и часто оставляет только цифры)
   const isCsv = /\.(csv|tsv|txt)$/i.test(String(fileName||""));
   let wb;
@@ -4262,17 +4338,23 @@ function _impParseWorkbook(XLSX, data, fileHint, fileName){
     try{ text = new TextDecoder("utf-8").decode(data instanceof Uint8Array ? data : new Uint8Array(data)); }
     catch(_){ text = ""; }
     if(text.charCodeAt(0)===0xFEFF) text = text.slice(1);            // BOM из Excel
-    if(!text) return { rows:[], error:"Не удалось прочитать CSV" };
+    if(!text) return { error:"Не удалось прочитать CSV" };
     wb = XLSX.read(text, { type:"string", raw:true });
   } else {
     wb = XLSX.read(data, { type:"array" });
   }
   const wsName = wb.SheetNames[0];
-  if(!wsName) return { rows:[], error:"Файл пуст" };
+  if(!wsName) return { error:"Файл пуст" };
   const ws = wb.Sheets[wsName];
   const aoa = XLSX.utils.sheet_to_json(ws, { header:1, raw:true, defval:"" });
-  if(!aoa.length) return { rows:[], error:"Нет строк" };
-  if(aoa.length > IMP_MAX_ROWS + 40) return { rows:[], error:`Слишком много строк (макс. ${IMP_MAX_ROWS}). Разбейте файл на части.` };
+  if(!aoa.length) return { error:"Нет строк" };
+  if(aoa.length > IMP_MAX_ROWS + 40) return { error:`Слишком много строк (макс. ${IMP_MAX_ROWS}). Разбейте файл на части.` };
+  return { aoa };
+}
+function _impParseWorkbook(XLSX, data, fileHint, fileName){
+  const read = _impReadAoa(XLSX, data, fileName);
+  if(read.error) return { rows:[], error:read.error };
+  const aoa = read.aoa;
   const upd = _impParseUpdAoa(aoa, fileHint);
   if(upd) return upd;
   return _impParseTemplateAoa(aoa);
@@ -4285,7 +4367,8 @@ function openReceiptImportSheet(){
     <div class="text-sm opacity-80 mb-2">Можно залить сразу несколько файлов УПД (счёт-фактура от поставщика) или свой Excel по шаблону.</div>
     <div class="text-xs opacity-70 mb-3">
       <b>УПД .xlsx</b> — как приходит от поставщика: наименование, количество, ед. изм. и дата «от …» подставятся сами.<br>
-      <b>Шаблон</b> — столбцы: Наименование · Количество · Ед. изм. · Категория · Срок · Место · Примечание · Дата<br>
+      <b>Шаблон</b> — столбцы: Тип · Наименование · Количество · Ед. изм. · Категория · Срок · Место · Примечание · Дата<br>
+      «Тип» — Продукты / Хозтовары / Инструменты. Пусто — возьмём с той вкладки склада, где вы сейчас.<br>
       До ${IMP_MAX_FILES} файлов · до ${IMP_MAX_ROWS} строк суммарно · до 8 МБ каждый
     </div>
     <button class="btn btn-ghost w-full mb-2" onclick="downloadReceiptTemplate()">${ico("inbox",18)} Скачать шаблон .xlsx</button>
@@ -4296,12 +4379,15 @@ function openReceiptImportSheet(){
 
 async function downloadReceiptTemplate(){
   let XLSX; try{ XLSX = await ensureXlsx(); }catch(e){ toast("Не удалось загрузить Excel-модуль (нужна сеть в первый раз)"); return; }
+  /* Колонка «Тип» — чтобы одним файлом можно было завезти и еду, и хозку, и инструмент.
+     Оставить её пустой можно: тогда тип берётся с той вкладки склада, где человек стоит. */
   const sample = [
-    { "Наименование":"Манная крупа", "Количество":7, "Ед. изм.":"кг", "Категория":"Крупы", "Срок годности":"", "Место":"Склад А", "Примечание":"", "Дата":"2026-07-22" },
-    { "Наименование":"Молоко сгущённое", "Количество":24, "Ед. изм.":"шт", "Категория":"Молочные продукты", "Срок годности":"2027-01-15", "Место":"", "Примечание":"Поставщик X", "Дата":"2026-07-24" },
+    { "Тип":"Продукты", "Наименование":"Манная крупа", "Количество":7, "Ед. изм.":"кг", "Категория":"Крупы", "Срок годности":"", "Место":"Склад А", "Примечание":"", "Дата":"2026-07-22" },
+    { "Тип":"Продукты", "Наименование":"Молоко сгущённое", "Количество":24, "Ед. изм.":"шт", "Категория":"Молочные продукты", "Срок годности":"2027-01-15", "Место":"", "Примечание":"Поставщик X", "Дата":"2026-07-24" },
+    { "Тип":"Хозтовары", "Наименование":"Перчатки х/б", "Количество":50, "Ед. изм.":"уп", "Категория":"Расходники", "Срок годности":"", "Место":"", "Примечание":"", "Дата":"" },
   ];
   const ws = XLSX.utils.json_to_sheet(sample);
-  ws["!cols"] = [{wch:28},{wch:12},{wch:10},{wch:20},{wch:14},{wch:14},{wch:22},{wch:12}];
+  ws["!cols"] = [{wch:12},{wch:28},{wch:12},{wch:10},{wch:20},{wch:14},{wch:14},{wch:22},{wch:12}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Поступление");
   saveXlsx(wb, `vahtahoz-шаблон-поступление.xlsx`, "Шаблон сохранён");
@@ -4391,7 +4477,11 @@ async function importReceiptsExcel(ev){
   const preview = valid.slice(0,8).map(r=>{
     const u = _impMapUnit(r.unit) || (String(r.unit||"").trim() || "?");
     const d = _impParseDate(r.receiptDate);
-    return `• ${cleanNameImport(r.name).slice(0,48)} — ${fmtQty(roundQty(parseNum(r.qty)))} ${u}${d?` · ${d.split("-").reverse().join(".")}`:""}`;
+    // раздел показываем только для не-продуктов: файл с хозкой/инструментом теперь ложится
+    // не в «Продукты», и это должно быть видно ДО подтверждения
+    const t = (_impRowType(r).type) || "product";
+    const tl = t==="product" ? "" : ` · ${typeMeta(t).short}`;
+    return `• ${cleanNameImport(r.name).slice(0,48)} — ${fmtQty(roundQty(parseNum(r.qty)))} ${u}${tl}${d?` · ${d.split("-").reverse().join(".")}`:""}`;
   }).join("\n");
   const skipLine = pre.skipped.length
     ? `\n\nНе пойдёт в импорт (${pre.skipped.length}):\n` +
@@ -5822,7 +5912,7 @@ function renderFiles(){
     <div class="text-sm opacity-80">Приход по накладной или по счёту от поставщика — Excel вместо ручного ввода. Приложение прочитает файл, покажет списком, что нашло, и спросит подтверждение.</div>
     <div class="text-sm"><b>Принятое ДОБАВИТСЯ к остаткам на складе.</b> Ничего не заменяется и не пропадает.</div>
     <button class="btn btn-ghost w-full" onclick="downloadReceiptTemplate()">${ico("inbox",18)} Скачать бланк .xlsx</button>
-    <div class="text-xs opacity-70">Пустой файл Excel: заполните его на компьютере и вернитесь сюда. Столбцы: Наименование · Количество · Ед. изм. · Категория · Срок · Место · Примечание · Дата.</div>
+    <div class="text-xs opacity-70">Пустой файл Excel: заполните его на компьютере и вернитесь сюда. Столбцы: Тип · Наименование · Количество · Ед. изм. · Категория · Срок · Место · Примечание · Дата. «Тип» — Продукты, Хозтовары или Инструменты; оставите пустым — возьмём с той вкладки склада, где вы сейчас.</div>
     <label class="btn btn-primary w-full">${ico("outbox",18)} Выбрать файл<input type="file" multiple accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hidden" onchange="importReceiptsExcel(event)"></label>
     <div id="impReceiptOut" class="text-sm whitespace-pre-line opacity-80"></div>
     <div class="text-xs opacity-70">Файл поставщика (УПД, счёт-фактура) подойдёт как есть, переделывать не нужно: наименование, количество, единицу и дату приложение возьмёт само. Можно выбрать сразу несколько файлов — до ${IMP_MAX_FILES}, всего до ${IMP_MAX_ROWS} строк, каждый до ${mb} МБ.</div>`);
