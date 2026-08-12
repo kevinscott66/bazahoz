@@ -5828,8 +5828,14 @@ async function quickAdjust(id, sign){
     const choice = await chooseSheet(
       `${it.name}\nКуда списать?`,
       [
-        { label:"Выдача (кому-то)",      value:"issue",    color:"btn-danger" },
-        { label:"Списание (порча/срок)", value:"writeoff", color:"btn-warn"   },
+        /* ЦВЕТ ЗДЕСЬ — ЭТО СМЫСЛ, А НЕ ОФОРМЛЕНИЕ. Было наоборот: выдача красная, списание
+           оранжевое. Выдача — рутина каждой смены, товар просто ушёл по назначению; списание —
+           потеря: порча, бой, просроченное. Красным оказалось помечено обыденное, и человек
+           привыкал жать красную кнопку по десять раз за смену — ровно то, от чего красный цвет
+           должен предостерегать. Теперь как в JOURNAL_META (там выдача всегда была btn-warn,
+           а списание btn-danger) — экран и журнал наконец говорят одно и то же. */
+        { label:"Выдача (кому-то)",      value:"issue",    color:"btn-warn"   },
+        { label:"Списание (порча/срок)", value:"writeoff", color:"btn-danger" },
       ]
     );
     if(!choice) return;
@@ -5879,7 +5885,8 @@ async function quickAdjust(id, sign){
       // расход: обязателен выбор партии
       const opts = batches.filter(b=>roundQty(b.qty||0)>0).slice().sort(byExpiry).map(b=>({
         label: `${fmtQty(b.qty)} ${it.unit||""}${b.location?" · 📍 "+b.location:""}${b.expiry?" · ⏰ "+fmtDate(b.expiry):""}`,
-        value: b.id, color: kind==="issue"?"btn-danger":"btn-warn"
+        // тот же смысл, что и на шаге выше: выдача — оранжевая, списание — красное
+        value: b.id, color: kind==="issue"?"btn-warn":"btn-danger"
       }));
       if(!opts.length){ toast("Нет партий с остатком"); return; }
       const choice = await chooseSheet(`${it.name}\nС какой партии?`, opts);
