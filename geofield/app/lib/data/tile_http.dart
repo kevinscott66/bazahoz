@@ -9,6 +9,39 @@ import 'tile_downloader.dart';
 /// тайлов — решение оператора; здесь только подстановка в шаблон и загрузка.
 /// Используется ТОЛЬКО при заготовке региона в городе/по связи (не в поле).
 
+/// Проверка URL-шаблона тайл-сервера, задаваемого оператором (как адрес relay).
+/// Возвращает текст ошибки или null (ок). Требует плейсхолдеры `{z}/{x}/{y}` и
+/// https (http допустим только для localhost — тайлы могут нести токен в пути/
+/// заголовке; открытый канал в поле перехватывается, как и Bearer relay).
+String? validateTileServerUrl(String url) {
+  final u = url.trim();
+  if (u.isEmpty) return 'Адрес пуст';
+  for (final ph in const ['{z}', '{x}', '{y}']) {
+    if (!u.contains(ph)) {
+      return 'В шаблоне нет $ph — нужен формат …/{z}/{x}/{y}.png';
+    }
+  }
+  // Плейсхолдеры мешают разбору host — подставляем безопасные значения.
+  final probe = u.replaceAll(RegExp(r'\{[a-z]\}'), '1');
+  final uri = Uri.tryParse(probe);
+  final isLocal =
+      uri != null && (uri.host == 'localhost' || uri.host.startsWith('127.'));
+  if (uri == null || uri.host.isEmpty || (uri.scheme != 'https' && !isLocal)) {
+    return 'Нужен https (http допустим только для localhost)';
+  }
+  return null;
+}
+
+/// Построить прод-загрузчик тайлов из URL оператора: null, если адрес пуст или
+/// не проходит [validateTileServerUrl] (тогда подложка/скачивание честно
+/// сообщат «адрес не задан», без имитации).
+HttpTileFetcher? tileFetcherFromUrl(String? url,
+    {List<String> subdomains = const [], HttpClient? client}) {
+  if (url == null || validateTileServerUrl(url) != null) return null;
+  return HttpTileFetcher(
+      urlTemplate: url.trim(), subdomains: subdomains, client: client);
+}
+
 /// Подстановка координат тайла в URL-шаблон. Поддерживает `{z}`/`{x}`/`{y}`
 /// и опциональный `{s}` (поддомен tile-сервера, напр. a/b/c).
 String tileUrl(String template, TileId t, {String? subdomain}) {

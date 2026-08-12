@@ -7,6 +7,35 @@ import 'package:geofield/data/tile_http.dart';
 /// Транспорт тайлов: подстановка URL (чисто) и HTTP-загрузка против ЛОКАЛЬНОГО
 /// сервера (как e2e relay — реальный HTTP, без внешней сети).
 void main() {
+  group('validateTileServerUrl / tileFetcherFromUrl', () {
+    test('валидный https-шаблон с {z}/{x}/{y} — ок', () {
+      expect(validateTileServerUrl('https://ts.example/{z}/{x}/{y}.png'), isNull);
+      expect(
+          validateTileServerUrl('https://{s}.ts/{z}/{x}/{y}@2x.png'), isNull);
+    });
+
+    test('нет плейсхолдера — ошибка с указанием какого', () {
+      expect(validateTileServerUrl('https://ts/{z}/{x}.png'), contains('{y}'));
+      expect(validateTileServerUrl(''), isNotNull);
+    });
+
+    test('http запрещён (кроме localhost)', () {
+      expect(validateTileServerUrl('http://ts.example/{z}/{x}/{y}.png'),
+          contains('https'));
+      expect(
+          validateTileServerUrl('http://localhost:8080/{z}/{x}/{y}.png'), isNull);
+      expect(validateTileServerUrl('http://127.0.0.1/{z}/{x}/{y}.png'), isNull);
+    });
+
+    test('фабрика: невалидный/пустой → null, валидный → загрузчик', () {
+      expect(tileFetcherFromUrl(null), isNull);
+      expect(tileFetcherFromUrl('http://ts/{z}/{x}/{y}.png'), isNull);
+      final f = tileFetcherFromUrl('https://ts/{z}/{x}/{y}.png');
+      expect(f, isNotNull);
+      f!.close();
+    });
+  });
+
   group('tileUrl', () {
     test('подстановка {z}/{x}/{y}', () {
       expect(tileUrl('https://ts.example/{z}/{x}/{y}.png', const TileId(10, 5, 7)),
