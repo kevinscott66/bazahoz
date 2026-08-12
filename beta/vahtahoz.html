@@ -896,7 +896,22 @@ function switchProfile(toId, fromAutoLink){
      получал безымянное «Не удалось» без единой подсказки, что делать. */
   let raw = null;
   try{ raw = localStorage.getItem(slotKey(toId)); }catch(_){}
-  const snap = (()=>{ try{ return JSON.stringify(state); }catch(e){ console.error("switchProfile: снимок", e); return null; } })();
+  /* СНИМОК УХОДЯЩЕЙ БАЗЫ — ПО ОБЩЕЙ ПОЛИТИКЕ ХРАНЕНИЯ, а не голым JSON.stringify(state).
+     Всё сохранение сведено к _stateStorageJSON() ровно ради экономии места, а переключение баз
+     обходило его: в слот уходил ПОЛНЫЙ журнал из памяти (до JOURNAL_LOCAL_CAP на вид), тогда как
+     живой STORE_KEY той же базы держал хвост в JOURNAL_STORE_SOFT_CAP. Замер на синтетике
+     (600 позиций, 3000 записей на вид, всё выгружено): живой STORE_KEY 395 615 Б, а слот при
+     переключении — 2 100 596 Б, в 5,3 раза больше, чем было. Дальше по цепочке
+     (setItem(STORE_KEY) → квота → restoreTarget) единственная копия ВТОРОЙ базы могла остаться
+     только в переменной raw внутри замыкания, и человеку в этот момент говорят «НЕ закрывайте
+     приложение, сделайте экспорт прямо сейчас». На вахте он закроет.
+     Урезанный вид слот переживает без потерь: это ровно то, что нормально лежит в STORE_KEY и
+     читается обратно loadState-ом, а _trimJournalKeepPending никогда не выбрасывает записи,
+     которых в облаке нет или чья облачная версия устарела. У базы БЕЗ облака (_uploadedJrIds
+     отдаёт null) _stateStorageJSON и так возвращает полный state — там телефон единственная
+     копия, и урезать нечего. activeCloudId() здесь ещё указывает на УХОДЯЩУЮ базу
+     (profiles.activeId меняется ниже), то есть снимок подписей берётся её собственный. */
+  const snap = (()=>{ try{ return _stateStorageJSON(); }catch(e){ console.error("switchProfile: снимок", e); return null; } })();
   if(snap === null){ toast("Не удалось переключить базу"); return; }
 
   let freedTarget = false;                                   // сняли ли слот целевой базы ради места
