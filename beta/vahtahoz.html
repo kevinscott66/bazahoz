@@ -3949,15 +3949,39 @@ function _impMapType(v){
   if(STOCK_TYPE_KEYS.includes(s)) return s;
   return undefined;
 }
-/* Тип «по умолчанию» — когда колонки типа в файле нет. Берём активную вкладку склада, как это
-   уже делает ручной ввод в saveOp: человек стоит на «Хозтоварах» и грузит накладную на хозтовары.
-   Вкладка «Все» / недоступный роли тип → «Продукты», а если и они не разрешены (Механик видит
-   только инструменты) — первый разрешённый: иначе импорт заводил бы то, чего человек не видит. */
+/* РАЗДЕЛ ДЛЯ СТРОК БЕЗ СТОЛБЦА «ТИП» — ЯВНЫЙ ВЫБОР ЧЕЛОВЕКА, а не догадка приложения.
+   Сначала здесь стояла активная вкладка склада (как в ручном вводе saveOp), и на файле по
+   шаблону это работало. Но в НАСТОЯЩЕЙ накладной поставщика (УПД) столбца «Тип» нет вовсе —
+   и вся накладная уезжала в раздел последней открытой вкладки: полистал «Инструменты», пошёл
+   в «Файлы» грузить продукты — молоко и гречка заведены инструментами, без категории. Вкладки
+   на экране «Файлы» не видно, человек про неё не думает, и в предпросмотре это выглядело
+   безобидной строчкой «· Инструменты». Теперь раздел выбирается кнопками рядом с загрузкой,
+   виден на экране и назван в подтверждении. Умолчание — «Продукты», как было до появления
+   столбца «Тип»: старые сборки и УПД ведут себя ровно так же, как раньше. */
+let _impTypeChoice = "product";
 function _impDefaultStockType(){
   const allowed = allowedTypeKeys();
-  if(STOCK_TYPE_KEYS.includes(stockTab) && allowed.includes(stockTab)) return stockTab;
+  if(STOCK_TYPE_KEYS.includes(_impTypeChoice) && allowed.includes(_impTypeChoice)) return _impTypeChoice;
   if(allowed.includes("product")) return "product";
-  return allowed[0] || "product";
+  return allowed[0] || "product";   // роль видит только инструменты — выбора и нет
+}
+/* Кнопки выбора раздела. Рисуются и в листе «Импорт поступления» на складе, и в разделе
+   «Файлы» — там, где выбирают файл, чтобы решение было принято ДО загрузки, а не угадано после. */
+function _impTypeChipsHtml(){
+  const vis = visibleStockTypes();
+  const cur = _impDefaultStockType();
+  if(vis.length < 2) return `<div class="text-xs opacity-70">Раздел: <b>${esc(typeMeta(cur).label)}</b> (других вам не открыто).</div>`;
+  return `<div class="text-xs opacity-70 mb-1">Строки без столбца «Тип» пойдут в раздел:</div>
+    <div class="flex gap-2 flex-wrap" id="impTypeChips">
+      ${vis.map(t=>`<button class="chip ${cur===t.key?'active':''}" onclick="setImportType('${t.key}')">${ico(t.icon,15)} ${esc(t.label)}</button>`).join("")}
+    </div>`;
+}
+function setImportType(k){
+  if(!STOCK_TYPE_KEYS.includes(k) || !allowedTypeKeys().includes(k)) return;
+  _impTypeChoice = k;
+  // перерисовываем обе возможные точки показа: лист на складе и группу в «Файлах»
+  for(const el of document.querySelectorAll("#impTypeWrap")) el.innerHTML = _impTypeChipsHtml();
+  toast(`Раздел для файла: ${typeMeta(k).label}`);
 }
 /* Тип одной строки импорта: сперва колонка файла, потом раздел/вкладка. Возвращает
    { type } либо { why } — причину отказа для превью (строку молча не проглатываем).
@@ -4505,15 +4529,19 @@ function _impParseWorkbook(XLSX, data, fileHint, fileName){
 
 function openReceiptImportSheet(){
   if(!ensureCanEdit()) return;
+  /* Лист открывают со «Склада», где вкладка раздела только что была под рукой, — поэтому здесь
+     кнопки раздела заранее стоят на ней. Это по-прежнему ЯВНЫЙ выбор: он виден и его видно
+     в подтверждении. В разделе «Файлы» вкладки не видно, там умолчание «Продукты». */
+  if(STOCK_TYPE_KEYS.includes(stockTab) && allowedTypeKeys().includes(stockTab)) _impTypeChoice = stockTab;
   openSheet(`
     <div class="font-bold text-xl mb-2">${ico("inbox",20)} Импорт поступления</div>
     <div class="text-sm opacity-80 mb-2">Можно залить сразу несколько файлов УПД (счёт-фактура от поставщика) или свой Excel по шаблону.</div>
     <div class="text-xs opacity-70 mb-3">
-      <b>УПД .xlsx</b> — как приходит от поставщика: наименование, количество, ед. изм. и дата «от …» подставятся сами.<br>
+      <b>УПД .xlsx</b> — как приходит от поставщика: наименование, количество, ед. изм. и дата «от …» подставятся сами. Столбца «Тип» в нём нет — раздел выберите кнопками ниже.<br>
       <b>Шаблон</b> — столбцы: Тип · Наименование · Количество · Ед. изм. · Категория · Срок · Место · Примечание · Дата<br>
-      «Тип» — Продукты / Хозтовары / Инструменты. Пусто — возьмём с той вкладки склада, где вы сейчас.<br>
       До ${IMP_MAX_FILES} файлов · до ${IMP_MAX_ROWS} строк суммарно · до 8 МБ каждый
     </div>
+    <div id="impTypeWrap" class="mb-3">${_impTypeChipsHtml()}</div>
     <button class="btn btn-ghost w-full mb-2" onclick="downloadReceiptTemplate()">${ico("inbox",18)} Скачать шаблон .xlsx</button>
     <label class="btn btn-primary w-full">Выбрать файл(ы)…<input type="file" multiple accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hidden" onchange="importReceiptsExcel(event)"></label>
     <div id="impReceiptOut" class="text-sm mt-3 whitespace-pre-line opacity-80"></div>
@@ -4651,8 +4679,16 @@ async function importReceiptsExcel(ev){
       + `${again.matched} из ${again.total} ${_pos(again.matched)} уже есть в журнале поступлений с теми же количествами. `
       + `Если приход настоящий (привезли ещё раз) — продолжайте, количества сложатся.`
     : "";
+  /* Раздел для строк без столбца «Тип» называем ЯВНО и до подтверждения. В накладной поставщика
+     столбца «Тип» нет вовсе, и раньше вся она молча уезжала в раздел последней открытой вкладки
+     склада — молоко и гречка заводились инструментами. Теперь раздел выбран кнопками на экране,
+     а здесь человек читает, куда именно всё ляжет. */
+  const noTypeRows = valid.filter(r=> !_impMapType(r.type)).length;
+  const typeLine = noTypeRows
+    ? `\n\nСтроки без столбца «Тип» (${noTypeRows}) пойдут в раздел «${typeMeta(_impDefaultStockType()).label}».`
+    : "";
   const go = await confirmSheet(
-    `Импортировать поступлений: ${valid.length}${againLine}\n\nФайлы:\n${filesLine}\n\n${preview}${valid.length>8?`\n…и ещё ${valid.length-8}`:""}${skipLine}${dupLine}`,
+    `Импортировать поступлений: ${valid.length}${againLine}${typeLine}\n\nФайлы:\n${filesLine}\n\n${preview}${valid.length>8?`\n…и ещё ${valid.length-8}`:""}${skipLine}${dupLine}`,
     { yes:"Импортировать", no:"Отмена", title:"Подтверждение импорта" }
   );
   if(!go) return;
@@ -6646,6 +6682,10 @@ let _filesAnchor = null;     // к какой группе подкрутить 
    прокручивать экран под рукой у человека на каждый такой вызов нельзя. */
 function openFiles(anchor){
   if(gateOpen()) return;
+  /* Раздел для строк без столбца «Тип» сбрасываем на «Продукты» при КАЖДОМ входе в «Файлы»:
+     вкладки склада здесь не видно, и наследовать её молча нельзя (накладная поставщика без
+     столбца «Тип» уезжала в раздел последней открытой вкладки). Выбор рядом с кнопкой файла. */
+  if(allowedTypeKeys().includes("product")) _impTypeChoice = "product";
   if(currentView!=="files") _filesBack = currentView;
   _filesAnchor = anchor || "Top";
   nav("files");
@@ -6671,7 +6711,8 @@ function renderFiles(){
     <div class="text-sm opacity-80">Приход по накладной или по счёту от поставщика — Excel вместо ручного ввода. Приложение прочитает файл, покажет списком, что нашло, и спросит подтверждение.</div>
     <div class="text-sm"><b>Принятое ДОБАВИТСЯ к остаткам на складе.</b> Ничего не заменяется и не пропадает.</div>
     <button class="btn btn-ghost w-full" onclick="downloadReceiptTemplate()">${ico("inbox",18)} Скачать бланк .xlsx</button>
-    <div class="text-xs opacity-70">Пустой файл Excel: заполните его на компьютере и вернитесь сюда. Столбцы: Тип · Наименование · Количество · Ед. изм. · Категория · Срок · Место · Примечание · Дата. «Тип» — Продукты, Хозтовары или Инструменты; оставите пустым — возьмём с той вкладки склада, где вы сейчас.</div>
+    <div class="text-xs opacity-70">Пустой файл Excel: заполните его на компьютере и вернитесь сюда. Столбцы: Тип · Наименование · Количество · Ед. изм. · Категория · Срок · Место · Примечание · Дата. «Тип» — Продукты, Хозтовары или Инструменты.</div>
+    <div id="impTypeWrap">${_impTypeChipsHtml()}</div>
     <label class="btn btn-primary w-full">${ico("outbox",18)} Выбрать файл<input type="file" multiple accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hidden" onchange="importReceiptsExcel(event)"></label>
     <div id="impReceiptOut" class="text-sm whitespace-pre-line opacity-80"></div>
     <div class="text-xs opacity-70">Файл поставщика (УПД, счёт-фактура) подойдёт как есть, переделывать не нужно: наименование, количество, единицу и дату приложение возьмёт само. Можно выбрать сразу несколько файлов — до ${IMP_MAX_FILES}, всего до ${IMP_MAX_ROWS} строк, каждый до ${mb} МБ.</div>`);
@@ -8659,7 +8700,7 @@ Object.assign(window,{openFilterSheet,openTaskFilterSheet,openStockFilterSheet,r
   openCloudSheet,openExportSheet,openBackupSheet,openFiles,closeFiles,openJournalSheet,openStockReconcileSheet,openGrantBasesSheet,doGrantBases,openBroadcastSheet,sendBroadcast,
   openAboutSheet,openFaqSheet,openPrivacySheet,openTermsSheet,openRecoveryEmailSheet,
   openMove,doMove,
-  openReceiptImportSheet,downloadReceiptTemplate,importReceiptsExcel,
+  openReceiptImportSheet,downloadReceiptTemplate,importReceiptsExcel,setImportType,
   downloadInventoryTemplate,importInventoryExcel,applyInventory,cancelInventory,
   openMembersSheet,openMemberRole,setMemberRole,memberRotate,memberRemove,openAddMember,openResetPwd,
   openShift,openHandover,doHandover,
