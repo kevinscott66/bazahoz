@@ -63,7 +63,7 @@ begin
   if to_regprocedure('public.is_member(uuid)') is null
      or to_regprocedure('public.has_perm(uuid,text)') is null then
     raise exception 'Нет public.is_member(uuid) / has_perm(uuid,text) — сначала примените '
-                    '2026-08-12_core_rls_baseline.sql';
+                    '0000_core_rls_baseline.sql';
   end if;
 end
 $pre$;

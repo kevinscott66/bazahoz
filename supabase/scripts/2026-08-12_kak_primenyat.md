@@ -9,7 +9,7 @@
 
 ## Порядок
 
-### Шаг 1. `supabase/migrations/2026-08-12_core_rls_baseline.sql`
+### Шаг 1. `supabase/migrations/0000_core_rls_baseline.sql`
 
 Открыть файл, скопировать **целиком**, вставить в SQL Editor, нажать Run.
 

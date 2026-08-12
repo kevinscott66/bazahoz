@@ -482,7 +482,7 @@ checks(ord, migration, object, state) as (
            || (select string_agg(c.relname, ', ' order by c.relname)
                  from pg_class c join pg_namespace n on n.oid = c.relnamespace
                 where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity)
-           || '. Применить 2026-08-12_core_rls_baseline.sql'
+           || '. Применить 0000_core_rls_baseline.sql'
       else 'есть'
     end
   union all select 95, 'round12', 'базовые политики bases/base_members/profiles/tasks (ожидается 12)',
@@ -493,7 +493,7 @@ checks(ord, migration, object, state) as (
       else 'НЕТ — политик всего '
            || (select count(*)::text from pg_policies where schemaname = 'public'
                 and tablename in ('bases', 'base_members', 'profiles', 'tasks'))
-           || ' из 12. Применить 2026-08-12_core_rls_baseline.sql'
+           || ' из 12. Применить 0000_core_rls_baseline.sql'
     end
 
   -- ── ГРАНТЫ: чего быть НЕ должно ─────────────────────────────────────────────

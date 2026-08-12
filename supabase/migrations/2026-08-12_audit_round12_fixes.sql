@@ -112,11 +112,11 @@ begin
     raise exception 'Нет таблицы public.bases — это не база ВахтаХоз';
   end if;
   if to_regprocedure('public.is_member(uuid)') is null then
-    raise exception 'Нет public.is_member(uuid) — сначала примените 2026-08-12_core_rls_baseline.sql';
+    raise exception 'Нет public.is_member(uuid) — сначала примените 0000_core_rls_baseline.sql';
   end if;
   if to_regprocedure('public.is_admin()') is null
      or to_regprocedure('public.can_manage_base(uuid)') is null then
-    raise exception 'Нет public.is_admin() / can_manage_base(uuid) — сначала примените 2026-08-12_core_rls_baseline.sql';
+    raise exception 'Нет public.is_admin() / can_manage_base(uuid) — сначала примените 0000_core_rls_baseline.sql';
   end if;
   if to_regprocedure('public.my_visible_types()') is null then
     raise exception 'Нет public.my_visible_types() — сначала примените 2026-08-02_rls_speed_stock.sql';
