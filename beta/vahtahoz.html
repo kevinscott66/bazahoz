@@ -4825,7 +4825,22 @@ const _invNameKey = (s)=> String(s==null?"":s).replace(/[\s ]+/g," ").trim().to
    найти, чем задвоить). В своём разделе несовпадение единицы и двойник — ОТКАЗ строки с
    причиной; в чужих разделах это просто «не нашли», иначе чужая карточка с тем же именем
    мешала бы завести позицию в своём разделе. */
-function _invFindStock(pool, name, type, unitKey){
+/* Индекс склада «тип|имя» на один разбор. Без него _invFindStock фильтровала ВЕСЬ склад на
+   КАЖДУЮ строку файла: опись на 2000 строк по складу в 2000 карточек — это 4 млн нормализаций
+   имён, секунды замершего экрана на телефоне. А теперь план строится трижды на одно применение
+   (показать, подтвердить, записать), и цена утроилась бы. Заглушки новых позиций кладутся и в
+   индекс — порядок разбора это учитывает так же, как раньше. */
+function _invIndex(pool){
+  const m = new Map();
+  for(const s of pool) _invIndexAdd(m, s);
+  return m;
+}
+function _invIndexAdd(idx, s){
+  const k = s.type + "|" + _invNameKey(s.name);
+  if(!idx.has(k)) idx.set(k, []);
+  idx.get(k).push(s);
+}
+function _invFindStock(idx, name, type, unitKey){
   // _invNameKey, а не stockNormName: у карточки в имени бывает двойной или неразрывный пробел
   const n = _invNameKey(name);
   const allowed = allowedTypeKeys();
@@ -4834,7 +4849,8 @@ function _invFindStock(pool, name, type, unitKey){
     const strict = (i===0);
     const types = order[i];
     if(!types.length) continue;
-    let c = pool.filter(s=> types.includes(s.type) && _invNameKey(s.name)===n);
+    let c = [];
+    for(const t of types) for(const s of (idx.get(t+"|"+n) || [])) c.push(s);
     if(!c.length) continue;
     if(unitKey){
       const same = c.filter(s=> _impUnitKey(s.unit)===unitKey);
@@ -4920,7 +4936,8 @@ function _invPlan(rows){
      того, чем кончился разбор строки: назвали — значит эту позицию человек в описи упомянул. */
   const plan = { rows, add:[], up:[], down:[], same:[], bad:[], empty:[],
                  types:new Set(), claimIds:new Set(), claimNames:new Set() };
-  const pool = (state.stock||[]).slice();
+  const idx = _invIndex(state.stock||[]);
+  let stubs = 0;
   const seen = new Set();
   for(const row of rows){
     const name = cleanNameImport(row.name);
@@ -4942,7 +4959,7 @@ function _invPlan(rows){
        отсутствующей — строка в файле есть, её просто не пересчитали. */
     const rawQty = String(row.qty==null ? "" : row.qty).trim();
     if(rawQty===""){
-      const f = _invFindStock(pool, name, type, u ? _impUnitKey(u) : null);
+      const f = _invFindStock(idx, name, type, u ? _impUnitKey(u) : null);
       if(f.item) plan.claimIds.add(f.item.id);
       plan.empty.push({ name, product: f.item || null });
       continue;
@@ -4951,14 +4968,14 @@ function _invPlan(rows){
     const q = _invParseFact(row.qty);
     if(q.why){ bad(q.why); continue; }
     const fact = q.qty;
-    const found = _invFindStock(pool, name, type, u ? _impUnitKey(u) : null);
+    const found = _invFindStock(idx, name, type, u ? _impUnitKey(u) : null);
     if(found.why){ bad(found.why); continue; }
     const product = found.item;
     if(!product){
       // новой позиции единица нужна: карточка без единицы потом не сойдётся ни с одной накладной
       if(!u){ bad("новой позиции нужна единица измерения"); continue; }
-      const stub = { id:"_inv_"+pool.length, type, name, unit:u, qty:fact, batches:[] };
-      pool.push(stub); seen.add(stub.id);
+      const stub = { id:"_inv_"+(stubs++), type, name, unit:u, qty:fact, batches:[] };
+      _invIndexAdd(idx, stub); seen.add(stub.id);
       plan.types.add(type);
       plan.add.push({ name, type, unit:u, was:0, now:fact, delta:fact, product:null, row });
       continue;
