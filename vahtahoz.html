@@ -7982,6 +7982,18 @@ function notifSave(){
 }
 function notifUnread(){ return notifLoad().list.reduce((n,x)=>n+(x.read?0:1),0); }
 
+/* ВЫХОД ИЗ ОБЛАКА УНОСИТ УВЕДОМЛЕНИЯ. cloudLogout чистит с телефона всё чужое — слоты облачных
+   баз, задачи, снимки подписей, кэш остатков, — а эти два ключа оставались. notifOwnerCheck
+   действительно стирает чужой список, но только когда узнает нового uid, то есть после загрузки
+   профиля. Смена кончилась, телефон отдали сменщику, тот вошёл, профиль едет восемь секунд по
+   слабой связи — и всё это время колокольчик показывает уведомления прошлой смены с именами баз,
+   ролями и позициями. Снимаем сразу при выходе; заодно уходит и снимок членств, по которому
+   иначе следующему человеку насчитали бы чужие «доступ открыт / доступ закрыт». */
+function notifWipe(){
+  _notifs = null;
+  try{ localStorage.removeItem(NOTIF_KEY); localStorage.removeItem(NOTIF_MEM_KEY); }catch(_){}
+}
+
 /* На телефоне сменился человек — чужие уведомления показывать нельзя (в них имена баз и роли).
    Зовётся перед каждым разбором; пока uid неизвестен (холодный старт, офлайн) не трогаем
    ничего: иначе список стирался бы при каждом запуске без сети. */
@@ -10091,6 +10103,7 @@ async function cloudLogout(){
   clearTimeout(cloud.pushTimer); clearTimeout(cloud.retryTimer); clearTimeout(cloud.pullTimer); clearTimeout(cloud.pullRetryT);   // отложенные склад-операции не должны срабатывать после выхода
   // задачи привязаны к аккаунту (owner) — при выходе НЕ оставляем их локально, иначе следующий юзер их увидит/выгрузит
   state.tasks=[]; try{ localStorage.removeItem(TASKS_KEY); localStorage.removeItem(TASKS_DIRTY); }catch(e){}
+  try{ if(typeof notifWipe==="function") notifWipe(); }catch(_){}   // уведомления прошлой смены — не сменщику (см. notifWipe)
   cloud.session=null; cloud.profile=null; cloud.members=[]; cloud.orgRoles=[]; cloud.orgManagers=[]; cloud.orgManagersLoaded=false; cloud.channel=null; cloud.subscribedBase=null; cloud.ready=false;
   cloud.tasksChannel=null; cloud.tasksSubUid=null; cloud.tasksBusy=false; cloud.basesLoaded=false; cloud.membersLoaded=false;   // сброс задач: иначе после входа другим юзером realtime молчит
   cloud._conflictAsked={};   // сброс «спрашивали ли про конфликт данных» — для следующего входа на этом устройстве
