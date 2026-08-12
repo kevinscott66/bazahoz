@@ -4202,7 +4202,7 @@ function _impAlignQtyToProduct(product, name, qty, unit){
    Логику не трогаем (сливать кг со шт нельзя), а в диалоге предупреждаем — до подтверждения. */
 function _impPreflight(rows){
   const pool = (state.stock||[]).slice();
-  const ok = [], skipped = [], dups = [];
+  const ok = [], skipped = [], dups = [], keys = [];   // keys — ключи принятых строк для проверки «уже загружали» (_impLooksReloaded)
   for(const row of rows){
     const name = cleanNameImport(row.name);
     const qty0 = roundQty(parseNum(row.qty));
@@ -4236,16 +4236,64 @@ function _impPreflight(rows){
       if(twin) dups.push({ name: name.slice(0,40), unit, have: twin.unit||"шт" });
       pool.push({ id:"_pre_"+pool.length, type, name, unit, qty:0, batches:[] });
       ok.push(row);
+      keys.push(_impRowKey(name, unit, qty));   // новая карточка: имя и единица будут как в файле
       continue;
     }
-    if(!_impAlignQtyToProduct(product, name, qty, unit)){
+    const _al = _impAlignQtyToProduct(product, name, qty, unit);
+    if(!_al){
       skipped.push({ name: name.slice(0,40),
                      why: `единица «${unit}» не сходится с карточкой «${product.unit||"шт"}»` });
       continue;
     }
     ok.push(row);
+    // ключ считаем ПОСЛЕ приведения к карточке — recordReceiptRow пишет в журнал именно эти
+    // имя/единицу/количество (2 кор при карточке в шт превращаются в 24 шт)
+    keys.push(_impRowKey(product.name, product.unit||_al.unit, _al.qty));
   }
-  return { ok, skipped, dups };
+  return { ok, skipped, dups, keys };
+}
+/* Ключ строки поступления: имя + единица + количество. Один и тот же для файла (после приведения
+   к карточке) и для уже лежащей записи журнала — на этом и держится проверка «эту накладную,
+   похоже, уже загружали». */
+function _impRowKey(name, unit, qty){
+  return `${stockNormName(name)}|${_impUnitKey(unit)||String(unit||"").trim()}|${roundQty(qty||0)}`;
+}
+/* «ПОХОЖЕ, ЭТУ НАКЛАДНУЮ УЖЕ ЗАГРУЖАЛИ». Повторная загрузка одной накладной не ловилась ничем, а
+   поводов ровно два и оба рядовые: «файл выбрал, экран не отозвался, выбрал ещё раз» и «один и
+   тот же УПД прислали и кладовщику, и начальнику». Приход применяется молча, склад удваивается,
+   а разбирать потом нечем — записи журнала выглядят настоящими, потому что они настоящие.
+   ПРОВЕРКА ДЕШЁВАЯ: один проход по журналу поступлений, ключи по файлу уже посчитаны сухим
+   прогоном. Совпадение по КОЛИЧЕСТВУ обязательно: «Мука 50 кг» и «Мука 3 кг» — разные поставки.
+   ПОРОГ. Не меньше трёх позиций и не меньше двух третей файла; у файла из одной-двух строк —
+   все строки. Иначе на регулярной поставке одного и того же товара предупреждение срабатывало бы
+   каждую неделю и его перестали бы читать.
+   ПРЕДУПРЕЖДАЕМ, А НЕ ЗАПРЕЩАЕМ: повторный приход бывает и настоящим — привезли вторую машину с
+   тем же товаром. Поэтому это строка в том же диалоге подтверждения, а не отдельный отказ.
+   Время берём с самой свежей совпавшей записи журнала: это ровно та отметка, которую человек
+   увидит, если пойдёт её искать (у накладной с датой документа это дата документа, и так и надо —
+   искать он будет именно там). */
+function _impLooksReloaded(keys){
+  try{
+    if(!Array.isArray(keys) || !keys.length) return null;
+    const want = new Set(keys);
+    const hit = new Set(); let lastTs = "";
+    for(const op of (state.journals?.receipt || [])){
+      if(!op) continue;
+      const k = _impRowKey(op.productName, op.unit, op.qty);
+      if(!want.has(k)) continue;
+      hit.add(k);
+      if(String(op.ts||"") > lastTs) lastTs = String(op.ts||"");
+    }
+    const need = want.size <= 2 ? want.size : Math.max(3, Math.ceil(want.size*2/3));
+    if(hit.size < need) return null;
+    let when = "";
+    const d = new Date(lastTs);
+    if(lastTs && !isNaN(d.getTime())){
+      const p2 = (n)=>String(n).padStart(2,"0");
+      when = `${p2(d.getDate())}.${p2(d.getMonth()+1)} в ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+    }
+    return { matched: hit.size, total: want.size, when };
+  }catch(e){ console.warn("_impLooksReloaded", e); return null; }
 }
 // одна строка импорта → поступление (мутирует склад/журнал; saveState — у вызывающего через logOp/saveState)
 // ВАЖНО: любой новый `return null` здесь надо повторить в _impPreflight, иначе диалог снова
@@ -4591,8 +4639,20 @@ async function importReceiptsExcel(ev){
       pre.dups.slice(0,6).map(d=>`• ${d.name} — в файле ${d.unit}, на складе ${d.have}`).join("\n") +
       (pre.dups.length>6 ? `\n…и ещё ${pre.dups.length-6}` : "")
     : "";
+  /* Повтор одной и той же накладной — рядовая беда: экран не отозвался и файл выбрали дважды,
+     либо один УПД прислали и кладовщику, и начальнику. Говорим об этом ПЕРВОЙ строкой, но не
+     запрещаем: повторный приход бывает и настоящим (см. _impLooksReloaded). */
+  const again = _impLooksReloaded(pre.keys);
+  // «1 позиция / 2 позиции / 5 позиций» — иначе предупреждение о потере денег выглядит опечаткой
+  const _pos = (n)=>{ const a=n%100, b=n%10;
+    return (a>=11 && a<=14) ? "позиций" : b===1 ? "позиция" : (b>=2 && b<=4) ? "позиции" : "позиций"; };
+  const againLine = again
+    ? `\n\n⚠ ПОХОЖЕ, ЭТУ НАКЛАДНУЮ УЖЕ ЗАГРУЖАЛИ${again.when?` — ${again.when}`:""}.\n`
+      + `${again.matched} из ${again.total} ${_pos(again.matched)} уже есть в журнале поступлений с теми же количествами. `
+      + `Если приход настоящий (привезли ещё раз) — продолжайте, количества сложатся.`
+    : "";
   const go = await confirmSheet(
-    `Импортировать поступлений: ${valid.length}\n\nФайлы:\n${filesLine}\n\n${preview}${valid.length>8?`\n…и ещё ${valid.length-8}`:""}${skipLine}${dupLine}`,
+    `Импортировать поступлений: ${valid.length}${againLine}\n\nФайлы:\n${filesLine}\n\n${preview}${valid.length>8?`\n…и ещё ${valid.length-8}`:""}${skipLine}${dupLine}`,
     { yes:"Импортировать", no:"Отмена", title:"Подтверждение импорта" }
   );
   if(!go) return;
