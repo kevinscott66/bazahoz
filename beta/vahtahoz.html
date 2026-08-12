@@ -4790,14 +4790,15 @@ const _invNameKey = (s)=> String(s==null?"":s).replace(/[\s ]+/g," ").trim().to
    причиной; в чужих разделах это просто «не нашли», иначе чужая карточка с тем же именем
    мешала бы завести позицию в своём разделе. */
 function _invFindStock(pool, name, type, unitKey){
-  const n = stockNormName(name);
+  // _invNameKey, а не stockNormName: у карточки в имени бывает двойной или неразрывный пробел
+  const n = _invNameKey(name);
   const allowed = allowedTypeKeys();
   const order = allowed.includes(type) ? [[type], allowed.filter(x=> x!==type)] : [allowed];
   for(let i=0; i<order.length; i++){
     const strict = (i===0);
     const types = order[i];
     if(!types.length) continue;
-    let c = pool.filter(s=> types.includes(s.type) && stockNormName(s.name)===n);
+    let c = pool.filter(s=> types.includes(s.type) && _invNameKey(s.name)===n);
     if(!c.length) continue;
     if(unitKey){
       const same = c.filter(s=> _impUnitKey(s.unit)===unitKey);
@@ -4821,11 +4822,21 @@ function _invFindStock(pool, name, type, unitKey){
    заглушка, а повторная строка про ту же позицию отбивается как «уже встречалась» (иначе две
    строки на один товар молча дали бы два разных «фактических» остатка, и победил бы последний). */
 function _invPlan(rows){
-  const plan = { rows, add:[], up:[], down:[], same:[], bad:[], empty:[], types:new Set() };
+  /* claimNames — ИМЕНА ИЗ САМОГО ФАЙЛА, а не из результата разбора. Здесь была дыра, ради
+     которой стоило всё переписать: «что было в файле» выводилось из корзин add/up/down/same/empty,
+     а строка, которую разбор ОТВЕРГ (не число, минус, непонятная единица, «несколько карточек с
+     таким названием»), не попадала никуда — и позиция считалась отсутствующей в файле. То есть
+     приложение предупреждало о проблемной строке и оно же обнуляло именно её. Ровно так же
+     терялись обе карточки-дубля с одинаковым именем: строка была, найти однозначно не смогли —
+     обнулили обе. Теперь имя из файла защищает карточку с таким именем ВСЕГДА, независимо от
+     того, чем кончился разбор строки: назвали — значит эту позицию человек в описи упомянул. */
+  const plan = { rows, add:[], up:[], down:[], same:[], bad:[], empty:[],
+                 types:new Set(), claimIds:new Set(), claimNames:new Set() };
   const pool = (state.stock||[]).slice();
   const seen = new Set();
   for(const row of rows){
     const name = cleanNameImport(row.name);
+    if(name) plan.claimNames.add(_invNameKey(name));
     const bad = (why)=> plan.bad.push({
       name: (name || String(row.name||"").trim()).slice(0,44) || "(без наименования)",
       why, at: row.rowNo ? `стр. ${row.rowNo}` : "",
@@ -4844,6 +4855,7 @@ function _invPlan(rows){
     const rawQty = String(row.qty==null ? "" : row.qty).trim();
     if(rawQty===""){
       const f = _invFindStock(pool, name, type, u ? _impUnitKey(u) : null);
+      if(f.item) plan.claimIds.add(f.item.id);
       plan.empty.push({ name, product: f.item || null });
       continue;
     }
@@ -4867,11 +4879,17 @@ function _invPlan(rows){
       plan.add.push({ name, type, unit:u, was:0, now:fact, delta:fact, product:null, row });
       continue;
     }
+    plan.claimIds.add(product.id);
     if(seen.has(product.id)){ bad("эта позиция в файле уже была выше"); continue; }
     seen.add(product.id);
     if(hasBatches(product)){ bad("позиция с партиями (срок годности) — правится вручную"); continue; }
     const was = totalQtyOf(product);
-    plan.types.add(product.type);
+    /* РАЗДЕЛ ДЛЯ ОБНУЛЕНИЯ — тот, что ЗАЯВЛЕН В СТРОКЕ, а не тот, где нашлась карточка. Поиск
+       намеренно смотрит и в чужие разделы (тот же товар, заведённый когда-то не туда, лучше
+       найти, чем задвоить), но брать оттуда РАЗДЕЛ нельзя: опись из двух строк «Продукты», где
+       одна нашлась среди инструментов, добавляла «Инструменты» в область обнуления — и молоток
+       с уровнем, которых в описи не было и в помине, списывались в ноль. */
+    plan.types.add(type);
     const e = { name:product.name, type:product.type, unit:product.unit||u||"", was, now:fact,
                 delta:roundQty(fact - was), product, row };
     if(Math.abs(e.delta) < 1e-9) plan.same.push(e);
@@ -4884,12 +4902,15 @@ function _invPlan(rows){
    РЕАЛЬНО были: опись продуктов не должна обнулять инструменты, которых в ней и не было.
    Партийные позиции и здесь не трогаем, а нулевые в кандидаты не идут — списывать нечего. */
 function _invZeroCandidates(plan){
-  const inFile = new Set();
-  // строки без отметки (plan.empty) — тоже «в файле»: их не считали, обнулять их нельзя
-  for(const e of plan.add.concat(plan.up, plan.down, plan.same, plan.empty)) if(e.product) inFile.add(e.product.id);
   const allowed = allowedTypeKeys();
+  /* Карточку защищает ЛЮБОЕ упоминание в файле: совпавший id (в т.ч. по строке без отметки —
+     «не считали» тоже упоминание) ИЛИ просто совпавшее имя. Имя — потому что строка могла быть
+     отвергнута или не сопоставлена однозначно, а это как раз те случаи, где обнулять опаснее
+     всего. Пробелы в имени схлопываются с обеих сторон (_invNameKey). */
   return (state.stock||[]).filter(s=> s && plan.types.has(s.type) && allowed.includes(s.type)
-                                   && !inFile.has(s.id) && !hasBatches(s) && totalQtyOf(s) > 0);
+                                   && !plan.claimIds.has(s.id)
+                                   && !plan.claimNames.has(_invNameKey(s.name))
+                                   && !hasBatches(s) && totalQtyOf(s) > 0);
 }
 /* ОТПЕЧАТОК ПЛАНА — ровно те числа, которые человеку показали в диалоге. Перед самой записью
    план пересчитывается заново, и отпечатки сверяются: разошлись — не пишем НИЧЕГО.
