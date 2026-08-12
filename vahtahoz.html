@@ -11225,7 +11225,32 @@ function cloudOnRemote(payload){
   if(cloud.busy || cloud.pushPending || cloud.applying){ cloud._remoteMissed = true; return; }
   // есть несинхронизированные локальные правки → не тянем (затёрли бы своё); сначала выгрузим их
   const cid0 = activeCloudId();
-  if(cid0 && localStorage.getItem(cloudDirtyKey(cid0))){ cloudMaybePush(); return; }
+  if(cid0 && localStorage.getItem(cloudDirtyKey(cid0))){
+    /* ЧУЖОЕ СОБЫТИЕ НЕЛЬЗЯ ПРОСТО ВЫБРОСИТЬ — ЭТО ПОТЕРЯ ДАННЫХ, А НЕ ЛИШНИЙ ТРАФИК.
+       Это была единственная ветка выхода БЕЗ _remoteMissed, хотя окно загрузки строкой выше уже
+       снято clearTimeout, а нового здесь не ставится. cloudDrainRemoteMissed в finally у push
+       видел флаг ложью и не делал ничего — чужое событие пропадало НАСОВСЕМ.
+       Как это выглядит на вахте: у кладовщика А push упал по сети (окно ретрая 6 секунд —
+       обычное дело), в эти секунды напарник Б удалил позицию. DELETE эхом не считается (у него
+       нет payload.new), приходит сюда, dirty стоит — и загрузка не назначается больше никогда.
+       Позиция висит у А на экране; через час он проводит по ней выдачу, push делает upsert —
+       и удалённая позиция воскресает в общей базе у всей бригады.
+       Флаг доживает до ближайшего drain (его зовёт finally и push, и pull), и pull доберётся
+       сразу после того, как наши правки уедут. Затирания своего при этом нет: drain не стартует,
+       пока dirty стоит, а cloudPull при dirty сам уходит в push. */
+    cloud._remoteMissed = true;
+    /* РОЛЬ «ТОЛЬКО ПРОСМОТР» (бухгалтер, снятый со смены) СО СТАРЫМ dirty. cloudMaybePush для неё
+       выходит на !canEditStock() ДО markDirty — выгрузки не будет никогда, значит и drain звать
+       некому, а сам drain ждёт снятия dirty, которое не снимется. Экран замирал до перезапуска.
+       Идём прямо в загрузку: cloudPull такой случай умеет — сохраняет несинхронизированное
+       локальной копией-профилем и только после этого снимает метку. */
+    if(typeof canEditStock==="function" && !canEditStock()){
+      cloud._remoteMissed = false;
+      cloud.pullTimer = setTimeout(()=>{ cloud.pullTimer=null; const cid=activeCloudId(); if(cid) cloudPull(cid); }, 400);
+      return;
+    }
+    cloudMaybePush(); return;
+  }
   cloud.pullTimer = setTimeout(()=>{ cloud.pullTimer=null; const cid=activeCloudId(); if(cid) cloudPull(cid); }, 400);
 }
 /* UI: вход */
