@@ -4095,17 +4095,19 @@ function setImportType(k){
   for(const el of document.querySelectorAll("#impTypeWrap")) el.innerHTML = _impTypeChipsHtml();
   toast(`Раздел для файла: ${typeMeta(k).label}`);
 }
-/* Тип одной строки импорта: сперва колонка файла, потом раздел/вкладка. Возвращает
+/* Тип одной строки файла: сперва колонка «Тип», потом раздел по умолчанию. Возвращает
    { type } либо { why } — причину отказа для превью (строку молча не проглатываем).
    ПРАВА: тип, недоступный роли (allowedTypeKeys ≈ серверный can_see_type), — отказ, а не
-   подмена на «Продукты»: импортом нельзя завести то, чего человеку не положено видеть. */
-function _impRowType(row){
+   подмена на «Продукты»: импортом нельзя завести то, чего человеку не положено видеть.
+   fallback передаётся ЯВНО: у прихода и у описи свои настройки раздела, и брать их из общей
+   переменной нельзя — на этом уже обожглись (см. _invTypeChoice). */
+function _impRowType(row, fallback){
   const raw = String((row && row.type) || "").trim();
   const t = _impMapType(raw);
   if(t === undefined) return { why: `непонятный тип «${raw.slice(0,24)}»` };
-  const type = t || _impDefaultStockType();
+  const type = t || fallback || _impDefaultStockType();
   if(!allowedTypeKeys().includes(type)) return { why: `нет доступа к разделу «${typeMeta(type).label}»` };
-  return { type };
+  return { type, fromFile: !!t };
 }
 // эвристика категории продукта по имени — только из списка категорий базы
 function guessProductCategory(name){
@@ -4354,7 +4356,7 @@ function _impPreflight(rows){
       continue;
     }
     // тип — как в боевом цикле: колонка файла, иначе активная вкладка; чужой роли тип не пройдёт
-    const t = _impRowType(row);
+    const t = _impRowType(row, _impDefaultStockType());
     if(t.why){ skipped.push({ name: name.slice(0,40), why: t.why }); continue; }
     const type = t.type;
     const { qty, unit } = _impNormalizePackQty(name, qty0, u0);
@@ -4445,7 +4447,7 @@ function recordReceiptRow(row){
      молча заводила дубль-карточку в «Продуктах», и найти её потом было негде — на вкладке
      хозтоваров её нет, а на продуктах никто не ищет швабру. Теперь тип берётся из колонки
      файла, а если её нет — из активной вкладки склада (_impRowType). */
-  const t = _impRowType(row);
+  const t = _impRowType(row, _impDefaultStockType());
   if(t.why){ console.warn("import skip: тип", t.why, name); return null; }
   const type = t.type;
   // только существующие; новое имя — лишь если в каталоге нет похожего
@@ -4767,7 +4769,7 @@ async function importReceiptsExcel(ev){
     const d = _impParseDate(r.receiptDate);
     // раздел показываем только для не-продуктов: файл с хозкой/инструментом теперь ложится
     // не в «Продукты», и это должно быть видно ДО подтверждения
-    const t = (_impRowType(r).type) || "product";
+    const t = (_impRowType(r, _impDefaultStockType()).type) || "product";
     const tl = t==="product" ? "" : ` · ${typeMeta(t).short}`;
     return `• ${cleanNameImport(r.name).slice(0,48)} — ${fmtQty(roundQty(parseNum(r.qty)))} ${u}${tl}${d?` · ${d.split("-").reverse().join(".")}`:""}`;
   }).join("\n");
@@ -4932,6 +4934,40 @@ function _invParseAoa(aoa){
   }
   return { rows };
 }
+/* СВОЙ ВЫБОР РАЗДЕЛА У ОПИСИ. Сначала опись брала раздел для строк без столбца «Тип» из
+   настройки ПРИХОДА (_impTypeChoice) — общей переменной, которую ставят чипы соседней группы
+   на том же экране «Файлы». Порядок «сначала накладная, потом опись» совершенно обычный, и он
+   давал вот что: нажал в группе накладной чип «Инструменты», спустился к описи, загрузил список
+   продуктов без столбца «Тип» — предпросмотр честно показывает продукты, а под обнуление уходит
+   ВЕСЬ раздел инструментов, которого в файле не было ни строкой. Ни отпечаток, ни сверка склада
+   тут не помогают: план с самого начала согласован, склад не менялся.
+   Теперь у описи своя настройка и свои кнопки в своей группе. */
+let _invTypeChoice = "product";
+function _invDefaultType(){
+  const allowed = allowedTypeKeys();
+  if(STOCK_TYPE_KEYS.includes(_invTypeChoice) && allowed.includes(_invTypeChoice)) return _invTypeChoice;
+  if(allowed.includes("product")) return "product";
+  return allowed[0] || "product";
+}
+function _invTypeChipsHtml(){
+  const vis = visibleStockTypes();
+  const cur = _invDefaultType();
+  if(vis.length < 2) return `<div class="text-xs opacity-70">Раздел описи: <b>${esc(typeMeta(cur).label)}</b> (других вам не открыто).</div>`;
+  return `<div class="text-xs opacity-70 mb-1">Строки без столбца «Тип» — это раздел:</div>
+    <div class="flex gap-2 flex-wrap" id="invTypeChips">
+      ${vis.map(t=>`<button class="chip ${cur===t.key?'active':''}" onclick="setInventoryType('${t.key}')">${ico(t.icon,15)} ${esc(t.label)}</button>`).join("")}
+    </div>`;
+}
+function setInventoryType(k){
+  if(!STOCK_TYPE_KEYS.includes(k) || !allowedTypeKeys().includes(k)) return;
+  _invTypeChoice = k;
+  const w = document.getElementById("invTypeWrap");
+  if(w) w.innerHTML = _invTypeChipsHtml();
+  /* Разобранный файл считался по прежнему разделу — гасим его, иначе на экране остался бы
+     предпросмотр, посчитанный не по тому разделу, что показывают кнопки. */
+  if(_invPending){ _invPending = null; _invSay(""); }
+  toast(`Раздел описи: ${typeMeta(k).label}`);
+}
 /* Ключ имени для описи. От stockNormName отличается тем, что СХЛОПЫВАЕТ пробелы — в том числе
    неразрывный, который Excel любит подставлять сам. Иначе карточка «Мука␣␣пшеничная в/с»
    (два пробела — так набирают руками) и строка файла «Мука пшеничная в/с» считались разными
@@ -5051,7 +5087,7 @@ function _invPlan(rows){
      терялись обе карточки-дубля с одинаковым именем: строка была, найти однозначно не смогли —
      обнулили обе. Теперь имя из файла защищает карточку с таким именем ВСЕГДА, независимо от
      того, чем кончился разбор строки: назвали — значит эту позицию человек в описи упомянул. */
-  const plan = { rows, add:[], up:[], down:[], same:[], bad:[], empty:[],
+  const plan = { rows, add:[], up:[], down:[], same:[], bad:[], empty:[], noType:0,
                  types:new Set(), claimIds:new Set(), claimNames:new Set() };
   const idx = _invIndex(state.stock||[]);
   let stubs = 0;
@@ -5064,9 +5100,10 @@ function _invPlan(rows){
       why, at: row.rowNo ? `стр. ${row.rowNo}` : "",
     });
     if(!name){ bad("нет наименования"); continue; }
-    const t = _impRowType(row);
+    const t = _impRowType(row, _invDefaultType());
     if(t.why){ bad(t.why); continue; }
     const type = t.type;
+    if(!t.fromFile) plan.noType++;   // столбца «Тип» в строке нет — раздел взят из настройки описи
     const rawU = String(row.unit||"").trim();
     const u = rawU ? _impMapUnit(rawU) : null;
     /* ПУСТАЯ КЛЕТКА «ФАКТИЧЕСКИЙ ОСТАТОК» — ЭТО «НЕ СЧИТАЛИ»: не ноль и не ошибка. В бланке
@@ -5093,7 +5130,8 @@ function _invPlan(rows){
       if(!u){ bad("новой позиции нужна единица измерения"); continue; }
       const stub = { id:"_inv_"+(stubs++), type, name, unit:u, qty:fact, batches:[] };
       _invIndexAdd(idx, stub); seen.add(stub.id);
-      plan.types.add(type);
+      // НОВАЯ позиция раздел для обнуления НЕ открывает: она ничего не говорит о том, что в
+      // каталоге этого раздела опись прошла целиком (см. plan.types ниже)
       plan.add.push({ name, type, unit:u, was:0, now:fact, delta:fact, product:null, row });
       continue;
     }
@@ -5102,12 +5140,18 @@ function _invPlan(rows){
     seen.add(product.id);
     if(hasBatches(product)){ bad("позиция с партиями (срок годности) — правится вручную"); continue; }
     const was = totalQtyOf(product);
-    /* РАЗДЕЛ ДЛЯ ОБНУЛЕНИЯ — тот, что ЗАЯВЛЕН В СТРОКЕ, а не тот, где нашлась карточка. Поиск
-       намеренно смотрит и в чужие разделы (тот же товар, заведённый когда-то не туда, лучше
-       найти, чем задвоить), но брать оттуда РАЗДЕЛ нельзя: опись из двух строк «Продукты», где
-       одна нашлась среди инструментов, добавляла «Инструменты» в область обнуления — и молоток
-       с уровнем, которых в описи не было и в помине, списывались в ноль. */
-    plan.types.add(type);
+    /* ОБЛАСТЬ ОБНУЛЕНИЯ — ПЕРЕСЕЧЕНИЕ: раздел открывается, только если строка ЗАЯВИЛА его И
+       карточка нашлась ИМЕННО В НЁМ. По отдельности не работает ни то, ни другое, и обе беды
+       воспроизведены живьём:
+       • только «где нашлась карточка» — опись из двух строк «Продукты», одна из которых нашлась
+         среди инструментов, тянула за собой весь раздел инструментов: молоток и уровень, которых
+         в файле не было, списывались в ноль;
+       • только «что заявлено в строке» — файл без столбца «Тип» брал раздел из настройки, а её
+         мог задать соседний экран: список продуктов уходил под видом инструментов, продукты
+         обновлялись правильно, а обнулялся весь инструментальный раздел.
+       Пересечение отвечает на простой вопрос: «эта опись действительно про этот раздел
+       каталога?» Да — только если хоть одна её строка легла на карточку этого раздела. */
+    if(product.type === type) plan.types.add(type);
     const e = { name:product.name, type:product.type, unit:product.unit||u||"", was, now:fact,
                 delta:roundQty(fact - was), product, row };
     if(Math.abs(e.delta) < 1e-9) plan.same.push(e);
@@ -5426,6 +5470,7 @@ async function applyInventory(){
       + `Совпало с учётом: ${shown.same.length}\n`
       + `Строк без отметки (не проверяли): ${shown.empty.length}\n`
       + `Не принято строк: ${shown.bad.length}\n\n`
+      + (shown.noType ? `Строки без столбца «Тип» (${shown.noType}) считаны как раздел «${typeMeta(_invDefaultType()).label}».\n\n` : "")
       + _invTotalsText(shown) + `\n`
       + `Позиции, которых в файле нет, ${zeroOn ? `будут ОБНУЛЕНЫ — ${shownZero.length} поз. (см. следующий шаг)` : "останутся как есть"}.\n`
       + `Записи уйдут в журнал с пометкой «Опись ${day}» — по ней их можно найти и отменить.`,
@@ -6874,7 +6919,7 @@ function openFiles(anchor){
   /* Раздел для строк без столбца «Тип» сбрасываем на «Продукты» при КАЖДОМ входе в «Файлы»:
      вкладки склада здесь не видно, и наследовать её молча нельзя (накладная поставщика без
      столбца «Тип» уезжала в раздел последней открытой вкладки). Выбор рядом с кнопкой файла. */
-  if(allowedTypeKeys().includes("product")) _impTypeChoice = "product";
+  if(allowedTypeKeys().includes("product")){ _impTypeChoice = "product"; _invTypeChoice = "product"; }
   if(currentView!=="files") _filesBack = currentView;
   _filesAnchor = anchor || "Top";
   nav("files");
@@ -6921,6 +6966,7 @@ function renderFiles(){
     <div class="text-sm"><b>Опись ЗАДАЁТ остаток, а не добавляет.</b> Позиции, которых в файле нет, остаются нетронутыми: пустая строка — это «не проверяли», а не «ноль».</div>
     <button class="btn btn-ghost w-full" onclick="downloadInventoryTemplate()">${ico("inbox",18)} Скачать бланк описи .xlsx</button>
     <div class="text-xs opacity-70">В бланке уже стоит весь ваш склад — остаётся вписать столбец «Фактический остаток». Названия набирать не нужно: от опечатки заводится новая карточка вместо правки старой. Столбцы: Тип · Наименование · Ед. изм. · Фактический остаток · Место · Срок годности · Примечание.</div>
+    <div id="invTypeWrap">${_invTypeChipsHtml()}</div>
     <label class="btn btn-primary w-full">${ico("outbox",18)} Выбрать файл описи<input type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hidden" onchange="importInventoryExcel(event)"></label>
     <div id="invOut" class="text-sm"></div>
     <div class="text-xs opacity-70">Ничего не запишется, пока вы не нажмёте «Применить опись» на разборе. Позиции с партиями (срок годности) опись не трогает — их правят вручную. Всё изменённое уйдёт в журнал пачкой с пометкой «Опись» и датой.</div>`);
@@ -8939,7 +8985,7 @@ Object.assign(window,{openFilterSheet,openTaskFilterSheet,openStockFilterSheet,r
   openAboutSheet,openFaqSheet,openPrivacySheet,openTermsSheet,openRecoveryEmailSheet,
   openMove,doMove,
   openReceiptImportSheet,downloadReceiptTemplate,importReceiptsExcel,setImportType,
-  downloadInventoryTemplate,importInventoryExcel,applyInventory,cancelInventory,
+  downloadInventoryTemplate,importInventoryExcel,applyInventory,cancelInventory,setInventoryType,
   openMembersSheet,openMemberRole,setMemberRole,memberRotate,memberRemove,openAddMember,openResetPwd,
   openShift,openHandover,doHandover,
   openOrgRolesSheet,openAddOrgMember,doAddOrgMember,_omToggleParty,openAssignExisting,_aeToggleParty,doAssignExisting,orgRoleRemove,
