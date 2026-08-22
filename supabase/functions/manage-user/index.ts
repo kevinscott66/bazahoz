@@ -414,13 +414,17 @@ Deno.serve(async (req) => {
     if (/@razvedchick\.ru$/i.test(email)) {
       return json({ error: "Рабочая почта не подойдёт: пароль от неё тот же, что от приложения. Укажите личную — Gmail, Яндекс и т.п." }, 400);
     }
-    const { data: recent } = await admin.from("auth_codes").select("id").eq("user_id", callerId).eq("purpose", "bind_email").gte("created_at", new Date(Date.now() - 60000).toISOString()).limit(1);
-    if (recent && recent.length) return json({ error: "wait" }, 429);
     const code = genCode();
-    const { error: bindDisableError } = await admin.from("auth_codes").update({ used: true }).eq("user_id", callerId).eq("purpose", "bind_email").eq("used", false);  // живым остаётся только последний код
-    if (bindDisableError) { console.error("bind email disable codes", bindDisableError); return json({ error: "Не удалось подготовить подтверждение почты" }, 500); }
-    const { error: bindInsertError } = await admin.from("auth_codes").insert({ user_id: callerId, purpose: "bind_email", email, code_hash: await sha256(callerId + ":" + email + ":" + code), expires_at: new Date(Date.now() + 15 * 60000).toISOString() });
-    if (bindInsertError) { console.error("bind email insert code", bindInsertError); return json({ error: "Не удалось подготовить подтверждение почты" }, 500); }
+    // Выдача и гашение старых bind-кодов — одна транзакция под lock пользователя.
+    // Это не даёт двум параллельным запросам отправить взаимоисключающие письма.
+    const { data: issued, error: issueError } = await admin.rpc("issue_bind_auth_code", {
+      p_user: callerId,
+      p_email: email,
+      p_code_hash: await sha256(callerId + ":" + email + ":" + code),
+      p_expires_at: new Date(Date.now() + 15 * 60000).toISOString(),
+    });
+    if (issueError) { console.error("bind email issue code", issueError); return json({ error: "Не удалось подготовить подтверждение почты" }, 500); }
+    if (issued !== true) return json({ error: "wait" }, 429);
     background(sendCode(email, code, "bind"));   // не раскрываем sent в ответе (инфра-оракул)
     return json({ ok: true });
   }

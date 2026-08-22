@@ -34,8 +34,8 @@ describe("recovery link helpers", () => {
 
   test("recovery-email writes fail closed on database errors", async () => {
     const source = await Bun.file(new URL("./index.ts", import.meta.url)).text();
-    expect(source).toContain("if (bindDisableError)");
-    expect(source).toContain("if (bindInsertError)");
+    expect(source).toContain("if (issueError)");
+    expect(source).toContain("if (issued !== true) return json({ error: \"wait\" }, 429);");
     expect(source).toContain("if (confirmRecoveryError)");
     expect(source).toContain("if (unbindRecoveryError)");
   });
@@ -53,5 +53,15 @@ describe("recovery link helpers", () => {
     expect(sql).toContain("issue_reset_auth_code");
     expect(sql).toContain("pg_advisory_xact_lock");
     expect(sql).toContain("created_at >= now() - interval '60 seconds'");
+  });
+
+  test("bind-code issuance is serialized per user", async () => {
+    const source = await Bun.file(new URL("./index.ts", import.meta.url)).text();
+    const sql = await Bun.file(new URL("../../migrations/2026-08-22_bind_code_issue.sql", import.meta.url)).text();
+    expect(source).toContain('admin.rpc("issue_bind_auth_code"');
+    expect(source).toContain("if (issued !== true) return json({ error: \"wait\" }, 429);");
+    expect(sql).toContain("issue_bind_auth_code");
+    expect(sql).toContain("pg_advisory_xact_lock");
+    expect(sql).toContain("purpose = 'bind_email'");
   });
 });
