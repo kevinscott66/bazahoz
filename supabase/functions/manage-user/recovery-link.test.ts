@@ -24,4 +24,11 @@ describe("recovery link helpers", () => {
   test("uses a dedicated public action", () => {
     expect(RECOVERY_ACTION).toBe("recovery_reset_password");
   });
+
+  test("has a database migration for the rate-limit purpose", async () => {
+    const sql = await Bun.file("supabase/migrations/2026-08-22_auth_rate_purposes.sql").text();
+    expect(sql).toContain("auth_rate_purpose_check");
+    expect(sql).toContain("'lead'");
+    expect(sql).toContain("'recovery_reset_password'");
+  });
 });

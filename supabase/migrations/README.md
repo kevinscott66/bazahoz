@@ -111,9 +111,15 @@ pg_cron включён и ретеншн ещё не запланирован, �
 2026-08-02_default_privileges.sql               # новые объекты в public больше не раздаются anon
 2026-08-02_guard_bases_update.sql               # перенос защиты базы из БД в репозиторий
 2026-08-02_rls_speed_stock.sql                  # склад: 1678 мс → 11 мс на выборку
+2026-08-22_auth_rate_purposes.sql                # lead + recovery_reset_password в rate-limit
 ```
 
 Оба ставятся в любой момент и в любом порядке, ничего из перечисленного выше не трогают.
+
+`2026-08-22_auth_rate_purposes.sql` ставится после появления `auth_rate` (обычно она уже
+создана миграцией `2026-07-30_auth_rate_per_ip.sql`). Миграция синхронизирует CHECK constraint
+таблицы с закрытым whitelist функции `auth_rate_hit`: без неё recovery-смена пароля отвечает
+429 на каждый запрос, а rate-limit формы заявки может падать на вставке.
 
 `default_privileges` закрывает не находку, а её источник. Supabase из коробки раздаёт
 anon и authenticated полный доступ к **каждой новой** таблице в `public`, а `CREATE TABLE`
