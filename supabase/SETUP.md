@@ -17,7 +17,8 @@
 1. Слева **SQL Editor** → **New query**.
 2. Скопируй ВЕСЬ файл `schema.sql` → вставь → **Run**. Должно быть «Success».
 3. `schema.sql` — только базовый bootstrap. Для текущей модели приложения обязательно примени
-   цепочку миграций из `supabase/migrations/README.md`, включая `2026-08-22_auth_rate_purposes.sql`.
+   цепочку миграций из `supabase/migrations/README.md`, включая
+   `2026-08-22_auth_rate_purposes.sql` и `2026-08-22_reset_code_issue.sql`.
    Только `schema.sql` недостаточно: RBAC-поля, `user_recovery`, `auth_codes`, `auth_rate`,
    дополнительные RLS-политики и индексы появляются миграциями.
 4. После миграций запусти read-only проверку `2026-07-31_verify_applied_state.sql` и исправь

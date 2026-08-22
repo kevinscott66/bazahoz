@@ -304,17 +304,31 @@ Deno.serve(async (req) => {
     // остаются те же (иначе «лимит» выдал бы существование логина).
     const ipOk = await rateOk(admin, req, "request_reset", 900, 12);
     if (ipOk && /^[a-z0-9_]{3,32}$/.test(username)) {
-      const { data: u } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
-      const { data: rec2 } = u ? await admin.from("user_recovery").select("recovery_email,recovery_email_verified").eq("user_id", u.id).maybeSingle() : { data: null };
-      if (u && rec2 && rec2.recovery_email && rec2.recovery_email_verified) {
-        const { data: recent } = await admin.from("auth_codes").select("id").eq("user_id", u.id).eq("purpose", "reset_password").gte("created_at", new Date(Date.now() - 60000).toISOString()).limit(1);
-        if (!recent || recent.length === 0) {
+      const { data: u, error: profileError } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
+      const { data: rec2, error: recoveryError } = u
+        ? await admin.from("user_recovery").select("recovery_email,recovery_email_verified").eq("user_id", u.id).maybeSingle()
+        : { data: null, error: null };
+      if (!profileError && !recoveryError && u && rec2 && rec2.recovery_email && rec2.recovery_email_verified) {
+        const { data: recent, error: recentError } = await admin.from("auth_codes").select("id").eq("user_id", u.id).eq("purpose", "reset_password").gte("created_at", new Date(Date.now() - 60000).toISOString()).limit(1);
+        if (!recentError && Array.isArray(recent) && recent.length === 0) {
           const code = genCode();
-          // старые неиспользованные коды гасим: живым остаётся только последний (сужает окно перебора)
-          await admin.from("auth_codes").update({ used: true }).eq("user_id", u.id).eq("purpose", "reset_password").eq("used", false);
-          await admin.from("auth_codes").insert({ user_id: u.id, purpose: "reset_password", email: rec2.recovery_email, code_hash: await sha256(u.id + ":" + code), expires_at: new Date(Date.now() + 15 * 60000).toISOString() });
-          // письмо — без await на критическом пути ответа: иначе timing выдаёт «логин с почтой существует»
-          background(sendCode(rec2.recovery_email, code, "reset"));
+          // Выдача и гашение старых кодов — одна транзакция с advisory lock пользователя.
+          // Иначе параллельные запросы с разных IP могли оба пройти recent-проверку;
+          // письмо от первого уже уходило, но действительным оставался только второй код.
+          const { data: issued, error: issueError } = await admin.rpc("issue_reset_auth_code", {
+            p_user: u.id,
+            p_email: rec2.recovery_email,
+            p_code_hash: await sha256(u.id + ":" + code),
+            p_expires_at: new Date(Date.now() + 15 * 60000).toISOString(),
+          });
+          if (issueError) {
+            console.error("request reset issue code", issueError);
+          } else if (issued === true) {
+            // письмо — без await на критическом пути ответа: иначе timing выдаёт «логин с почтой существует»
+            background(sendCode(rec2.recovery_email, code, "reset"));
+          } else {
+            console.warn("request reset code was not issued");
+          }
         }
       }
     }

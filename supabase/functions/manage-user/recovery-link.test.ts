@@ -39,4 +39,19 @@ describe("recovery link helpers", () => {
     expect(source).toContain("if (confirmRecoveryError)");
     expect(source).toContain("if (unbindRecoveryError)");
   });
+
+  test("reset codes are sent only after persistence succeeds", async () => {
+    const source = await Bun.file(new URL("./index.ts", import.meta.url)).text();
+    expect(source).toContain("if (!recentError && Array.isArray(recent) && recent.length === 0)");
+    expect(source).toContain('admin.rpc("issue_reset_auth_code"');
+    expect(source).toContain("if (issueError)");
+    expect(source).toContain("background(sendCode(rec2.recovery_email, code, \"reset\"))");
+  });
+
+  test("reset-code issuance is serialized per user", async () => {
+    const sql = await Bun.file(new URL("../../migrations/2026-08-22_reset_code_issue.sql", import.meta.url)).text();
+    expect(sql).toContain("issue_reset_auth_code");
+    expect(sql).toContain("pg_advisory_xact_lock");
+    expect(sql).toContain("created_at >= now() - interval '60 seconds'");
+  });
 });
