@@ -403,8 +403,10 @@ Deno.serve(async (req) => {
     const { data: recent } = await admin.from("auth_codes").select("id").eq("user_id", callerId).eq("purpose", "bind_email").gte("created_at", new Date(Date.now() - 60000).toISOString()).limit(1);
     if (recent && recent.length) return json({ error: "wait" }, 429);
     const code = genCode();
-    await admin.from("auth_codes").update({ used: true }).eq("user_id", callerId).eq("purpose", "bind_email").eq("used", false);  // живым остаётся только последний код
-    await admin.from("auth_codes").insert({ user_id: callerId, purpose: "bind_email", email, code_hash: await sha256(callerId + ":" + email + ":" + code), expires_at: new Date(Date.now() + 15 * 60000).toISOString() });
+    const { error: bindDisableError } = await admin.from("auth_codes").update({ used: true }).eq("user_id", callerId).eq("purpose", "bind_email").eq("used", false);  // живым остаётся только последний код
+    if (bindDisableError) { console.error("bind email disable codes", bindDisableError); return json({ error: "Не удалось подготовить подтверждение почты" }, 500); }
+    const { error: bindInsertError } = await admin.from("auth_codes").insert({ user_id: callerId, purpose: "bind_email", email, code_hash: await sha256(callerId + ":" + email + ":" + code), expires_at: new Date(Date.now() + 15 * 60000).toISOString() });
+    if (bindInsertError) { console.error("bind email insert code", bindInsertError); return json({ error: "Не удалось подготовить подтверждение почты" }, 500); }
     background(sendCode(email, code, "bind"));   // не раскрываем sent в ответе (инфра-оракул)
     return json({ ok: true });
   }
@@ -420,11 +422,13 @@ Deno.serve(async (req) => {
       const e = vres === "too_many" ? "too_many" : vres === "expired" ? "expired" : "invalid";
       return json({ error: e }, e === "too_many" ? 429 : 400);
     }
-    await admin.from("user_recovery").upsert({ user_id: callerId, recovery_email: email, recovery_email_verified: true, updated_at: new Date().toISOString() });
+    const { error: confirmRecoveryError } = await admin.from("user_recovery").upsert({ user_id: callerId, recovery_email: email, recovery_email_verified: true, updated_at: new Date().toISOString() });
+    if (confirmRecoveryError) { console.error("confirm recovery email", confirmRecoveryError); return json({ error: "Не удалось сохранить резервную почту" }, 500); }
     return json({ ok: true, recovery_email: email, recovery_email_verified: true });
   }
   if (action === "unbind_recovery_email") {
-    await admin.from("user_recovery").upsert({ user_id: callerId, recovery_email: null, recovery_email_verified: false, updated_at: new Date().toISOString() });
+    const { error: unbindRecoveryError } = await admin.from("user_recovery").upsert({ user_id: callerId, recovery_email: null, recovery_email_verified: false, updated_at: new Date().toISOString() });
+    if (unbindRecoveryError) { console.error("unbind recovery email", unbindRecoveryError); return json({ error: "Не удалось отвязать резервную почту" }, 500); }
     return json({ ok: true, recovery_email: null, recovery_email_verified: false });
   }
 

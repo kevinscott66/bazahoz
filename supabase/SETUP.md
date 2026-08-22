@@ -16,13 +16,21 @@
 ## Шаг 2. Создать таблицы и права
 1. Слева **SQL Editor** → **New query**.
 2. Скопируй ВЕСЬ файл `schema.sql` → вставь → **Run**. Должно быть «Success».
+3. `schema.sql` — только базовый bootstrap. Для текущей модели приложения обязательно примени
+   цепочку миграций из `supabase/migrations/README.md`, включая `2026-08-22_auth_rate_purposes.sql`.
+   Только `schema.sql` недостаточно: RBAC-поля, `user_recovery`, `auth_codes`, `auth_rate`,
+   дополнительные RLS-политики и индексы появляются миграциями.
+4. После миграций запусти read-only проверку `2026-07-31_verify_applied_state.sql` и исправь
+   все строки со статусом «НЕТ» до создания пользователей.
 
 ## Шаг 3. Создать пользователей (вход по логину/паролю)
-Supabase Auth работает по email. Будем использовать «логин» как email с фиктивным доменом — клиент сам подставит `@bazahoz.local`.
+Supabase Auth работает по email. В приложении пользователь вводит логин, а клиент подставляет
+настроенный `LOGIN_DOMAIN` (для production сейчас это `@razvedchick.ru`). Не используй старые
+локальные примеры домена для production-аккаунтов.
 1. Слева **Authentication → Users → Add user → Create new user**.
-2. Создай двух (email = логин + `@bazahoz.local`):
-   - Тебе: email `worker@bazahoz.local`, пароль — свой. ✅ поставь «Auto Confirm User».
-   - Начальнику: email `boss@bazahoz.local`, пароль — для него. ✅ «Auto Confirm User».
+2. Создай двух (email = логин + `@razvedchick.ru`):
+   - Тебе: email `worker@razvedchick.ru`, пароль — свой. ✅ поставь «Auto Confirm User».
+   - Начальнику: email `boss@razvedchick.ru`, пароль — для него. ✅ «Auto Confirm User».
 3. Скопируй **User UID** каждого (в списке Users, колонка UID) — понадобятся в Шаге 4.
 
 ## Шаг 4. Завести профили, базы и права

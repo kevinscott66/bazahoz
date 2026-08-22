@@ -26,9 +26,17 @@ describe("recovery link helpers", () => {
   });
 
   test("has a database migration for the rate-limit purpose", async () => {
-    const sql = await Bun.file("supabase/migrations/2026-08-22_auth_rate_purposes.sql").text();
+    const sql = await Bun.file(new URL("../../migrations/2026-08-22_auth_rate_purposes.sql", import.meta.url)).text();
     expect(sql).toContain("auth_rate_purpose_check");
     expect(sql).toContain("'lead'");
     expect(sql).toContain("'recovery_reset_password'");
+  });
+
+  test("recovery-email writes fail closed on database errors", async () => {
+    const source = await Bun.file(new URL("./index.ts", import.meta.url)).text();
+    expect(source).toContain("if (bindDisableError)");
+    expect(source).toContain("if (bindInsertError)");
+    expect(source).toContain("if (confirmRecoveryError)");
+    expect(source).toContain("if (unbindRecoveryError)");
   });
 });
