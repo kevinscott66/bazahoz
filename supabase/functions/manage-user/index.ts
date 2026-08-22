@@ -6,6 +6,7 @@
 // Территориальные/глобальные (party_chief/director/general_director/accounting) — в org_roles (party_id: NULL=глобально).
 // Обратная совместимость: старые действия create_member/reset_password/handover работают как раньше.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { bearerToken, isValidRecoveryPassword, mailUsernameFromEmail, RECOVERY_ACTION } from "./recovery-link.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -273,6 +274,28 @@ Deno.serve(async (req) => {
   // ── ПУБЛИЧНЫЕ действия восстановления пароля (БЕЗ токена — пользователь забыл пароль) ─────────
   // Безопасность: код уходит ТОЛЬКО на ПОДТВЕРЖДЁННУЮ резервную почту; rate-limit + лимит попыток;
   // ответ нейтральный (не раскрываем, существует ли логин). Функция задеплоена с verify_jwt=false.
+  if (action === RECOVERY_ACTION) {
+    // Gateway намеренно оставлен verify_jwt=false ради request_reset/confirm_reset, поэтому
+    // recovery-токен проверяем здесь через Auth API, прежде чем service_role меняет пароль.
+    const token = bearerToken(req.headers.get("Authorization"));
+    const newPassword = String(p.new_password || "");
+    if (!token) return json({ error: "no auth" }, 401);
+    if (!isValidRecoveryPassword(newPassword)) return json({ error: "Пароль не короче 8 символов" }, 400);
+    if (!(await rateOk(admin, req, RECOVERY_ACTION, 900, 10, false))) return json({ error: "too_many" }, 429);
+
+    const tokenClient = createClient(SUPABASE_URL, ANON, { global: { headers: { Authorization: `Bearer ${token}` } } });
+    const { data: tokenUser, error: tokenError } = await tokenClient.auth.getUser();
+    if (tokenError || !tokenUser?.user?.id) return json({ error: "expired" }, 401);
+
+    const { error: passwordError } = await admin.auth.admin.updateUserById(tokenUser.user.id, { password: newPassword });
+    if (passwordError) return json({ error: weakPwdMsg(passwordError) || "expired" }, 400);
+
+    // Берём локальную часть реального auth-email, как в confirm_reset/reset_password.
+    const { data: actualUser } = await admin.auth.admin.getUserById(tokenUser.user.id);
+    const username = mailUsernameFromEmail(actualUser?.user?.email);
+    const mailSynced = username ? await provisionMail(username, newPassword) : true;
+    return json({ ok: true, username: username || "", mail_synced: mailSynced });
+  }
   if (action === "request_reset") {
     const t0 = Date.now();
     const username = String(p.username || "").trim().toLowerCase().replace(/@.*$/, "");
@@ -346,8 +369,8 @@ Deno.serve(async (req) => {
     // умирал и сам путь восстановления: в следующий раз код прислать уже некуда.
     // Источник истины для локальной части — РЕАЛЬНЫЙ auth-email, а не profiles.username.
     const { data: tu2 } = await admin.auth.admin.getUserById(u.id);
-    const mm = /^([a-z0-9_]+)@razvedchick\.ru$/i.exec(tu2?.user?.email || "");
-    const mailOk2 = mm ? await provisionMail(mm[1].toLowerCase(), newPassword) : true;
+    const mailUsername = mailUsernameFromEmail(tu2?.user?.email);
+    const mailOk2 = mailUsername ? await provisionMail(mailUsername, newPassword) : true;
     // Сессии намеренно не сбрасываем (нет повторного входа на доверенных устройствах).
     await floorPad();   // тот же пол и на успехе — чтобы «успех» не выделялся по времени
     // mail_synced — ДОБАВЛЕННОЕ поле; старые сборки его не читают и не ломаются.

@@ -455,7 +455,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v260";
+const APP_BUILD = "v262";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -8849,11 +8849,13 @@ async function cloudInit(){
    Работает, когда домен логина (LOGIN_DOMAIN) реально принимает почту (catch-all на своём домене).
    1) «Забыли пароль?» → recover-письмо со ссылкой на приложение;
    2) ссылка открывает приложение с #type=recovery&access_token=… → экран нового пароля. */
-// вызов Edge Function БЕЗ токена — только публичные действия восстановления (юзер не залогинен)
-async function cloudCallFnPublic(action, payload){
+// вызов Edge Function для восстановления: публичные действия без токена и recovery-ссылка с Bearer
+async function cloudCallFnPublic(action, payload, bearer=""){
   const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(), 35000);
   let r;
-  try{ r = await fetch(`${CLOUD_CFG.url}/functions/v1/manage-user`, { method:"POST", signal:ctrl.signal, headers:{ apikey:CLOUD_CFG.anon, "Content-Type":"application/json" }, body: JSON.stringify(Object.assign({ action }, payload)) }); }
+  const headers={ apikey:CLOUD_CFG.anon, "Content-Type":"application/json" };
+  if(bearer) headers.Authorization=`Bearer ${bearer}`;
+  try{ r = await fetch(`${CLOUD_CFG.url}/functions/v1/manage-user`, { method:"POST", signal:ctrl.signal, headers, body: JSON.stringify(Object.assign({ action }, payload)) }); }
   catch(_){ clearTimeout(to); throw new Error("Сервер недоступен. Проверьте интернет"); }
   clearTimeout(to);
   const d = await r.json().catch(()=>({}));
@@ -9029,24 +9031,15 @@ function openSetNewPassword(token){
     if(pw.length<8){ err.textContent="Пароль не короче 8 символов"; return; }
     const btn=document.getElementById("npGo"); btn.disabled=true; btn.textContent="Сохранение…";
     try{
-      const r = await fetch(`${CLOUD_CFG.url}/auth/v1/user`, {
-        method:"PUT", headers:{ apikey:CLOUD_CFG.anon, Authorization:`Bearer ${token}`, "Content-Type":"application/json" },
-        body: JSON.stringify({ password: pw })
-      });
-      if(!r.ok){
-        /* Не всякий отказ здесь — «ссылка устарела». При включённой проверке паролей по базам
-           утечек сервер отвечает 422 с английским текстом, и прежнее сообщение отправляло
-           человека запрашивать новую ссылку по кругу — с тем же паролем и тем же отказом. */
-        let msg = "";
-        try{ const d = await r.json(); msg = String((d && (d.msg || d.message || d.error_description || d.error)) || ""); }catch(_){}
-        if(/known to be weak|pwned|breach|compromis/i.test(msg)) throw new Error("Пароль слишком простой — он есть в утечках. Придумайте другой");
-        if(/password/i.test(msg) && /at least|too short|length/i.test(msg)) throw new Error("Пароль не короче 8 символов");
-        throw new Error("expired");
-      }
+      const d = await cloudCallFnPublic("recovery_reset_password", { new_password: pw }, token);
       _sheetOnClose = null;   // успех: закрытие шита не должно повторно дёргать exitRecoveryMode
-      closeSheet(); toast("Пароль изменён — войдите с новым");
+      closeSheet(); await warnMailUnsynced(d, d.username); toast("Пароль изменён — войдите с новым");
       exitRecoveryMode();   // сброс _recoveryMode + гейт + отложенный cloudInit (online-листенеры)
-    }catch(e){ err.textContent="Ссылка устарела. Запросите сброс заново"; if(document.getElementById("npGo")){ btn.disabled=false; btn.textContent="Сохранить пароль"; } }
+    }catch(e){
+      const m=String(e.message||"");
+      err.textContent=m==="expired"?"Ссылка устарела. Запросите сброс заново":m==="too_many"?"Слишком много попыток, подождите":m||"Не удалось сменить пароль";
+      if(document.getElementById("npGo")){ btn.disabled=false; btn.textContent="Сохранить пароль"; }
+    }
   };
 }
 function showLoginGate(){
