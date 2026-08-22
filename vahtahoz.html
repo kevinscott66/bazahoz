@@ -400,8 +400,10 @@
     <svg class="ico" viewBox="0 0 48 48" width="64" height="64" style="color:var(--accent);stroke-width:2.6;margin-bottom:8px" aria-hidden="true"><path d="M9 16.5h30v22a3 3 0 0 1-3 3H12a3 3 0 0 1-3-3z"/><path d="M7 8.5h34a2 2 0 0 1 2 2v6H5v-6a2 2 0 0 1 2-2z"/><path d="M16.5 26.5l5.5 5.5 10-10"/></svg>
     <div style="font-size:26px;font-weight:800;letter-spacing:.3px">ВахтаХоз</div>
     <div style="font-size:13px;opacity:.65;margin:6px 0 22px">Войдите, чтобы синхронизировать склад</div>
-    <input id="lgEmail" class="input" type="text" inputmode="email" enterkeyhint="next" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username" placeholder="Логин (например: ivanov)" style="margin-bottom:10px;text-align:center" />
-    <input id="lgPwd" class="input" type="password" enterkeyhint="go" autocomplete="current-password" placeholder="Пароль" style="margin-bottom:14px;text-align:center" />
+    <label for="lgEmail" style="display:block;text-align:left;font-size:12px;opacity:.75;margin:0 2px 4px">Логин</label>
+    <input id="lgEmail" class="input" type="text" inputmode="email" enterkeyhint="next" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username" placeholder="Например: ivanov" style="margin-bottom:10px;text-align:center" />
+    <label for="lgPwd" style="display:block;text-align:left;font-size:12px;opacity:.75;margin:0 2px 4px">Пароль</label>
+    <input id="lgPwd" class="input" type="password" enterkeyhint="go" autocomplete="current-password" placeholder="Введите пароль" style="margin-bottom:14px;text-align:center" />
     <button id="lgGo" class="btn btn-primary" style="width:100%;font-size:16px">Войти</button>
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
