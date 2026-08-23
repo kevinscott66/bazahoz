@@ -852,10 +852,14 @@ Deno.serve(async (req) => {
     const recipients: string[] = [];
     for (let page = 1; page <= 20; page++) {
       const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 1000 });
-      if (error) break;
+      if (error) {
+        console.error("broadcast list users", error);
+        return json({ error: "Не удалось получить полный список получателей" }, 502);
+      }
       const users = data?.users || [];
       for (const u of users) { if (u.email && /@razvedchick\.ru$/i.test(u.email)) recipients.push(u.email); }
       if (users.length < 1000) break;
+      if (page === 20) return json({ error: "Получателей слишком много для одной рассылки" }, 413);
     }
     if (!recipients.length) return json({ error: "Нет получателей" }, 400);
     let rd: any = {};

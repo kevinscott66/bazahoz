@@ -112,4 +112,11 @@ describe("recovery link helpers", () => {
     expect(source).toContain("const { data: others, error: othersError }");
     expect(source).toContain("if (othersError)");
   });
+
+  test("broadcast refuses partial recipient lists", async () => {
+    const source = await Bun.file(new URL("./index.ts", import.meta.url)).text();
+    expect(source).toContain('console.error("broadcast list users", error)');
+    expect(source).toContain('return json({ error: "Не удалось получить полный список получателей" }, 502);');
+    expect(source).toContain('if (page === 20) return json({ error: "Получателей слишком много для одной рассылки" }, 413);');
+  });
 });
