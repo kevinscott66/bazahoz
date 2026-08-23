@@ -96,4 +96,20 @@ describe("recovery link helpers", () => {
     expect(source).toContain("const { data: profs, error: profilesError }");
     expect(source).toContain("if (profilesError)");
   });
+
+  test("granting base access fails closed when membership reads fail", async () => {
+    const source = await Bun.file(new URL("./index.ts", import.meta.url)).text();
+    expect(source).toContain("const { data: cur, error: curError }");
+    expect(source).toContain("if (curError)");
+    expect(source).toContain("const { data: existing, error: existingError }");
+    expect(source).toContain("if (existingError)");
+  });
+
+  test("delegated password reset fails closed on target permission reads", async () => {
+    const source = await Bun.file(new URL("./index.ts", import.meta.url)).text();
+    expect(source).toContain("const { data: tprof, error: tprofError }");
+    expect(source).toContain("if (tprofError)");
+    expect(source).toContain("const { data: others, error: othersError }");
+    expect(source).toContain("if (othersError)");
+  });
 });

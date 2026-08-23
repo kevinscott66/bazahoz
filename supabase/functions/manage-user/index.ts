@@ -655,12 +655,14 @@ Deno.serve(async (req) => {
       if (targetId === callerId) {
         return json({ error: "Свой пароль здесь не меняется. Его может сменить владелец базы, а если у вас привязана резервная почта — «Забыли пароль?» на входе" }, 403);
       }
-      const { data: tprof } = await admin.from("profiles").select("is_admin").eq("id", targetId).maybeSingle();
+      const { data: tprof, error: tprofError } = await admin.from("profiles").select("is_admin").eq("id", targetId).maybeSingle();
+      if (tprofError) { console.error("reset pwd target profile", tprofError); return json({ error: "Не удалось проверить права работника" }, 500); }
       if (tprof?.is_admin || mem.can_manage) {
         return json({ error: "Нельзя сменить пароль управляющему или владельцу базы" }, 403);
       }
-      const { data: others } = await admin.from("base_members")
+      const { data: others, error: othersError } = await admin.from("base_members")
         .select("base_id").eq("user_id", targetId).neq("base_id", baseId).limit(1);
+      if (othersError) { console.error("reset pwd other bases", othersError); return json({ error: "Не удалось проверить доступы работника" }, 500); }
       if (others && others.length) {
         return json({ error: "У работника есть другие базы — пароль может сменить только владелец" }, 403);
       }
@@ -768,8 +770,9 @@ Deno.serve(async (req) => {
     if (remove) {
       // не оставляем базу без активного can_manage
       for (const bid of baseIds) {
-        const { data: cur } = await admin.from("base_members")
+        const { data: cur, error: curError } = await admin.from("base_members")
           .select("can_manage,active").eq("base_id", bid).eq("user_id", userId).maybeSingle();
+        if (curError) { console.error("grant_bases current membership", curError); return json({ error: "Не удалось проверить доступ" }, 500); }
         if (cur && cur.can_manage && cur.active !== false) {
           const { count, error: cerr } = await admin.from("base_members")
             .select("user_id", { count: "exact", head: true })
@@ -795,8 +798,9 @@ Deno.serve(async (req) => {
     const added: string[] = [];
     const updated: string[] = [];
     for (const bid of baseIds) {
-      const { data: existing } = await admin.from("base_members")
+      const { data: existing, error: existingError } = await admin.from("base_members")
         .select("base_id,can_manage,active").eq("base_id", bid).eq("user_id", userId).maybeSingle();
+      if (existingError) { console.error("grant_bases current membership", existingError); return json({ error: "Не удалось проверить доступ" }, 500); }
       if (existing) {
         const patch: Record<string, unknown> = { role, ...flags };
         if (onShift !== null) patch.active = onShift;   // не форсим active=true при простом обновлении роли
