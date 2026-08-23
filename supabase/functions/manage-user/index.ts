@@ -669,11 +669,11 @@ Deno.serve(async (req) => {
     if (error) { console.error("reset pwd", error); return json({ error: weakPwdMsg(error) || "Не удалось сменить пароль" }, 400); }
     // синхронизируем пароль почтового ящика: локальная часть РЕАЛЬНОГО auth-email (источник истины),
     // а не profiles.username — они могут разойтись. Ящик существует только для домена @razvedchick.ru.
-    const { data: tu } = await admin.auth.admin.getUserById(targetId);
+    const { data: tu, error: tuError } = await admin.auth.admin.getUserById(targetId);
     const mailMatch = /^([a-z0-9_]+)@razvedchick\.ru$/i.exec(tu?.user?.email || "");
     // Пароль приложения УЖЕ сменён. Если ящик не синхронизировался — молчать нельзя: при резервной
     // почте <логин>@razvedchick.ru пользователь теряет и вход в ящик, и путь восстановления.
-    const mailOk = mailMatch ? await provisionMail(mailMatch[1].toLowerCase(), password) : true;
+    const mailOk = tuError ? false : mailMatch ? await provisionMail(mailMatch[1].toLowerCase(), password) : true;
     return json({ ok: true, mail_synced: mailOk });
   }
 

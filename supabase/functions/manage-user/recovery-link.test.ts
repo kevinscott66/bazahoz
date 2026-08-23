@@ -71,5 +71,7 @@ describe("recovery link helpers", () => {
     expect(source).toContain("const mailSynced = actualUserError ? false");
     expect(source).toContain("const { data: tu2, error: tu2Error }");
     expect(source).toContain("const mailOk2 = tu2Error ? false");
+    expect(source).toContain("const { data: tu, error: tuError }");
+    expect(source).toContain("const mailOk = tuError ? false");
   });
 });
