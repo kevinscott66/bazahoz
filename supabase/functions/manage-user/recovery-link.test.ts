@@ -74,4 +74,12 @@ describe("recovery link helpers", () => {
     expect(source).toContain("const { data: tu, error: tuError }");
     expect(source).toContain("const mailOk = tuError ? false");
   });
+
+  test("role-management lists fail closed on incomplete lookups", async () => {
+    const source = await Bun.file(new URL("./index.ts", import.meta.url)).text();
+    expect(source).toContain("const { data: parties, error: partiesError }");
+    expect(source).toContain("if (partiesError)");
+    expect(source).toContain("const { data: profs, error: profilesError }");
+    expect(source).toContain("if (profilesError)");
+  });
 });
