@@ -61,6 +61,7 @@ Deno.serve(async (req) => {
 
   let d: any = {};
   try { d = await req.json(); } catch { return json(req, { error: "bad_json" }, 400); }
+  if (!d || typeof d !== "object" || Array.isArray(d)) return json(req, { error: "bad_json" }, 400);
 
   // Ловушка: поле спрятано от людей, его заполняют только автозаполнялки ботов.
   // Отвечаем «принято» — бот не должен узнать, что его отсекли.
