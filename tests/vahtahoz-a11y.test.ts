@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
 const pages = ["vahtahoz.html", "beta/vahtahoz.html"];
+const recoveryFields = [
+  ["rcLogin", "Логин"],
+  ["rcCode", "Код из письма"],
+  ["rcPw", "Новый пароль"],
+  ["reEmail", "Личная почта"],
+  ["reCode", "Код подтверждения"],
+  ["npw", "Новый пароль"],
+];
 
 describe("login accessibility", () => {
   for (const page of pages) {
@@ -10,6 +18,10 @@ describe("login accessibility", () => {
       expect(html).toMatch(/<label[^>]+for="lgPwd"[^>]*>\s*Пароль\s*<\/label>/);
       expect(html).toMatch(/<input[^>]+id="lgEmail"/);
       expect(html).toMatch(/<input[^>]+id="lgPwd"/);
+      for (const [id, label] of recoveryFields) {
+        expect(html).toContain(`<label for="${id}"`);
+        expect(html).toMatch(new RegExp(`<label[^>]+for="${id}"[^>]*>\\s*${label}\\s*<\\/label>`));
+      }
     });
   }
 });

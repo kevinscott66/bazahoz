@@ -9004,7 +9004,8 @@ async function requestPasswordReset(){
   openSheetOverGate(`
     <div class="font-bold text-xl mb-1">Забыли пароль?</div>
     <div class="text-sm opacity-70 mb-3">Введите логин — код для сброса придёт на привязанную резервную почту.</div>
-    <input class="input mb-2" id="rcLogin" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Логин (например: ivanov)" value="${esc(pre)}" />
+    <label for="rcLogin" style="display:block;text-align:left;font-size:12px;opacity:.75;margin:0 2px 4px">Логин</label>
+    <input class="input mb-2" id="rcLogin" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Например: ivanov" value="${esc(pre)}" />
     <button class="btn btn-primary w-full" id="rcSend">Отправить код</button>
     <div id="rcErr" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
   `);
@@ -9023,8 +9024,10 @@ async function requestPasswordReset(){
            поле нужно знать, что делать, если письма не будет: у большинства учётных
            записей резервная почта пока не привязана вовсе. -->
       <div class="text-sm opacity-70 mb-3">Если у логина есть привязанная почта — код отправлен. Введите его и новый пароль.<br>Письма нет и почта не привязана? Пароль сбросит начальник.</div>
-      <input class="input mb-2" id="rcCode" inputmode="numeric" maxlength="6" placeholder="Код из письма (6 цифр)" />
-      <input class="input mb-2" id="rcPw" type="password" autocapitalize="none" autocorrect="off" autocomplete="new-password" spellcheck="false" placeholder="Новый пароль (от 8 символов)" />
+      <label for="rcCode" style="display:block;text-align:left;font-size:12px;opacity:.75;margin:0 2px 4px">Код из письма</label>
+      <input class="input mb-2" id="rcCode" inputmode="numeric" maxlength="6" placeholder="6 цифр" />
+      <label for="rcPw" style="display:block;text-align:left;font-size:12px;opacity:.75;margin:0 2px 4px">Новый пароль</label>
+      <input class="input mb-2" id="rcPw" type="password" autocapitalize="none" autocorrect="off" autocomplete="new-password" spellcheck="false" placeholder="От 8 символов" />
       <button class="btn btn-primary w-full" id="rcGo">Сменить пароль</button>
       <div id="rcErr2" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
     `);
@@ -9062,6 +9065,7 @@ async function openRecoveryEmailSheet(edit){
     ${cur?`<div class="text-sm mb-3">Сейчас: <b>${esc(cur)}</b> ${ver?'<span class="badge badge-green">подтверждена</span>':'<span class="badge badge-yellow">не подтверждена</span>'}</div>`:''}
     ${form?`
     ${ver?`<div class="text-sm opacity-70 mb-2">Новый адрес нужно будет подтвердить кодом. Пока он не подтверждён, восстановление пароля идёт на прежний.</div>`:``}
+    <label for="reEmail" style="display:block;text-align:left;font-size:12px;opacity:.75;margin:0 2px 4px">Личная почта</label>
     <input class="input mb-2" id="reEmail" inputmode="email" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="email@example.com" value="${esc(cur||'')}" />
     <button class="btn btn-primary w-full" id="reSend">Отправить код подтверждения</button>
     `:`
@@ -9087,7 +9091,8 @@ async function openRecoveryEmailSheet(edit){
     openSheet(`
       <div class="font-bold text-xl mb-1">Подтвердите почту</div>
       <div class="text-sm opacity-70 mb-3">Код отправлен на <b>${esc(email)}</b>. Если письма нет во «Входящих» — проверьте папку «Спам».</div>
-      <input class="input mb-2" id="reCode" inputmode="numeric" maxlength="6" placeholder="Код (6 цифр)" />
+      <label for="reCode" style="display:block;text-align:left;font-size:12px;opacity:.75;margin:0 2px 4px">Код подтверждения</label>
+      <input class="input mb-2" id="reCode" inputmode="numeric" maxlength="6" placeholder="6 цифр" />
       <button class="btn btn-primary w-full" id="reGo">Подтвердить</button>
       <div id="reErr2" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
     `);
@@ -9132,7 +9137,8 @@ function openSetNewPassword(token){
   openSheet(`
     <div class="font-bold text-xl mb-3">Новый пароль</div>
     <div class="text-sm opacity-70 mb-2">Придумайте новый пароль для входа (не короче 8 символов).</div>
-    <input class="input mb-2" id="npw" type="password" autocapitalize="none" autocorrect="off" autocomplete="new-password" spellcheck="false" placeholder="Новый пароль" />
+    <label for="npw" style="display:block;text-align:left;font-size:12px;opacity:.75;margin:0 2px 4px">Новый пароль</label>
+    <input class="input mb-2" id="npw" type="password" autocapitalize="none" autocorrect="off" autocomplete="new-password" spellcheck="false" placeholder="От 8 символов" />
     <button class="btn btn-primary w-full" id="npGo">Сохранить пароль</button>
     <div id="npErr" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
   `);
