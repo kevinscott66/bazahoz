@@ -291,9 +291,9 @@ Deno.serve(async (req) => {
     if (passwordError) return json({ error: weakPwdMsg(passwordError) || "expired" }, 400);
 
     // Берём локальную часть реального auth-email, как в confirm_reset/reset_password.
-    const { data: actualUser } = await admin.auth.admin.getUserById(tokenUser.user.id);
+    const { data: actualUser, error: actualUserError } = await admin.auth.admin.getUserById(tokenUser.user.id);
     const username = mailUsernameFromEmail(actualUser?.user?.email);
-    const mailSynced = username ? await provisionMail(username, newPassword) : true;
+    const mailSynced = actualUserError ? false : username ? await provisionMail(username, newPassword) : true;
     return json({ ok: true, username: username || "", mail_synced: mailSynced });
   }
   if (action === "request_reset") {
@@ -382,9 +382,9 @@ Deno.serve(async (req) => {
     // «AUTHENTICATIONFAILED», со старым — ОК). А если резервная почта и есть этот ящик, то
     // умирал и сам путь восстановления: в следующий раз код прислать уже некуда.
     // Источник истины для локальной части — РЕАЛЬНЫЙ auth-email, а не profiles.username.
-    const { data: tu2 } = await admin.auth.admin.getUserById(u.id);
+    const { data: tu2, error: tu2Error } = await admin.auth.admin.getUserById(u.id);
     const mailUsername = mailUsernameFromEmail(tu2?.user?.email);
-    const mailOk2 = mailUsername ? await provisionMail(mailUsername, newPassword) : true;
+    const mailOk2 = tu2Error ? false : mailUsername ? await provisionMail(mailUsername, newPassword) : true;
     // Сессии намеренно не сбрасываем (нет повторного входа на доверенных устройствах).
     await floorPad();   // тот же пол и на успехе — чтобы «успех» не выделялся по времени
     // mail_synced — ДОБАВЛЕННОЕ поле; старые сборки его не читают и не ломаются.

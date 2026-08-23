@@ -64,4 +64,12 @@ describe("recovery link helpers", () => {
     expect(sql).toContain("pg_advisory_xact_lock");
     expect(sql).toContain("purpose = 'bind_email'");
   });
+
+  test("mail sync status fails closed when auth user lookup fails", async () => {
+    const source = await Bun.file(new URL("./index.ts", import.meta.url)).text();
+    expect(source).toContain("const { data: actualUser, error: actualUserError }");
+    expect(source).toContain("const mailSynced = actualUserError ? false");
+    expect(source).toContain("const { data: tu2, error: tu2Error }");
+    expect(source).toContain("const mailOk2 = tu2Error ? false");
+  });
 });
