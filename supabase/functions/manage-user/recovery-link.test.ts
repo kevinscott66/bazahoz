@@ -119,4 +119,18 @@ describe("recovery link helpers", () => {
     expect(source).toContain('return json({ error: "Не удалось получить полный список получателей" }, 502);');
     expect(source).toContain('if (page === 20) return json({ error: "Получателей слишком много для одной рассылки" }, 413);');
   });
+
+  test("public Edge Functions keep gateway JWT checks disabled", async () => {
+    const config = await Bun.file(new URL("../../config.toml", import.meta.url)).text();
+    expect(config).toContain("[functions.manage-user]");
+    expect(config).toContain("[functions.lead]");
+    expect(config.match(/verify_jwt = false/g)?.length).toBe(2);
+  });
+
+  test("public recovery actions keep a header-independent global budget", async () => {
+    const source = await Bun.file(new URL("./index.ts", import.meta.url)).text();
+    expect(source).toContain("async function globalRateOk");
+    expect(source).toContain('globalRateOk(admin, "request_reset", 900, 120, false)');
+    expect(source).toContain('globalRateOk(admin, "confirm_reset", 900, 120, false)');
+  });
 });

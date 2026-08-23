@@ -65,7 +65,26 @@ async function rateKey(req: Request): Promise<string> {
   const salt = Deno.env.get("RATE_SALT") || SERVICE.slice(0, 16);
   return await sha256(salt + "|" + ip);
 }
-// true = можно продолжать. Поведение при СБОЕ счётчика задаётся вызывающим:
+// Хит счётчика вынесен отдельно, чтобы публичные действия могли иметь
+// дополнительный глобальный бюджет, не зависящий от клиентских IP-заголовков.
+async function rateOkForKey(admin: any, key: string, purpose: string, windowSecs: number, limit: number, failOpen = true): Promise<boolean> {
+  if (!key) return failOpen;
+  try {
+    const { data, error } = await admin.rpc("auth_rate_hit", {
+      p_key: key, p_purpose: purpose, p_window: windowSecs, p_limit: limit,
+    });
+    if (error) { console.warn("auth_rate_hit", error.message); return failOpen; }
+    return data !== false;
+  } catch (e) { console.warn("rateOk", e); return failOpen; }
+}
+// Глобальный ключ ограничивает обход per-IP лимита ротацией поддельных заголовков.
+// При сбое этого защитного бюджета публичное действие не пропускаем.
+async function globalRateOk(admin: any, purpose: string, windowSecs: number, limit: number, failOpen = false): Promise<boolean> {
+  const salt = Deno.env.get("RATE_SALT") || SERVICE.slice(0, 16);
+  const key = await sha256(salt + "|global|" + purpose);
+  return rateOkForKey(admin, key, purpose, windowSecs, limit, failOpen);
+}
+// true = можно продолжать. Поведение при СБОЕ per-IP счётчика задаётся вызывающим:
 //   failOpen=true  (запрос кода): недоступность счётчика не должна превращаться в отказ
 //                  восстановления пароля — человек на вахте останется без входа.
 //   failOpen=false (ввод кода): здесь счётчик — единственный общий тормоз перебора,
@@ -75,13 +94,8 @@ async function rateKey(req: Request): Promise<string> {
 async function rateOk(admin: any, req: Request, purpose: string, windowSecs: number, limit: number, failOpen = true): Promise<boolean> {
   try {
     const key = await rateKey(req);
-    if (!key) return failOpen;   // IP не определить — считать это «лимит не превышен» можно только там, где отказ дороже перебора
-    const { data, error } = await admin.rpc("auth_rate_hit", {
-      p_key: key, p_purpose: purpose, p_window: windowSecs, p_limit: limit,
-    });
-    if (error) { console.warn("auth_rate_hit", error.message); return failOpen; }
-    return data !== false;
-  } catch (e) { console.warn("rateOk", e); return failOpen; }
+    return rateOkForKey(admin, key, purpose, windowSecs, limit, failOpen);
+  } catch (e) { console.warn("rateKey", e); return failOpen; }
 }
 // GoTrue отвечает по-английски («Password is known to be weak…» при включённой проверке
 // по базам утечек, «Password should be at least…» при коротком). Для вахты это тупик: владелец
@@ -302,7 +316,9 @@ Deno.serve(async (req) => {
     // per-IP: 12 запросов / 15 мин. Щедро для смены за общим NAT, но перебор логинов
     // больше не рассылает письма пачками. При упоре — НИЧЕГО не делаем, а ответ и задержка
     // остаются те же (иначе «лимит» выдал бы существование логина).
-    const ipOk = await rateOk(admin, req, "request_reset", 900, 12);
+    // Глобальный бюджет остаётся обязательным даже если клиент ротирует IP-заголовки.
+    const globalOk = await globalRateOk(admin, "request_reset", 900, 120, false);
+    const ipOk = globalOk && await rateOk(admin, req, "request_reset", 900, 12);
     if (ipOk && /^[a-z0-9_]{3,32}$/.test(username)) {
       const { data: u, error: profileError } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
       const { data: rec2, error: recoveryError } = u
@@ -356,6 +372,7 @@ Deno.serve(async (req) => {
     const fail = async () => { await floorPad(); return json({ error: "invalid" }, 400); };
     // per-IP: 30 попыток / 15 мин. attempts≤5 капает ОДИН код; без общего тормоза перебор
     // размазывался по многим логинам. Ответ — тот же «invalid», нового оракула не добавляем.
+    if (!(await globalRateOk(admin, "confirm_reset", 900, 120, false))) return await fail();
     if (!(await rateOk(admin, req, "confirm_reset", 900, 30, false))) return await fail();
     const { data: u } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
     if (!u) return await fail();

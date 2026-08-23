@@ -5,4 +5,10 @@ describe("lead request boundary", () => {
     const source = await Bun.file(new URL("./index.ts", import.meta.url)).text();
     expect(source).toContain('if (!d || typeof d !== "object" || Array.isArray(d)) return json(req, { error: "bad_json" }, 400);');
   });
+
+  test("public lead throttling has a header-independent global budget", async () => {
+    const source = await Bun.file(new URL("./index.ts", import.meta.url)).text();
+    expect(source).toContain("async function globalRateOk");
+    expect(source).toContain('globalRateOk(admin, "lead", 3600, 60)');
+  });
 });
