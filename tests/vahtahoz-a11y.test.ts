@@ -24,4 +24,10 @@ describe("login accessibility", () => {
       }
     });
   }
+
+  test("stable and beta app pages stay in parity", async () => {
+    const stable = await Bun.file("vahtahoz.html").text();
+    const beta = await Bun.file("beta/vahtahoz.html").text();
+    expect(beta).toBe(stable);
+  });
 });

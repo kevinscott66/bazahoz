@@ -343,6 +343,11 @@
          панели у него нет намеренно — их и так пять, шестая не влезает на 320px; вход
          один, через колокольчик в шапке. -->
     <section data-view="notifs" class="space-y-3 hidden"></section>
+    <!-- Файлы. Тоже раздел, а не лист, и по тем же причинам, что «Уведомления»: три группы,
+         которые читают и пролистывают, а лист на телефоне занимает низ экрана и закрывается
+         случайным тапом по фону. Кнопки в нижней панели нет намеренно — их пять, шестая не
+         влезает на 320px; входы — строки в «Ещё» и «Память телефона» → «Резервная копия». -->
+    <section data-view="files" class="space-y-3 hidden"></section>
   </main>
 </div>
 
@@ -1931,6 +1936,7 @@ function render(){
   if(currentView==="kitchen") renderKitchen();
   if(currentView==="more") renderMore();
   if(currentView==="notifs") renderNotifs();
+  if(currentView==="files") renderFiles();
   syncNavbarBottom();   // высота полотна поменялась → могло поменяться и место нижней панели
 }
 
@@ -4313,7 +4319,17 @@ async function importReceiptsExcel(ev){
   const inputEl = ev.target;
   if(!list.length) return;
   if(!ensureCanEdit()){ inputEl.value=""; return; }
-  const out = ()=>document.getElementById("impReceiptOut");
+  /* Точек вывода теперь ДВЕ: лист «Импорт поступления» («Склад» → «Поступление») и раздел
+     «Файлы». Обе несут #impReceiptOut, а getElementById отдаёт первый по документу — им всегда
+     оказывался бы раздел «Файлы» (он в #views, выше #sheet в разметке), и отчёт об импорте,
+     запущенном из листа, уходил бы в скрытый экран. Берём ту, что сейчас на глазах: и лист
+     (.sheet без .open), и раздел (.hidden) прячутся через display:none, поэтому offsetParent
+     у невидимой копии === null. Сама операция от этого не меняется. */
+  const out = ()=>{
+    const all = document.querySelectorAll("#impReceiptOut");
+    for(const el of all){ if(el.offsetParent !== null) return el; }
+    return all[0] || null;
+  };
   if(list.length > IMP_MAX_FILES){ if(out()) out().textContent=`Слишком много файлов (макс. ${IMP_MAX_FILES}).`; inputEl.value=""; return; }
   for(const f of list){
     if(f.size > IMP_MAX_BYTES){ if(out()) out().textContent=`«${f.name}» слишком большой (макс. ${Math.round(IMP_MAX_BYTES/1024/1024)} МБ).`; inputEl.value=""; return; }
@@ -5705,8 +5721,13 @@ function renderMore(){
     data.push(row("Места хранения","openLocationsEdit()"));
     data.push(row("Категории","openCategoriesEdit()"));
   }
-  data.push(row("Экспорт в Excel","openExportSheet()"));
-  data.push(row("Резервная копия","openBackupSheet()"));
+  /* Обе строки ведут в ОДИН раздел «Файлы» — к своей группе внутри него. Названия оставлены
+     прежними намеренно: владелец ищет глазами «Резервная копия», и переименовать её в «Файлы»
+     значит отобрать у него привычный путь. Двух разных мест с одним смыслом при этом нет:
+     прежние листы больше не открываются, openExportSheet/openBackupSheet — переходники сюда же. */
+  data.push(row("Экспорт в Excel","openFiles('Export')",{ sub:"выгрузить склад и историю в файл" }));
+  data.push(row("Резервная копия","openFiles('Backup')",{ sub:"сохранить базу целиком и восстановить" }));
+  if(canEditStock()) data.push(row("Загрузка накладной из Excel","openFiles('Import')",{ sub:"приход по файлу вместо ручного ввода" }));
   if(profiles.list.length>1 && !restricted && isOwner) data.push(row("Общий каталог баз","mergeCatalogs()"));
   data.push(row("Журнал операций","openJournalSheet()"));
 
@@ -5743,29 +5764,120 @@ function renderMore(){
 
 /* ---------- Экран «Ещё»: шиты разделов и официальные страницы ---------- */
 function openCloudSheet(){ try{ openSheet(`<div class="font-bold text-xl mb-3">Облако и синхронизация</div>${(typeof cloudCardHtml==="function")?cloudCardHtml():""}`); }catch(_){ toast("Недоступно"); } }
-function openExportSheet(){ openSheet(`
-  <div class="font-bold text-xl mb-3">Экспорт в Excel</div>
-  <div class="space-y-2">
-    <button class="btn btn-success w-full" onclick="closeSheet();exportXlsx()">Скачать .xlsx — все листы</button>
-    <button class="btn btn-ghost w-full" onclick="closeSheet();exportCsv()">Скачать .csv — только склад</button>
-    <button class="btn btn-ghost w-full" onclick="closeSheet();exportXlsxFiltered()">Выгрузка по фильтрам…</button>
-  </div>
-  <div class="text-xs opacity-60 mt-3">xlsx — склад и 4 журнала на отдельных листах. «По фильтрам» — срез склада по месту, категории, сроку и наличию. Работает офлайн.</div>`); }
-function openBackupSheet(){
-  const restricted=isRestrictedUser();
-  const canImp=canImportToBase();
-  const cloudBase=!!activeCloudId();
-  openSheet(`
-  <div class="font-bold text-xl mb-3">Резервная копия</div>
-  <div class="space-y-2">
-    <button class="btn btn-primary w-full" onclick="closeSheet();exportData()">${ico("inbox",18)} Экспорт текущей базы (JSON)</button>
-    ${restricted?"":`<button class="btn btn-success w-full" onclick="closeSheet();exportAllProfiles()">${ico("box",18)} Резервная копия всех баз</button>`}
-    <label class="btn btn-ghost w-full">${ico("outbox",18)} Восстановить из файла<input type="file" accept="application/json" class="hidden" onchange="closeSheet();importData(event)"></label>
-  </div>
-  <div class="text-xs opacity-60 mt-3">${restricted?"Сохраняет вашу базу в файл. Делайте копию регулярно — пригодится, если телефон сбросится.":"«Текущая» — только эта база. «Все базы» — один файл со всеми (главный бэкап). Восстановление принимает оба формата. Сохраняйте регулярно!"}</div>
-  ${cloudBase?`<div class="text-xs opacity-60 mt-2">${canImp
-      ? "База общая: то, что вы зальёте из файла, увидит вся бригада. Файл «все базы» восстанавливается только на этом телефоне и в облако не уходит."
-      : "Восстановление файла базы в общую базу доступно начальнику участка и выше — чтобы чужой файл не переписал работу бригады. Файл «все базы» на этом телефоне восстановить можно: в облако он не уходит."}</div>`:""}`);
+/* ---------- Раздел «Файлы»: всё, что приходит файлом и уходит файлом ----------
+   БЫЛО ТРИ РАЗНЫХ МЕСТА, и главное из них пряталось. «Импорт накладной» жил ВНУТРИ режима
+   «Поступление» на «Складе»: переключи режим, промотай список вниз, нажми «Импорт поступления
+   из Excel» — и только там, уже внутри листа, «Скачать шаблон .xlsx». Кто не знал, что импорт
+   вообще существует, тот его не находил. «Экспорт в Excel» и «Резервная копия» были двумя
+   отдельными листами в «Ещё», и связь между ними («и то и другое — работа с файлами») нигде
+   не была видна. Теперь один экран, сгруппированный по смыслу: загрузить → выгрузить → копия.
+
+   ОПЕРАЦИИ НЕ ПЕРЕПИСАНЫ. Экран зовёт ровно те же функции, что и прежние входы:
+   downloadReceiptTemplate / importReceiptsExcel / exportXlsx / exportCsv / exportXlsxFiltered /
+   exportData / exportAllProfiles / importData. Это новый вход, а не новая реализация.
+
+   ПРАВА повторены с прежних входов один в один, ничего не ослаблено и не ужесточено:
+     • группа «Загрузить из файла» рисуется при canEditStock() — это гейт openReceiptImportSheet
+       (ensureCanEdit); сам importReceiptsExcel зовёт ensureCanEdit ещё раз, и это остаётся;
+     • «Сохранить ВСЕ базы» — при !isRestrictedUser(), как в прежнем openBackupSheet;
+     • «Восстановить из файла» показываем всем, как и было: кто что может, решает разбор внутри
+       importData (isRestrictedUser для файла «все базы»; ensureCanEdit + canImportToBase для
+       файла базы), и решает он там же и так же;
+     • выгрузка не гейтится вовсе — как и в прежнем openExportSheet.
+   Поэтому у роли без прав экран не пустой: она видит выгрузку и копию, а импорт просто не
+   нарисован — заглушки «недоступно» на весь экран здесь нет намеренно.
+
+   ВХОДЫ. Прежний «Импорт поступления из Excel» на «Складе» остался как был (владелец к нему
+   привык). Строки в «Ещё» и кнопка в «Памяти телефона» больше не открывают старые листы, а
+   ведут сюда — иначе получилось бы два разных места с одним смыслом. Сами openExportSheet /
+   openBackupSheet оставлены переходниками: они экспортированы в window и вызываются из
+   разметки, и тихо убрать их значит оставить в сборке мёртвые onclick. */
+let _filesBack = "more";     // куда вернёт «‹»: откуда пришли, а не всегда на дашборд
+let _filesAnchor = null;     // к какой группе подкрутить ПОСЛЕ отрисовки; расходуется один раз
+/* anchor — "Import" | "Export" | "Backup" (кусок id группы) либо ничего (тогда наверх).
+   Расходуется однократно: render() зовут и пул из облака, и сам импорт по завершении, и
+   прокручивать экран под рукой у человека на каждый такой вызов нельзя. */
+function openFiles(anchor){
+  if(gateOpen()) return;
+  if(currentView!=="files") _filesBack = currentView;
+  _filesAnchor = anchor || "Top";
+  nav("files");
+}
+function closeFiles(){ nav(_filesBack||"more"); }
+/* Переходники со старых имён. Прежние листы удалены, но имена остались в window и в разметке
+   («Память телефона» → «Резервная копия»). Ведут туда же, куда строки в «Ещё». */
+function openExportSheet(){ openFiles("Export"); }
+function openBackupSheet(){ openFiles("Backup"); }
+
+function renderFiles(){
+  const v = document.querySelector('[data-view="files"]'); if(!v) return;
+  const canEdit    = canEditStock();
+  const restricted = isRestrictedUser();
+  const canImp     = canImportToBase();
+  const cloudBase  = !!activeCloudId();
+  const mb = Math.round(IMP_MAX_BYTES/1024/1024);
+  const grp = (id, head, body) => `<div class="set-group" id="filesGrp${id}"><div class="set-head">${esc(head)}</div><div class="card space-y-2">${body}</div></div>`;
+
+  /* 1. ЗАГРУЗИТЬ. Тут же и бланк, и выбор файла: раньше бланк лежал внутри листа, который сам
+     ещё надо было найти, — то есть чтобы скачать бланк, надо было уже знать про импорт. */
+  const gImport = !canEdit ? "" : grp("Import", "Загрузить из файла", `
+    <div class="text-sm opacity-80">Приход по накладной или по счёту от поставщика — Excel вместо ручного ввода. Приложение прочитает файл, покажет списком, что нашло, и спросит подтверждение.</div>
+    <div class="text-sm"><b>Принятое ДОБАВИТСЯ к остаткам на складе.</b> Ничего не заменяется и не пропадает.</div>
+    <button class="btn btn-ghost w-full" onclick="downloadReceiptTemplate()">${ico("inbox",18)} Скачать бланк .xlsx</button>
+    <div class="text-xs opacity-70">Пустой файл Excel: заполните его на компьютере и вернитесь сюда. Столбцы: Наименование · Количество · Ед. изм. · Категория · Срок · Место · Примечание · Дата.</div>
+    <label class="btn btn-primary w-full">${ico("outbox",18)} Выбрать файл<input type="file" multiple accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hidden" onchange="importReceiptsExcel(event)"></label>
+    <div id="impReceiptOut" class="text-sm whitespace-pre-line opacity-80"></div>
+    <div class="text-xs opacity-70">Файл поставщика (УПД, счёт-фактура) подойдёт как есть, переделывать не нужно: наименование, количество, единицу и дату приложение возьмёт само. Можно выбрать сразу несколько файлов — до ${IMP_MAX_FILES}, всего до ${IMP_MAX_ROWS} строк, каждый до ${mb} МБ.</div>`);
+
+  /* 2. ВЫГРУЗИТЬ. Прежний openExportSheet: те же три действия и тот же порядок. */
+  const gExport = grp("Export", "Выгрузить в файл", `
+    <div class="text-sm opacity-80">Файл сохранится на телефон: отправьте его в контору, откройте на компьютере или распечатайте. Интернет не нужен.</div>
+    <button class="btn btn-success w-full" onclick="exportXlsx()">${ico("chart",18)} Скачать всё — Excel</button>
+    <div class="text-xs opacity-70">Один файл .xlsx: остатки склада и четыре журнала — поступление, выдача, списание, заказы. Каждый на своём листе.</div>
+    <button class="btn btn-ghost w-full" onclick="exportCsv()">Только склад — .csv</button>
+    <button class="btn btn-ghost w-full" onclick="exportXlsxFiltered()">Часть склада — Excel…</button>
+    <div class="text-xs opacity-70">«Часть» — срез по месту хранения, категории, сроку годности и наличию: например, только просроченное на складе А.</div>`);
+
+  /* 3. КОПИЯ. Прежний openBackupSheet целиком, вместе с восстановлением и обеими подсказками
+     про общую базу; текст переписан на человеческий, состав и права — прежние. */
+  const gBackup = grp("Backup", "Резервная копия", `
+    <div class="text-sm opacity-80">На случай, если телефон потеряют, разобьют или сбросят. Файл .json открывать не нужно — он только для восстановления. Делайте копию регулярно.</div>
+    <button class="btn btn-primary w-full" onclick="exportData()">${ico("inbox",18)} Сохранить эту базу</button>
+    ${restricted?"":`<button class="btn btn-success w-full" onclick="exportAllProfiles()">${ico("box",18)} Сохранить ВСЕ базы</button>`}
+    <div class="text-xs opacity-70">${restricted
+      ? "Сохраняется ваша база — склад и вся история движений."
+      : "«Эту базу» — только ту, что открыта сейчас. «Все базы» — один файл со всеми базами телефона: это главная страховка, с него восстанавливается всё."}</div>
+    <label class="btn btn-ghost w-full">Восстановить из файла<input type="file" accept="application/json" class="hidden" onchange="importData(event)"></label>
+    <div class="text-xs opacity-70">${restricted
+      ? "Приложение проверит файл и спросит подтверждение, прежде чем что-то менять."
+      : "Подходит любой из этих двух файлов — приложение само разберётся, какой из них дали, и спросит подтверждение."}</div>
+    ${cloudBase?`<div class="text-xs opacity-70">${canImp
+      ? "База общая: то, что вы зальёте из файла, увидит вся бригада. Файл «все базы» остаётся на этом телефоне и в облако не уходит."
+      : "Восстановить базу из файла в общую базу может начальник участка и выше — чтобы чужой файл не переписал работу бригады. Файл «все базы» на этом телефоне восстановить можно: в облако он не уходит."}</div>`:""}`);
+
+  v.innerHTML = `
+    <div class="flex items-center gap-2">
+      <!-- min-width:44 — тап-цель. Высоту 52 даёт .btn, а ширину задаёт содержимое: у одного
+           знака «‹» с полями 12+12 выходило 30px, и попасть по кнопке большим пальцем в рукавице
+           нельзя. Тот же промах есть у кнопки «Назад» в «Уведомлениях» (см. отчёт). -->
+      <button class="btn btn-ghost" style="padding:8px 12px;min-width:44px;flex:0 0 auto" onclick="closeFiles()" aria-label="Назад">‹</button>
+      <div class="font-bold text-xl" style="flex:1;min-width:0">Файлы</div>
+    </div>
+    <div class="text-sm opacity-70">Здесь всё, что приходит файлом и уходит файлом.</div>
+    ${gImport}${gExport}${gBackup}`;
+
+  /* Подкрутка к нужной группе — только когда пришли по строке, которая её и обещала («Резервная
+     копия» лежит ниже сгиба на 320px, и человек, нажавший её, должен увидеть именно её).
+     Группы может не быть (у роли без прав нет импорта) — тогда просто наверх. */
+  if(_filesAnchor){
+    const a = _filesAnchor; _filesAnchor = null;
+    requestAnimationFrame(()=>{
+      try{
+        const el = a==="Top" ? null : document.getElementById("filesGrp"+a);
+        if(el) el.scrollIntoView({ block:"start" }); else scrollTo(0,0);
+      }catch(_){}
+    });
+  }
 }
 function openJournalSheet(){ const _log=(typeof visibleLog==="function")?visibleLog():[]; openSheet(`
   <div class="font-bold text-xl mb-3">Журнал операций</div>
@@ -7665,7 +7777,7 @@ Object.assign(window,{openFilterSheet,openTaskFilterSheet,openStockFilterSheet,r
   toggleCheck,addCheck,resetChecklist,removeCheck,
   exportData,importData,exportXlsx,exportCsv,exportXlsxFiltered,exportJournalsMonth,clearLog,wipeAll,toggleTheme,setTheme,
   doPendingSave,   // вызывается из onclick шита сохранения — обязателен в window
-  openCloudSheet,openExportSheet,openBackupSheet,openJournalSheet,openStockReconcileSheet,openGrantBasesSheet,doGrantBases,openBroadcastSheet,sendBroadcast,
+  openCloudSheet,openExportSheet,openBackupSheet,openFiles,closeFiles,openJournalSheet,openStockReconcileSheet,openGrantBasesSheet,doGrantBases,openBroadcastSheet,sendBroadcast,
   openAboutSheet,openFaqSheet,openPrivacySheet,openTermsSheet,openRecoveryEmailSheet,
   openMove,doMove,
   openReceiptImportSheet,downloadReceiptTemplate,importReceiptsExcel,
