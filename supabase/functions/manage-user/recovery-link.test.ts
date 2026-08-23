@@ -55,6 +55,13 @@ describe("recovery link helpers", () => {
     expect(sql).toContain("created_at >= now() - interval '60 seconds'");
   });
 
+  test("reset-code issuance rechecks the current verified email", async () => {
+    const sql = await Bun.file(new URL("../../migrations/2026-08-23_reset_code_email_guard.sql", import.meta.url)).text();
+    expect(sql).toContain("current_email");
+    expect(sql).toContain("recovery_email_verified");
+    expect(sql).toContain("if current_email is distinct from p_email");
+  });
+
   test("bind-code issuance is serialized per user", async () => {
     const source = await Bun.file(new URL("./index.ts", import.meta.url)).text();
     const sql = await Bun.file(new URL("../../migrations/2026-08-22_bind_code_issue.sql", import.meta.url)).text();
