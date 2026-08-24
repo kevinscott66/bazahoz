@@ -9067,7 +9067,7 @@ function cloudCardHtml(){
 
 /* ---------- Boot ---------- */
 applyTheme();
-(function seedFromEmbedded(){
+function seedFromEmbedded(){
   if(state.seededAt) return;                 // уже сидили (в т.ч. после wipeAll)
   // облачная база (привязана к облаку): источник истины — облако. Локальный seed после очистки кэша
   // мог бы запушиться поверх облака до первого pull → НЕ сидим, ждём загрузку из облака.
@@ -9097,7 +9097,12 @@ applyTheme();
     saveState();
     setTimeout(()=>toast(`Загружено ${state.stock.length} позиций`), 300);
   }catch(e){ console.warn("seed failed",e); }
-})();
+}
+if(document.readyState === "loading"){
+  document.addEventListener("DOMContentLoaded", seedFromEmbedded, { once: true });
+}else{
+  seedFromEmbedded();
+}
 nav("dashboard");
 // СИНХРОННО на старте: если нет сохранённой сессии — сразу показываем полноэкранный вход
 // (интерфейс под ним не виден, без мелькания). Вход обязателен — режима «без облака» больше нет.
