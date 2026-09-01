@@ -7,8 +7,11 @@
     "@capacitor/cli": "^6.1.2"
   },
   "dependencies": {
-    "@capacitor/core": "^6.1.2",
     "@capacitor/android": "^6.1.2",
+    "@capacitor/core": "^6.1.2",
     "@capacitor/ios": "^6.1.2"
+  },
+  "overrides": {
+    "tar": "7.5.21"
   }
 }

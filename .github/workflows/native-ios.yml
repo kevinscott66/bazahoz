@@ -44,7 +44,7 @@ jobs:
           zip -qr vahtahoz-unsigned.ipa Payload
           ls -la
       - name: Upload .ipa
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vahtahoz-ios-ipa-unsigned
           path: native/ios/App/build/vahtahoz-unsigned.ipa
