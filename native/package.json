@@ -4,7 +4,7 @@
   "private": true,
   "description": "Нативная обёртка ВахтаХоз (загружает vahta.razvedchick.ru)",
   "devDependencies": {
-    "@capacitor/cli": "^6.1.2"
+    "@capacitor/cli": "^8.5.0"
   },
   "dependencies": {
     "@capacitor/android": "^6.1.2",
