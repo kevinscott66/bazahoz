@@ -6,6 +6,7 @@
 // Территориальные/глобальные (party_chief/director/general_director/accounting) — в org_roles (party_id: NULL=глобально).
 // Обратная совместимость: старые действия create_member/reset_password/handover работают как раньше.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { bearerToken, isValidRecoveryPassword, mailUsernameFromEmail, RECOVERY_ACTION } from "./recovery-link.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -64,7 +65,26 @@ async function rateKey(req: Request): Promise<string> {
   const salt = Deno.env.get("RATE_SALT") || SERVICE.slice(0, 16);
   return await sha256(salt + "|" + ip);
 }
-// true = можно продолжать. Поведение при СБОЕ счётчика задаётся вызывающим:
+// Хит счётчика вынесен отдельно, чтобы публичные действия могли иметь
+// дополнительный глобальный бюджет, не зависящий от клиентских IP-заголовков.
+async function rateOkForKey(admin: any, key: string, purpose: string, windowSecs: number, limit: number, failOpen = true): Promise<boolean> {
+  if (!key) return failOpen;
+  try {
+    const { data, error } = await admin.rpc("auth_rate_hit", {
+      p_key: key, p_purpose: purpose, p_window: windowSecs, p_limit: limit,
+    });
+    if (error) { console.warn("auth_rate_hit", error.message); return failOpen; }
+    return data !== false;
+  } catch (e) { console.warn("rateOk", e); return failOpen; }
+}
+// Глобальный ключ ограничивает обход per-IP лимита ротацией поддельных заголовков.
+// При сбое этого защитного бюджета публичное действие не пропускаем.
+async function globalRateOk(admin: any, purpose: string, windowSecs: number, limit: number, failOpen = false): Promise<boolean> {
+  const salt = Deno.env.get("RATE_SALT") || SERVICE.slice(0, 16);
+  const key = await sha256(salt + "|global|" + purpose);
+  return rateOkForKey(admin, key, purpose, windowSecs, limit, failOpen);
+}
+// true = можно продолжать. Поведение при СБОЕ per-IP счётчика задаётся вызывающим:
 //   failOpen=true  (запрос кода): недоступность счётчика не должна превращаться в отказ
 //                  восстановления пароля — человек на вахте останется без входа.
 //   failOpen=false (ввод кода): здесь счётчик — единственный общий тормоз перебора,
@@ -74,13 +94,8 @@ async function rateKey(req: Request): Promise<string> {
 async function rateOk(admin: any, req: Request, purpose: string, windowSecs: number, limit: number, failOpen = true): Promise<boolean> {
   try {
     const key = await rateKey(req);
-    if (!key) return failOpen;   // IP не определить — считать это «лимит не превышен» можно только там, где отказ дороже перебора
-    const { data, error } = await admin.rpc("auth_rate_hit", {
-      p_key: key, p_purpose: purpose, p_window: windowSecs, p_limit: limit,
-    });
-    if (error) { console.warn("auth_rate_hit", error.message); return failOpen; }
-    return data !== false;
-  } catch (e) { console.warn("rateOk", e); return failOpen; }
+    return rateOkForKey(admin, key, purpose, windowSecs, limit, failOpen);
+  } catch (e) { console.warn("rateKey", e); return failOpen; }
 }
 // GoTrue отвечает по-английски («Password is known to be weak…» при включённой проверке
 // по базам утечек, «Password should be at least…» при коротком). Для вахты это тупик: владелец
@@ -273,25 +288,63 @@ Deno.serve(async (req) => {
   // ── ПУБЛИЧНЫЕ действия восстановления пароля (БЕЗ токена — пользователь забыл пароль) ─────────
   // Безопасность: код уходит ТОЛЬКО на ПОДТВЕРЖДЁННУЮ резервную почту; rate-limit + лимит попыток;
   // ответ нейтральный (не раскрываем, существует ли логин). Функция задеплоена с verify_jwt=false.
+  if (action === RECOVERY_ACTION) {
+    // Gateway намеренно оставлен verify_jwt=false ради request_reset/confirm_reset, поэтому
+    // recovery-токен проверяем здесь через Auth API, прежде чем service_role меняет пароль.
+    const token = bearerToken(req.headers.get("Authorization"));
+    const newPassword = String(p.new_password || "");
+    if (!token) return json({ error: "no auth" }, 401);
+    if (!isValidRecoveryPassword(newPassword)) return json({ error: "Пароль не короче 8 символов" }, 400);
+    if (!(await rateOk(admin, req, RECOVERY_ACTION, 900, 10, false))) return json({ error: "too_many" }, 429);
+
+    const tokenClient = createClient(SUPABASE_URL, ANON, { global: { headers: { Authorization: `Bearer ${token}` } } });
+    const { data: tokenUser, error: tokenError } = await tokenClient.auth.getUser();
+    if (tokenError || !tokenUser?.user?.id) return json({ error: "expired" }, 401);
+
+    const { error: passwordError } = await admin.auth.admin.updateUserById(tokenUser.user.id, { password: newPassword });
+    if (passwordError) return json({ error: weakPwdMsg(passwordError) || "expired" }, 400);
+
+    // Берём локальную часть реального auth-email, как в confirm_reset/reset_password.
+    const { data: actualUser, error: actualUserError } = await admin.auth.admin.getUserById(tokenUser.user.id);
+    const username = mailUsernameFromEmail(actualUser?.user?.email);
+    const mailSynced = actualUserError ? false : username ? await provisionMail(username, newPassword) : true;
+    return json({ ok: true, username: username || "", mail_synced: mailSynced });
+  }
   if (action === "request_reset") {
     const t0 = Date.now();
     const username = String(p.username || "").trim().toLowerCase().replace(/@.*$/, "");
     // per-IP: 12 запросов / 15 мин. Щедро для смены за общим NAT, но перебор логинов
     // больше не рассылает письма пачками. При упоре — НИЧЕГО не делаем, а ответ и задержка
     // остаются те же (иначе «лимит» выдал бы существование логина).
-    const ipOk = await rateOk(admin, req, "request_reset", 900, 12);
+    // Глобальный бюджет остаётся обязательным даже если клиент ротирует IP-заголовки.
+    const globalOk = await globalRateOk(admin, "request_reset", 900, 120, false);
+    const ipOk = globalOk && await rateOk(admin, req, "request_reset", 900, 12);
     if (ipOk && /^[a-z0-9_]{3,32}$/.test(username)) {
-      const { data: u } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
-      const { data: rec2 } = u ? await admin.from("user_recovery").select("recovery_email,recovery_email_verified").eq("user_id", u.id).maybeSingle() : { data: null };
-      if (u && rec2 && rec2.recovery_email && rec2.recovery_email_verified) {
-        const { data: recent } = await admin.from("auth_codes").select("id").eq("user_id", u.id).eq("purpose", "reset_password").gte("created_at", new Date(Date.now() - 60000).toISOString()).limit(1);
-        if (!recent || recent.length === 0) {
+      const { data: u, error: profileError } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
+      const { data: rec2, error: recoveryError } = u
+        ? await admin.from("user_recovery").select("recovery_email,recovery_email_verified").eq("user_id", u.id).maybeSingle()
+        : { data: null, error: null };
+      if (!profileError && !recoveryError && u && rec2 && rec2.recovery_email && rec2.recovery_email_verified) {
+        const { data: recent, error: recentError } = await admin.from("auth_codes").select("id").eq("user_id", u.id).eq("purpose", "reset_password").gte("created_at", new Date(Date.now() - 60000).toISOString()).limit(1);
+        if (!recentError && Array.isArray(recent) && recent.length === 0) {
           const code = genCode();
-          // старые неиспользованные коды гасим: живым остаётся только последний (сужает окно перебора)
-          await admin.from("auth_codes").update({ used: true }).eq("user_id", u.id).eq("purpose", "reset_password").eq("used", false);
-          await admin.from("auth_codes").insert({ user_id: u.id, purpose: "reset_password", email: rec2.recovery_email, code_hash: await sha256(u.id + ":" + code), expires_at: new Date(Date.now() + 15 * 60000).toISOString() });
-          // письмо — без await на критическом пути ответа: иначе timing выдаёт «логин с почтой существует»
-          background(sendCode(rec2.recovery_email, code, "reset"));
+          // Выдача и гашение старых кодов — одна транзакция с advisory lock пользователя.
+          // Иначе параллельные запросы с разных IP могли оба пройти recent-проверку;
+          // письмо от первого уже уходило, но действительным оставался только второй код.
+          const { data: issued, error: issueError } = await admin.rpc("issue_reset_auth_code", {
+            p_user: u.id,
+            p_email: rec2.recovery_email,
+            p_code_hash: await sha256(u.id + ":" + code),
+            p_expires_at: new Date(Date.now() + 15 * 60000).toISOString(),
+          });
+          if (issueError) {
+            console.error("request reset issue code", issueError);
+          } else if (issued === true) {
+            // письмо — без await на критическом пути ответа: иначе timing выдаёт «логин с почтой существует»
+            background(sendCode(rec2.recovery_email, code, "reset"));
+          } else {
+            console.warn("request reset code was not issued");
+          }
         }
       }
     }
@@ -319,6 +372,7 @@ Deno.serve(async (req) => {
     const fail = async () => { await floorPad(); return json({ error: "invalid" }, 400); };
     // per-IP: 30 попыток / 15 мин. attempts≤5 капает ОДИН код; без общего тормоза перебор
     // размазывался по многим логинам. Ответ — тот же «invalid», нового оракула не добавляем.
+    if (!(await globalRateOk(admin, "confirm_reset", 900, 120, false))) return await fail();
     if (!(await rateOk(admin, req, "confirm_reset", 900, 30, false))) return await fail();
     const { data: u } = await admin.from("profiles").select("id").eq("username", username).maybeSingle();
     if (!u) return await fail();
@@ -345,9 +399,9 @@ Deno.serve(async (req) => {
     // «AUTHENTICATIONFAILED», со старым — ОК). А если резервная почта и есть этот ящик, то
     // умирал и сам путь восстановления: в следующий раз код прислать уже некуда.
     // Источник истины для локальной части — РЕАЛЬНЫЙ auth-email, а не profiles.username.
-    const { data: tu2 } = await admin.auth.admin.getUserById(u.id);
-    const mm = /^([a-z0-9_]+)@razvedchick\.ru$/i.exec(tu2?.user?.email || "");
-    const mailOk2 = mm ? await provisionMail(mm[1].toLowerCase(), newPassword) : true;
+    const { data: tu2, error: tu2Error } = await admin.auth.admin.getUserById(u.id);
+    const mailUsername = mailUsernameFromEmail(tu2?.user?.email);
+    const mailOk2 = tu2Error ? false : mailUsername ? await provisionMail(mailUsername, newPassword) : true;
     // Сессии намеренно не сбрасываем (нет повторного входа на доверенных устройствах).
     await floorPad();   // тот же пол и на успехе — чтобы «успех» не выделялся по времени
     // mail_synced — ДОБАВЛЕННОЕ поле; старые сборки его не читают и не ломаются.
@@ -377,11 +431,17 @@ Deno.serve(async (req) => {
     if (/@razvedchick\.ru$/i.test(email)) {
       return json({ error: "Рабочая почта не подойдёт: пароль от неё тот же, что от приложения. Укажите личную — Gmail, Яндекс и т.п." }, 400);
     }
-    const { data: recent } = await admin.from("auth_codes").select("id").eq("user_id", callerId).eq("purpose", "bind_email").gte("created_at", new Date(Date.now() - 60000).toISOString()).limit(1);
-    if (recent && recent.length) return json({ error: "wait" }, 429);
     const code = genCode();
-    await admin.from("auth_codes").update({ used: true }).eq("user_id", callerId).eq("purpose", "bind_email").eq("used", false);  // живым остаётся только последний код
-    await admin.from("auth_codes").insert({ user_id: callerId, purpose: "bind_email", email, code_hash: await sha256(callerId + ":" + email + ":" + code), expires_at: new Date(Date.now() + 15 * 60000).toISOString() });
+    // Выдача и гашение старых bind-кодов — одна транзакция под lock пользователя.
+    // Это не даёт двум параллельным запросам отправить взаимоисключающие письма.
+    const { data: issued, error: issueError } = await admin.rpc("issue_bind_auth_code", {
+      p_user: callerId,
+      p_email: email,
+      p_code_hash: await sha256(callerId + ":" + email + ":" + code),
+      p_expires_at: new Date(Date.now() + 15 * 60000).toISOString(),
+    });
+    if (issueError) { console.error("bind email issue code", issueError); return json({ error: "Не удалось подготовить подтверждение почты" }, 500); }
+    if (issued !== true) return json({ error: "wait" }, 429);
     background(sendCode(email, code, "bind"));   // не раскрываем sent в ответе (инфра-оракул)
     return json({ ok: true });
   }
@@ -397,11 +457,13 @@ Deno.serve(async (req) => {
       const e = vres === "too_many" ? "too_many" : vres === "expired" ? "expired" : "invalid";
       return json({ error: e }, e === "too_many" ? 429 : 400);
     }
-    await admin.from("user_recovery").upsert({ user_id: callerId, recovery_email: email, recovery_email_verified: true, updated_at: new Date().toISOString() });
+    const { error: confirmRecoveryError } = await admin.from("user_recovery").upsert({ user_id: callerId, recovery_email: email, recovery_email_verified: true, updated_at: new Date().toISOString() });
+    if (confirmRecoveryError) { console.error("confirm recovery email", confirmRecoveryError); return json({ error: "Не удалось сохранить резервную почту" }, 500); }
     return json({ ok: true, recovery_email: email, recovery_email_verified: true });
   }
   if (action === "unbind_recovery_email") {
-    await admin.from("user_recovery").upsert({ user_id: callerId, recovery_email: null, recovery_email_verified: false, updated_at: new Date().toISOString() });
+    const { error: unbindRecoveryError } = await admin.from("user_recovery").upsert({ user_id: callerId, recovery_email: null, recovery_email_verified: false, updated_at: new Date().toISOString() });
+    if (unbindRecoveryError) { console.error("unbind recovery email", unbindRecoveryError); return json({ error: "Не удалось отвязать резервную почту" }, 500); }
     return json({ ok: true, recovery_email: null, recovery_email_verified: false });
   }
 
@@ -576,13 +638,17 @@ Deno.serve(async (req) => {
   if (action === "list_org_members") {
     const caps = await callerCaps(admin, callerId);
     if (caps.rank < 4 && !caps.global) return json({ error: "forbidden" }, 403);
-    const { data: parties } = await admin.from("parties").select("id,name").order("name");
+    const { data: parties, error: partiesError } = await admin.from("parties").select("id,name").order("name");
+    if (partiesError) { console.error("list_org_members parties", partiesError); return json({ error: "Не удалось получить список партий" }, 500); }
     const { data: rows, error: re } = await admin.from("org_roles").select("user_id,role,party_id,active");
     if (re) return json({ error: "Не удалось получить список" }, 400);
     let visible = rows || [];
     if (!caps.global) visible = visible.filter((r: any) => r.party_id && caps.parties.has(r.party_id)); // не-глобальный видит только свои партии
     const ids = [...new Set(visible.map((r: any) => r.user_id))];
-    const { data: profs } = ids.length ? await admin.from("profiles").select("id,username").in("id", ids) : { data: [] };
+    const { data: profs, error: profilesError } = ids.length
+      ? await admin.from("profiles").select("id,username").in("id", ids)
+      : { data: [], error: null };
+    if (profilesError) { console.error("list_org_members profiles", profilesError); return json({ error: "Не удалось получить имена работников" }, 500); }
     const pmap: Record<string, string> = {}; (profs || []).forEach((p: any) => pmap[p.id] = p.username);
     const partymap: Record<string, string> = {}; (parties || []).forEach((p: any) => partymap[p.id] = p.name);
     const members = visible.map((r: any) => ({ ...r, username: pmap[r.user_id] || "—", party_name: r.party_id ? (partymap[r.party_id] || "—") : null }));
@@ -606,12 +672,14 @@ Deno.serve(async (req) => {
       if (targetId === callerId) {
         return json({ error: "Свой пароль здесь не меняется. Его может сменить владелец базы, а если у вас привязана резервная почта — «Забыли пароль?» на входе" }, 403);
       }
-      const { data: tprof } = await admin.from("profiles").select("is_admin").eq("id", targetId).maybeSingle();
+      const { data: tprof, error: tprofError } = await admin.from("profiles").select("is_admin").eq("id", targetId).maybeSingle();
+      if (tprofError) { console.error("reset pwd target profile", tprofError); return json({ error: "Не удалось проверить права работника" }, 500); }
       if (tprof?.is_admin || mem.can_manage) {
         return json({ error: "Нельзя сменить пароль управляющему или владельцу базы" }, 403);
       }
-      const { data: others } = await admin.from("base_members")
+      const { data: others, error: othersError } = await admin.from("base_members")
         .select("base_id").eq("user_id", targetId).neq("base_id", baseId).limit(1);
+      if (othersError) { console.error("reset pwd other bases", othersError); return json({ error: "Не удалось проверить доступы работника" }, 500); }
       if (others && others.length) {
         return json({ error: "У работника есть другие базы — пароль может сменить только владелец" }, 403);
       }
@@ -624,11 +692,11 @@ Deno.serve(async (req) => {
     if (error) { console.error("reset pwd", error); return json({ error: weakPwdMsg(error) || "Не удалось сменить пароль" }, 400); }
     // синхронизируем пароль почтового ящика: локальная часть РЕАЛЬНОГО auth-email (источник истины),
     // а не profiles.username — они могут разойтись. Ящик существует только для домена @razvedchick.ru.
-    const { data: tu } = await admin.auth.admin.getUserById(targetId);
+    const { data: tu, error: tuError } = await admin.auth.admin.getUserById(targetId);
     const mailMatch = /^([a-z0-9_]+)@razvedchick\.ru$/i.exec(tu?.user?.email || "");
     // Пароль приложения УЖЕ сменён. Если ящик не синхронизировался — молчать нельзя: при резервной
     // почте <логин>@razvedchick.ru пользователь теряет и вход в ящик, и путь восстановления.
-    const mailOk = mailMatch ? await provisionMail(mailMatch[1].toLowerCase(), password) : true;
+    const mailOk = tuError ? false : mailMatch ? await provisionMail(mailMatch[1].toLowerCase(), password) : true;
     return json({ ok: true, mail_synced: mailOk });
   }
 
@@ -719,8 +787,9 @@ Deno.serve(async (req) => {
     if (remove) {
       // не оставляем базу без активного can_manage
       for (const bid of baseIds) {
-        const { data: cur } = await admin.from("base_members")
+        const { data: cur, error: curError } = await admin.from("base_members")
           .select("can_manage,active").eq("base_id", bid).eq("user_id", userId).maybeSingle();
+        if (curError) { console.error("grant_bases current membership", curError); return json({ error: "Не удалось проверить доступ" }, 500); }
         if (cur && cur.can_manage && cur.active !== false) {
           const { count, error: cerr } = await admin.from("base_members")
             .select("user_id", { count: "exact", head: true })
@@ -746,8 +815,9 @@ Deno.serve(async (req) => {
     const added: string[] = [];
     const updated: string[] = [];
     for (const bid of baseIds) {
-      const { data: existing } = await admin.from("base_members")
+      const { data: existing, error: existingError } = await admin.from("base_members")
         .select("base_id,can_manage,active").eq("base_id", bid).eq("user_id", userId).maybeSingle();
+      if (existingError) { console.error("grant_bases current membership", existingError); return json({ error: "Не удалось проверить доступ" }, 500); }
       if (existing) {
         const patch: Record<string, unknown> = { role, ...flags };
         if (onShift !== null) patch.active = onShift;   // не форсим active=true при простом обновлении роли
@@ -799,10 +869,14 @@ Deno.serve(async (req) => {
     const recipients: string[] = [];
     for (let page = 1; page <= 20; page++) {
       const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 1000 });
-      if (error) break;
+      if (error) {
+        console.error("broadcast list users", error);
+        return json({ error: "Не удалось получить полный список получателей" }, 502);
+      }
       const users = data?.users || [];
       for (const u of users) { if (u.email && /@razvedchick\.ru$/i.test(u.email)) recipients.push(u.email); }
       if (users.length < 1000) break;
+      if (page === 20) return json({ error: "Получателей слишком много для одной рассылки" }, 413);
     }
     if (!recipients.length) return json({ error: "Нет получателей" }, 400);
     let rd: any = {};
