@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Known public Supabase client key in its original historical commit"
+condition = "AND"
+paths = ['''(^|/)infra/supabase/keys\.env\.example$''']
+commits = ["1af80b04ec4b2fea6d424e8ce2e4cd1742a4f180"]
