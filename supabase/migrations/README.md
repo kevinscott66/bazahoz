@@ -1,203 +1,123 @@
-# Порядок применения миграций
+# Migration application order
 
-> ## Состояние прода на 02.08.2026: применено ВСЁ
+> ## Recorded production state on 2026-08-02: all migrations applied
 >
-> Живая база сверена целиком, вставлять из этого каталога **нечего**. Проверялка
-> `2026-07-31_verify_applied_state.sql` даёт 41 строку без единой «НЕТ» и итог «порядок
-> соблюдён»; четыре миграции, которых она не знает (`2026-08-01_search_path_and_is_admin_policies`,
-> `2026-08-02_default_privileges`, `2026-08-02_guard_bases_update`, `2026-08-02_rls_speed_stock`),
-> доспрошены отдельно и тоже на месте. `pg_cron` включён (1.6.4), задания
-> `vahtahoz_stock_history_prune` и `vahtahoz_auth_rate_prune` активны и отрабатывают
-> со статусом `succeeded`.
+> The live database was fully reconciled. `2026-07-31_verify_applied_state.sql` returned 41 successful rows and a correct-order result. Four migrations outside its coverage were checked separately: `2026-08-01_search_path_and_is_admin_policies`, `2026-08-02_default_privileges`, `2026-08-02_guard_bases_update` and `2026-08-02_rls_speed_stock`. `pg_cron` 1.6.4 was enabled, and `vahtahoz_stock_history_prune` and `vahtahoz_auth_rate_prune` were active with `succeeded` runs.
 >
-> Всё, что ниже, — инструкция на будущее: для восстановления базы с нуля и для порядка
-> применения НОВЫХ миграций. Перед любой вставкой сначала прогоняйте проверялку из п. 1.
+> The instructions below are for rebuilding a database and applying new migrations. Always run the verifier before applying anything; this dated observation is not a current live check.
 
-Миграции применяются **вручную** через Supabase → SQL Editor. Файлы не связаны фреймворком,
-поэтому порядок держится этим документом.
+Migrations are applied **manually** through Supabase → SQL Editor. There is no migration framework enforcing their order.
 
-## 0. Самый простой путь — одна вставка
+## 0. Single-file installation
 
-**`APPLY_ALL_2026-07-31.sql`** — весь пакет одним файлом, в правильном порядке, с диагностикой
-в конце. Скопировать целиком в SQL Editor → Run. Повторный запуск безопасен (проверено на
-чистой базе тремя прогонами — ноль ошибок). В конце вывода — таблица диагностики: все строки
-«есть»/«ок», итог «порядок соблюдён».
+**`APPLY_ALL_2026-07-31.sql`** combines the package in order and finishes with diagnostics. Paste the entire file into SQL Editor and run it. Three consecutive runs against a fresh database completed without errors. All final diagnostic rows should indicate present/OK and the summary should report correct order.
 
-Файл СГЕНЕРИРОВАН из отдельных миграций ниже — править нужно их, затем пересобрать
-(команда генерации в истории git; по сути `cat` файлов из п.2 + verify).
+This file is **generated** from the individual migrations. Edit those sources, then regenerate the bundle; the generation command is in Git history and concatenates the section 2 files followed by verification.
 
-**Если пакет уже применён (прод).** Достаточно ОДНОЙ вставки — `2026-08-01_handover_round9_fixes.sql`.
-Он кладётся поверх текущего состояния, идемпотентен (проверено тремя прогонами подряд) и
-самодостаточен: сам снимает лишние перегрузки, если они успели появиться. Отдельно, если
-pg_cron включён и ретеншн ещё не запланирован, — `2026-07-31_schedule_retention.sql`.
+**For an already-applied package:** `2026-08-01_handover_round9_fixes.sql` is the incremental, self-contained update described by this package. Three repeated runs confirmed idempotency; it removes duplicate overloads itself. If pg_cron is enabled but retention has not been scheduled, apply `2026-07-31_schedule_retention.sql` separately.
 
-## 1. Сначала — узнать текущее состояние
+## 1. Inspect current state first
 
-Запустите **`2026-07-31_verify_applied_state.sql`** — он только читает системные каталоги,
-ничего не меняет, и печатает по строке на каждый ожидаемый объект плюс итоговую рекомендацию.
+Run **`2026-07-31_verify_applied_state.sql`**. It only reads system catalogs and reports each expected object plus a final recommendation. The final summary row tells the operator what to do next; runtime diagnostic labels remain in Russian.
 
-Последняя строка (`>>> ИТОГ`) прямо говорит, что делать дальше.
+## 2. Order for the July 2026 package
 
-## 2. Порядок для актуального пакета (июль 2026)
-
-```
-2026-07-30_base_member_preset_all_roles.sql     # пресеты прав для всех base-ролей
-2026-07-30_stock_history_guard.sql              # история остатков + CHECK qty >= 0
-2026-07-30_stock_history_guard_fix.sql          # авторизация в отчёте, порог «почти нуля»
-2026-07-30_auth_rate_per_ip.sql                 # таблица auth_rate + троттлинг по IP
-2026-07-31_audit_round3_sql_fixes.sql           # фиксы аудита round 3/4 (после всех выше)
-2026-07-31_org_roles_preset_guard.sql           # пресеты и страж org-ролей
-2026-08-01_zeroing_report_fixes.sql             # порог потери, единая семантика, детект пересортицы
-2026-08-01_audit_round6_fixes.sql               # фиксы аудита round 6
-2026-08-01_handover_consistency.sql             # пересменка: orphan, гонка, пресет заступающему
-2026-08-01_handover_round9_fixes.sql            # фиксы round 9 — ПОСЛЕДНИМ
+```text
+2026-07-30_base_member_preset_all_roles.sql     # Permission presets for all base roles
+2026-07-30_stock_history_guard.sql              # Stock history and CHECK qty >= 0
+2026-07-30_stock_history_guard_fix.sql          # Report authorization and near-zero threshold
+2026-07-30_auth_rate_per_ip.sql                 # auth_rate table and IP throttling
+2026-07-31_audit_round3_sql_fixes.sql           # Round 3/4 fixes, after the preceding files
+2026-07-31_org_roles_preset_guard.sql           # Organization-role presets and guard
+2026-08-01_zeroing_report_fixes.sql             # Loss threshold, shared semantics, misclassification detection
+2026-08-01_audit_round6_fixes.sql               # Round 6 fixes
+2026-08-01_handover_consistency.sql             # Handover: orphan, race and incoming-role preset fixes
+2026-08-01_handover_round9_fixes.sql            # Round 9 fixes, LAST
 ```
 
-**Файлы пересменки обязаны идти ПОСЛЕ `2026-07-28_journal_private_orphan_handover.sql`.**
-`handover_shift` определяют ТРИ файла, и раздел 6 файла от 28 июля — самый старый из них.
-До round 9 он пересоздавал функцию БЕЗУСЛОВНО и молча откатывал обе более новые редакции;
-верификатор пересменку не проверял вовсе и после такого отката показывал «порядок соблюдён».
-Теперь: файл от 28 июля распознаёт более новую редакцию, пропускает свой раздел 6 и печатает
-`WARNING`; верификатор показывает строку `пересменка | handover_shift: редакция`, а итог при
-откате — `ЧАСТИЧНО: ПЕРЕСМЕНКА ОТКАЧЕНА`. Оба файла пересменки включены в `APPLY_ALL`.
+**Handover files must follow `2026-07-28_journal_private_orphan_handover.sql`.** Three files define `handover_shift`; section 6 of the July 28 file is the oldest. Before round 9, it unconditionally recreated the function and silently reverted newer versions, while the verifier failed to check handover. Now it recognizes a newer version, skips section 6 and prints `WARNING`. The verifier checks the function revision and reports a partial/reverted handover state. Both handover files are included in `APPLY_ALL`.
 
-Отдельно, вне этой цепочки (не зависит от порядка, требует включённого pg_cron):
+Outside that chain, requiring pg_cron but no specific ordering:
 
-```
-2026-07-31_schedule_retention.sql               # pg_cron: stock_history_prune + auth_rate_prune
+```text
+2026-07-31_schedule_retention.sql               # stock_history_prune and auth_rate_prune jobs
 ```
 
-**Порядок между файлами 2026-08-01 обязателен.** `audit_round6_fixes` пересоздаёт те же
-четыре функции с более широкими сигнатурами; если после него прогнать `zeroing_report_fixes`,
-инструменты откатятся к прежней редакции (файл предупредит об этом `WARNING`, а верификатор
-покажет «ЧАСТИЧНО: инструменты раннбука откачены назад»). Лечится повторным прогоном
-`audit_round6_fixes`. То же с `handover_round9_fixes`: он идёт ПОСЛЕ `audit_round6_fixes`
-(пересоздаёт `stock_zeroing_report` и `stock_qty_restore` ещё раз, с параметрами round 9),
-и обратный порядок откатит их назад — `audit_round6_fixes` теперь тоже об этом предупреждает.
+**The order of the August 1 files matters.** `audit_round6_fixes` recreates the same four functions with broader signatures. Running `zeroing_report_fixes` afterward reverts them; the file warns and the verifier detects it. Reapply `audit_round6_fixes` to recover. Likewise, `handover_round9_fixes` must follow `audit_round6_fixes`: it recreates `stock_zeroing_report` and `stock_qty_restore` with round 9 parameters. Reversing them reverts those functions; round 6 now warns about that too.
 
-`zeroing_report_fixes` доводит детект обнуления до реальных инцидентов: настраиваемый порог
-существенной потери (`p_min_frac`), одна и та же семантика «сколько было» у отчёта и отката
-(`qty_at_window_start`), отсев обычного расхода (`verdict`), а также детект и откат пересортицы
-(`stock_meta_change_report` / `stock_meta_restore`).
+`zeroing_report_fixes` adds a configurable substantial-loss threshold (`p_min_frac`), shared before-window semantics (`qty_at_window_start`), routine-consumption classification (`verdict`), and metadata misclassification detection/restoration (`stock_meta_change_report` / `stock_meta_restore`).
 
-`audit_round6_fixes` закрывает: `is_backend_role`, возвращавшую NULL (все шесть проверок прав
-молча пропускались); откат, затиравший законные правки смены после окна инцидента; расхождение
-множеств отчёта и отката из-за типового фильтра; `verdict='routine'`, прятавший единичную
-крупную потерю; регрессию, из-за которой legacy-строку `base_members` нельзя было починить из
-интерфейса; и дубли перегрузок от повторного прогона старых файлов.
+`audit_round6_fixes` addresses:
 
-`handover_round9_fixes` закрывает: увод задач ЧУЖОЙ базы к управляющему другой базы (проверка
-стояла только на уходящего, не на заступающего); «успех» пересменки, при котором ничего не
-происходит (повтор опознавался по состоянию, а не по тождеству вызова — заводится журнал
-`public.handover_log`); откат, объявлявший СВОЮ ЖЕ вторую ступень инцидента «законной работой
-смены»; отсутствие удалённых позиций в выдаче отката (числа отчёта и отката не сходились);
-абсолютный порог «рутины», прятавший почти полную потерю малообъёмного товара; неправду в
-комментарии об инварианте «откат ⊆ отчёт»; и журнальные строки с неопределимым типом, которые
-нельзя было ни создать, ни увидеть, ни удалить.
+- `is_backend_role` returning NULL and bypassing six permission checks.
+- Restoration overwriting legitimate changes after the incident window.
+- Type-filter differences between report and restoration sets.
+- `verdict='routine'` hiding a single large loss.
+- Inability to repair legacy `base_members` rows through the UI.
+- Duplicate overloads created by rerunning older files.
 
-`org_roles_preset_guard` лечит «начальник партии/директор не видит склад»: на `org_roles`
-не было триггера-пресета, и legacy-строка с can_view_stock=false резала доступ через
-`has_perm`, хотя по типам такой роли открыто всё. Плюс добивает пересменку: деактивация
-строки с НЕИЗВЕСТНОЙ ролью (legacy `custom`) больше не падает — тот же класс бага, что
-с org-ролями в round 3.
+`handover_round9_fixes` addresses:
 
-`_guard_fix` — **дополнение, а не замена** `stock_history_guard`: сам по себе он проходит без
-ошибок, но не создаёт ни таблицу `stock_history`, ни триггер, ни `CHECK`. Внутри стоит явная
-проверка предпосылок, которая остановит применение не по порядку.
+- Moving another base's tasks to an unrelated manager because only the outgoing member was checked.
+- Handover reporting success without acting: replay detection now uses invocation identity through `public.handover_log`, rather than state alone.
+- Restoration treating its own second incident stage as legitimate shift work.
+- Deleted items missing from restoration output, causing report/count mismatches.
+- An absolute routine threshold hiding near-total losses of low-volume stock.
+- An incorrect comment about the restoration-subset-of-report invariant.
+- Journal entries with an indeterminate type that could not be created, viewed or deleted.
 
-## 2.1 Августовские файлы (порядка не требуют)
+`org_roles_preset_guard` fixes warehouse visibility for party-chief/director roles: legacy `can_view_stock=false` could deny access through `has_perm` despite role-type permissions. It also permits deactivation of legacy unknown (`custom`) roles during handover, matching the round 3 organization-role fix.
 
-```
-2026-08-02_default_privileges.sql               # новые объекты в public больше не раздаются anon
-2026-08-02_guard_bases_update.sql               # перенос защиты базы из БД в репозиторий
-2026-08-02_rls_speed_stock.sql                  # склад: 1678 мс → 11 мс на выборку
+`_guard_fix` **supplements, rather than replaces, `stock_history_guard`**. It does not create the history table, trigger or CHECK. An explicit prerequisite check rejects out-of-order application.
+
+## 2.1 Independent August files
+
+```text
+2026-08-02_default_privileges.sql               # Do not automatically grant new public objects to anon
+2026-08-02_guard_bases_update.sql               # Preserve an existing database guard in source
+2026-08-02_rls_speed_stock.sql                  # Stock query: 1678 ms to 11 ms
 ```
 
-Оба ставятся в любой момент и в любом порядке, ничего из перечисленного выше не трогают.
+These files can be applied independently of the preceding chain.
 
-`default_privileges` закрывает не находку, а её источник. Supabase из коробки раздаёт
-anon и authenticated полный доступ к **каждой новой** таблице в `public`, а `CREATE TABLE`
-не включает RLS — значит одна забытая строчка в будущей миграции откроет таблицу наружу,
-не выдав ни ошибки, ни предупреждения. После этого файла новая таблица не доступна никому,
-и грант надо писать руками. Побочный эффект намеренный: забытый грант — шумный отказ
-«permission denied», и это ровно то, что нужно. Права уже существующих таблиц файл
-не меняет, старые сборки приложения работают как работали.
+`default_privileges` removes an unsafe default for future objects: automatic grants to anon/authenticated combined with a table created without RLS could expose it silently. New tables instead require explicit grants; forgetting one produces a visible permission error. Existing table privileges and older app builds are unchanged.
 
-`guard_bases_update` — сверка базы с репозиторием (24 функции, 25 политик, 6 триггеров)
-нашла ровно одно расхождение: защита от переименования базы и переноса её в чужой отряд
-существовала только в живой базе. При пересборке из репозитория она пропала бы молча.
-Файл ничего не меняет в работающей базе, он закрепляет уже существующее.
+`guard_bases_update` records a guard that existed only in the live database. Reconciliation of 24 functions, 25 policies and six triggers found that rename/base-transfer protection would otherwise disappear during a rebuild. It preserves existing behavior.
 
-`rls_speed_stock` — выборка склада занимала **1678 мс** на 21 тысяче строк: `has_perm`
-и `can_see_type` объявлены SECURITY DEFINER с `SET search_path`, такие функции PostgreSQL
-не вставляет в запрос, и на каждую строку шёл настоящий вызов с тремя подзапросами внутри.
-Но зависят они не от строки, а от базы (их восемь) и вида имущества (их четыре) — то есть
-21 тысяча вызовов давала 32 разных ответа. Теперь ответы считаются один раз списком
-(`my_perm_bases`, `my_visible_types`), а строка сверяется с готовым списком: **11 мс**.
-Права не менялись: списки строятся вызовом тех же самых функций. Проверено перебором
-240 пар старого и нового ответа (0 расхождений), сверкой видимых строк по каждому
-пользователю до и после (совпали и количества, и контрольные суммы наборов), прогоном
-insert/update/select/delete от кладовщика и отказом на попытке вписать позицию в чужую базу.
+`rls_speed_stock` reduced a measured 21,000-row stock query from **1678 ms to 11 ms**. SECURITY DEFINER functions with `SET search_path` were not inlined, producing per-row calls with three subqueries each, despite depending only on eight bases and four property types. `my_perm_bases` and `my_visible_types` now calculate the 32 possible answers once. Permissions still use the same functions. Validation compared 240 old/new answer pairs, per-user visible row counts and set checksums, warehouse-clerk insert/update/select/delete, and rejection of writes to another base.
 
-Замер повторяется так (в SQL Editor):
+Repeat the measurement in SQL Editor:
 
 ```sql
 begin;
 select set_config('request.jwt.claims',
-  json_build_object('sub', '<uuid пользователя>', 'role','authenticated')::text, true);
+  json_build_object('sub', '<user UUID>', 'role','authenticated')::text, true);
 set local role authenticated;
 explain (analyze, timing off) select id, base_id from public.stock_items;
 rollback;
 ```
 
-## 3. Опасные промежуточные состояния
+## 3. Unsafe intermediate states
 
-### 3.1 Пересменка сломана целиком
+### 3.1 Broken shift handover
 
-Если применён `base_member_preset_all_roles.sql`, но **не** применён
-`audit_round3_sql_fixes.sql` — **пересменка сломана целиком**.
+Applying `base_member_preset_all_roles.sql` without `audit_round3_sql_fixes.sql` breaks handover. The intermediate `enforce_base_member_write` rejects INSERT/UPDATE for non-base roles. Pre-v134 bases can contain organization roles such as `party_chief` in `base_members`; deactivating those rows from `handover_shift` then fails.
 
-Причина: в промежуточной версии `enforce_base_member_write` отклоняет любой `INSERT`/`UPDATE`
-строки, чья роль не входит в набор base-ролей. У баз, созданных до v134, в `base_members`
-лежат org-роли (`party_chief` и подобные). `handover_shift` внутри делает
-`update base_members set active=false ...` по такой строке — и падает с
-`base_member: роль party_chief назначается в org_roles, не в базе`.
+`audit_round3` limits rejection to row creation or an actual change to an organization role, allowing legacy deactivation/handover. Local PostgreSQL 16 tests reproduced the failure with presets alone and verified recovery after round 3. The verifier marks that intermediate state urgent.
 
-`audit_round3` сужает проверку: отказ только при **создании** строки или при **реальной смене**
-роли на org-роль, а деактивация/пересменка legacy-строк проходит.
+### 3.2 Duplicate overloads: `is not unique`
 
-Проверено на локальном PostgreSQL 16: на состоянии «только preset» `handover_shift` падает
-на указанной строке, после `audit_round3` возвращается нормально. Диагностический скрипт
-из п.1 распознаёт это состояние и помечает его как СРОЧНОЕ.
+Rerunning `audit_round3_sql_fixes.sql` over August 1 files left old signatures alongside new ones: `stock_zeroing_report(uuid,int)` and `stock_qty_restore(uuid,timestamptz,boolean,timestamptz)`. All three runbook tools then failed with `is not unique`, and verification failed with `more than one row returned by a subquery`.
 
-### 3.2 Дубли перегрузок — отчёт и откат падают «is not unique»
+Since round 6, each of the three files removes all overloads before recreation. Apply `2026-08-01_audit_round6_fixes.sql` to repair an existing duplicate state, then retain the required subsequent migration order. The verifier now reports overloads as its first row instead of crashing.
 
-Возникало от повторного прогона `audit_round3_sql_fixes.sql` **поверх** файлов 2026-08-01:
-round3 снимал только свои старые сигнатуры, и рядом с новыми версиями оставались
-`stock_zeroing_report(uuid,int)` и `stock_qty_restore(uuid,timestamptz,boolean,timestamptz)`.
-Тогда все три инструмента раннбука падали с `is not unique`, а верификатор — целиком
-(`more than one row returned by a subquery`), то есть во время инцидента не работала и
-диагностика.
+## 4. After application
 
-Начиная с round 6 все три файла снимают ВСЕ перегрузки своих функций перед созданием, поэтому
-состояние больше не возникает; если оно уже есть — лечится вставкой
-`2026-08-01_audit_round6_fixes.sql`. Верификатор показывает его отдельной первой строкой
-(`ПЕРЕГРУЗКИ`), а не падает.
+- Rerun `2026-07-31_verify_applied_state.sql`; every row should report present/OK.
+- `CHECK stock_items_qty_nonneg` starts as `NOT VALID` to accommodate legacy rows. Once negative balances are resolved, run `alter table public.stock_items validate constraint stock_items_qty_nonneg;`.
+- `2026-07-31_schedule_retention.sql` schedules `vahtahoz_stock_history_prune` for 180 days and `vahtahoz_auth_rate_prune` for one day. Without pg_cron it reports that no jobs were created. Manual alternatives: `select public.stock_history_prune(180);` and `select public.auth_rate_prune(1);`.
+- See `docs/RUNBOOK_STOCK_RECOVERY.md` for incident recovery.
 
-## 4. После применения
+## Large files
 
-- Повторно запустить `2026-07-31_verify_applied_state.sql` — все строки должны быть «есть»/«ок».
-- `CHECK stock_items_qty_nonneg` создаётся как `NOT VALID` (чтобы не упасть на legacy-строках).
-  Когда убедитесь, что отрицательных остатков нет:
-  `alter table public.stock_items validate constraint stock_items_qty_nonneg;`
-- Поставить по расписанию (pg_cron): `2026-07-31_schedule_retention.sql` — он заводит задания
-  `vahtahoz_stock_history_prune` (180 дней) и `vahtahoz_auth_rate_prune` (1 день). Без pg_cron
-  файл ничего не делает и честно об этом пишет; вручную — `select public.stock_history_prune(180);`
-  и `select public.auth_rate_prune(1);`
-- Восстановление остатков после инцидента — см. `docs/RUNBOOK_STOCK_RECOVERY.md`.
-
-## Большие файлы
-
-`audit_round3_sql_fixes.sql` — ~22 КБ; целиком через Management API иногда отдаёт 502.
-Через SQL Editor вставляется нормально. Если применяете через API — бейте на части
-по границам `begin; ... commit;`, не разрывая транзакции.
+`audit_round3_sql_fixes.sql` is about 22 KB; Management API submission sometimes returns 502. SQL Editor accepts the full file. For API application, split only at `begin; ... commit;` boundaries; never split a transaction.

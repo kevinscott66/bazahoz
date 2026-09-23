@@ -1,55 +1,52 @@
-# ВахтаХоз (bazahoz)
+# VahtaHoz (bazahoz)
 
-PWA для учёта складов и задач на вахтовых базах. Прод: [vahta.razvedchick.ru](https://vahta.razvedchick.ru)
+A warehouse and task-management PWA for remote work camps. Production: [vahta.razvedchick.ru](https://vahta.razvedchick.ru).
 
-## Каналы
+## Release channels
 
-| Канал | URL | Назначение |
-|-------|-----|------------|
-| **Стабильная** | `/vahtahoz.html` | Прод для вахтовиков — менять только промоцией из беты |
-| **Бета** | `/beta/vahtahoz.html` | Разработка и тесты |
+| Channel | URL | Purpose |
+| --- | --- | --- |
+| **Stable** | `/vahtahoz.html` | Production for field teams; update only by promoting beta |
+| **Beta** | `/beta/vahtahoz.html` | Development and testing |
 
-Service worker: `sw.js` (stable) и `beta/sw.js` (beta, отдельный кэш `vahtahoz-BETA-v*`).
+Service workers: `sw.js` for stable and `beta/sw.js` for beta, with a separate `vahtahoz-BETA-v*` cache.
 
-## Структура
+## Repository layout
 
-```
-vahtahoz.html          # стабильная сборка (заморожена)
-beta/                  # бета-канал (все доработки здесь)
-supabase/              # schema, migrations, Edge Function manage-user
+```text
+vahtahoz.html          # frozen stable build
+beta/                  # beta channel; all application changes start here
+supabase/              # schema, migrations and manage-user Edge Function
 native/                # Capacitor Android
 native-desktop/        # Tauri desktop
-.github/workflows/     # CI: APK, IPA, desktop
+.github/workflows/     # APK, IPA and desktop CI
 ```
 
 ## Supabase
 
-- Миграции: `supabase/migrations/` (применять по порядку на prod)
-- Edge Function `manage-user`: аккаунты, RBAC, восстановление пароля по резервной почте, рассылка
-- RLS защищает данные; anon-ключ в клиенте — норма
+- Apply `supabase/migrations/` to production in order.
+- The `manage-user` Edge Function handles accounts, RBAC, recovery through a backup email address and mailings.
+- RLS protects data; a client-side anon key is expected.
 
-## Локальная разработка
+## Local development
 
 ```bash
 cd beta && python3 -m http.server 8777
-# открыть http://localhost:8777/vahtahoz.html
+# Open http://localhost:8777/vahtahoz.html
 ```
 
-## Операционная память
+## Operational records
 
-Приватный репозиторий `kevinscott66/bazahoz-ops` — задачи, security notes, инфраструктура.
+Tasks, security notes and infrastructure records belong in the private `kevinscott66/bazahoz-ops` repository.
 
-## Аудит
+## Audit
 
-См. `docs/AUDIT_REPORT.md` (последний проход).
+See [the latest audit report](docs/AUDIT_REPORT.md).
 
-## Правила контрибуции
+## Contribution rules
 
-- Все изменения приложения — только в `beta/` (стабильная версия обновляется промоцией).
-- При каждом изменении `beta/vahtahoz.html` поднимайте версию сборки и кэш в `beta/sw.js` (`vahtahoz-BETA-vNNN`).
-- Промоция = копия `beta/vahtahoz.html` → `vahtahoz.html` плюс `APP_BUILD` и вручную тот же
-  номер в `CACHE` корневого `sw.js`. **`beta/sw.js` в корень не копируется никогда** — у него
-  своё имя кэша и свой `isMyCache`, в корне он стирает офлайн-кэш стабильной (уже случалось).
-- Веб-часть внутри Android-приложения застывает на сборке APK: выпуск, который должен дойти
-  до людей с приложением, требует `gh workflow run native-android.yml` — см. `docs/ANDROID_RELEASE.md`.
-- Личные данные (экспорты склада, бэкапы, ключи) в репозиторий не коммитятся — см. `.gitignore`.
+- Change the application in `beta/` only; update stable by promotion.
+- Whenever `beta/vahtahoz.html` changes, increment the build version and the cache version in `beta/sw.js` (`vahtahoz-BETA-vNNN`).
+- Promotion copies `beta/vahtahoz.html` to `vahtahoz.html`, updates `APP_BUILD`, and manually sets the same version in the root `sw.js` `CACHE`. **Never copy `beta/sw.js` to the root.** Its separate cache name and `isMyCache` would remove the stable offline cache; this has happened before.
+- Android packages embed the web application at APK build time. A release intended for installed apps requires `gh workflow run native-android.yml`; see [Android release instructions](docs/ANDROID_RELEASE.md).
+- Never commit personal data, warehouse exports, backups or keys. See `.gitignore`.
