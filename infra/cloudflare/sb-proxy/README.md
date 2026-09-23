@@ -1,69 +1,46 @@
-# Прокси Supabase через свой домен
+# Supabase proxy on a custom domain
 
-`https://sb.razvedchick.ru` → `https://jzxajxwtcemrztfwbdkm.supabase.co`
-Воркер Cloudflare `vahtahoz-sb-proxy` (аккаунт `Pavlovicsasa183@gmail.com`).
+A Cloudflare Worker, `vahtahoz-sb-proxy`, forwards the configured custom Supabase domain to the project's Supabase origin. Account identifiers and deployment credentials belong in private operator configuration.
 
-## Зачем
+## Purpose
 
-С части российских сетей `*.supabase.co` не открывается без VPN: сайт грузится
-мгновенно (он на Cloudflare), а первый же запрос к базе висит до таймаута —
-человек видит «ошибка интернета» и не может войти. Проверено на телефоне;
-на Маке с включённым VPN тот же запрос отвечает за 1.6 с. Переезд сайта на
-Cloudflare этого не лечил: клиент ходит в Supabase напрямую, минуя наш домен.
+Some Russian networks cannot reach `*.supabase.co` without a VPN. The Cloudflare-hosted page loads, but its first direct database request times out, preventing sign-in. Moving the site to Cloudflare alone does not fix direct client requests to Supabase. The original check reproduced this on a phone; the same request on a VPN-connected Mac completed in 1.6 seconds.
 
-## Выкатка
+## Deployment
 
 ```sh
 cd infra/cloudflare/sb-proxy
-CLOUDFLARE_ACCOUNT_ID=576def678ac19edd3298383a4eda932c \
+CLOUDFLARE_ACCOUNT_ID=... \
 CLOUDFLARE_EMAIL=... CLOUDFLARE_API_KEY=... npx wrangler deploy
 ```
 
-Домен привязан как Workers Custom Domain (DNS и сертификат Cloudflare ведёт сам):
-запись `423396520fefc6f42beba5f2fa9796141b23730c` в зоне `razvedchick.ru`.
+The hostname is a Workers Custom Domain; Cloudflare manages DNS and the certificate.
 
-## Состояние
+## Recorded release state
 
-**Корневой канал переведён — выкачен `v222` (01.08.2026).** Правка одна:
-`CLOUD_CFG.url` в `vahtahoz.html`; прямых ссылок на `supabase.co` в оболочке
-не осталось. Разлогина это не вызвало: ключ хранения сессии задан явно
-(`storageKey: NS+"vahtahoz_auth"`) и от адреса не зависит. Старые установленные
-сборки продолжают ходить по прямому адресу — как раньше.
+**Stable was switched in v222 on 2026-08-01.** The change was `CLOUD_CFG.url` in `vahtahoz.html`; the shell no longer used direct `supabase.co` links. Sessions remained valid because the explicit `storageKey: NS+"vahtahoz_auth"` does not depend on the origin. Previously installed builds continue using their embedded direct URL.
 
-**Бета на `main` (v214) намеренно не тронута.** Ту же строку ей должна прописать
-промоция пачки одиннадцатого круга: если править бету здесь, слияние ветки
-перезапишет файл целиком и правка исчезнет молча.
+**Beta on main (v214) was deliberately left unchanged.** The same URL change was intended to arrive with promotion of the round-eleven batch; editing beta separately would have been overwritten by that branch's full-file merge.
 
-Проверено на боевом адресе после выкатки: `CLOUD_CFG.url` = `https://sb.razvedchick.ru`,
-`сборка v222`, служебный обработчик управляет страницей; из самой страницы
-(то есть с настоящим `Origin`, через preflight) `POST /auth/v1/token` доходит и
-отвечает `invalid_credentials` на заведомо неверный пароль.
+The recorded live verification checked the proxy URL, build v222 and service-worker control. A page-origin request, including preflight, reached `POST /auth/v1/token` and returned `invalid_credentials` for a deliberately incorrect password.
 
-**Откат** — вернуть в `CLOUD_CFG.url` прямой адрес, поднять версии и выкатить.
+**Rollback:** restore the direct origin in `CLOUD_CFG.url`, increment versions and deploy.
 
-## Почему отдельный хост, а не путь на vahta.razvedchick.ru
+## Why a separate host
 
-`sw.js` перехватывает все GET своего origin и при сбое сети отдаёт ответ из кэша.
-На общем origin туда попали бы и запросы к базе: человек получил бы вчерашние
-остатки склада, не отличимые от свежих. Отдельный хост служебный обработчик
-не трогает вовсе. Побочно это же означает, что править `sw.js` не потребовалось.
+`sw.js` intercepts same-origin GET requests and can serve cached responses after network failure. Placing database requests on that origin could present stale warehouse balances as current. A separate host avoids interception and requires no `sw.js` change.
 
-## Проверено после выкатки
+## Recorded post-deployment checks
 
-- `/` → `vahtahoz sb-proxy ok`
-- `/rest/v1/` — 10 запросов подряд, все 401 (как и напрямую: без токена и должно быть 401)
-- `/auth/v1/token?grant_type=password` с неверным паролем — 400 и через прокси, и напрямую
-- `/functions/v1/manage-user` — доходит, отвечает `{"error":"no auth"}`
-- preflight `OPTIONS` с `Origin: https://vahta.razvedchick.ru` — 200, `access-control-allow-origin: *` проходит насквозь
-- вебсокет `/realtime/v1/websocket` — `101 Switching Protocols` (реалтайм в приложении есть, `cloud.sb.channel(...)`)
-- посторонний путь `/evil/path` — 404 (белый список, чтобы это не стало открытым прокси)
+- `/`: `vahtahoz sb-proxy ok`.
+- `/rest/v1/`: ten consecutive 401 responses, matching direct unauthenticated requests.
+- `/auth/v1/token?grant_type=password`: incorrect password returned 400 through both routes.
+- `/functions/v1/manage-user`: reached the function and returned `{"error":"no auth"}`.
+- `OPTIONS` with the application Origin: 200; `access-control-allow-origin: *` passed through.
+- `/realtime/v1/websocket`: `101 Switching Protocols`; the app uses `cloud.sb.channel(...)`.
+- Unlisted `/evil/path`: 404; the route allowlist prevents an open proxy.
 
-## Незакрытое
+## Remaining considerations
 
-- **Лимиты по IP.** Supabase теперь видит адреса Cloudflare, а не людей. Если GoTrue
-  считает попытки входа по IP, все вахтовики окажутся «одним адресом». Собственный
-  ограничитель приложения (`auth_rate`, ключ по почте) это не затрагивает. Смотреть
-  при жалобах на «слишком много попыток».
-- Кэш на границе выключен явно (`cacheTtl: 0`): у PostgREST нет `Cache-Control`,
-  и без этого ответ на GET мог бы осесть в кэше и прилететь другому человеку.
-  Если когда-нибудь захочется кэшировать — только по явному списку путей.
+- **IP rate limits:** Supabase sees Cloudflare addresses. IP-based GoTrue limits may group users together; the application's email-keyed `auth_rate` limiter is unaffected. Investigate if users report excessive-attempt errors.
+- Edge caching is explicitly disabled with `cacheTtl: 0`. PostgREST responses lack `Cache-Control`; caching a GET could serve it to another user. Any future caching must use an explicit route policy.
