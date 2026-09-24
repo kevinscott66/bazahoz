@@ -1,55 +1,75 @@
-# ВахтаХоз (bazahoz)
+# VahtaHoz / ВахтаХоз
 
-PWA для учёта складов и задач на вахтовых базах. Прод: [vahta.razvedchick.ru](https://vahta.razvedchick.ru)
+[English](README.md) · [Русский](README.ru.md)
 
-## Каналы
+[![Android build](https://github.com/kevinscott66/bazahoz/actions/workflows/native-android.yml/badge.svg)](https://github.com/kevinscott66/bazahoz/actions/workflows/native-android.yml) · [MIT](LICENSE)
 
-| Канал | URL | Назначение |
-|-------|-----|------------|
-| **Стабильная** | `/vahtahoz.html` | Прод для вахтовиков — менять только промоцией из беты |
-| **Бета** | `/beta/vahtahoz.html` | Разработка и тесты |
+Warehouse and task management for rotational crews: offline workflows, a stable channel and a separate beta.
 
-Service worker: `sw.js` (stable) и `beta/sw.js` (beta, отдельный кэш `vahtahoz-BETA-v*`).
+**Status:** Operating product. Reviewed September 2026.
 
-## Структура
+[Live app](https://vahta.razvedchick.ru/vahtahoz.html) · [Portfolio](https://dobropalm.tech/)
 
-```
-vahtahoz.html          # стабильная сборка (заморожена)
-beta/                  # бета-канал (все доработки здесь)
-supabase/              # schema, migrations, Edge Function manage-user
-native/                # Capacitor Android
-native-desktop/        # Tauri desktop
-.github/workflows/     # CI: APK, IPA, desktop
-```
+![VahtaHoz public entry screen](https://dobropalm.tech/assets/media/vahtahoz.webp)
 
-## Supabase
+_Public entry screen in a clean session, without operational data._
 
-- Миграции: `supabase/migrations/` (применять по порядку на prod)
-- Edge Function `manage-user`: аккаунты, RBAC, восстановление пароля по резервной почте, рассылка
-- RLS защищает данные; anon-ключ в клиенте — норма
+## Problem & outcome
 
-## Локальная разработка
+Inventory and tasks still matter when connectivity is unreliable. The PWA supports local workflows; stable and beta use separate service-worker caches. Changes reach stable through an explicit promotion.
+
+## My contribution
+
+Product logic, application design and outcome ownership. I use AI tools in development; architectural decisions are my responsibility.
+
+## Engineering highlights
+
+- Isolated stable/beta caches keep beta testing from clearing the stable offline cache.
+- Supabase RLS and account administration functions.
+- Capacitor and Tauri package the web application for mobile and desktop.
+
+## Architecture & stack
+
+| Layer | Implementation |
+|---|---|
+| UI | HTML / JavaScript PWA, service worker |
+| Backend / data | Supabase, PostgreSQL, RLS, Edge Functions |
+| Packaging | Capacitor Android, Tauri desktop |
+| Delivery | GitHub Actions, separate stable/beta channels |
+
+## Quick start
 
 ```bash
-cd beta && python3 -m http.server 8777
-# открыть http://localhost:8777/vahtahoz.html
+git clone https://github.com/kevinscott66/bazahoz.git
+cd bazahoz/beta
+python3 -m http.server 8777 --bind 127.0.0.1
+# Open http://127.0.0.1:8777/vahtahoz.html
 ```
 
-## Операционная память
+The static interface runs locally. Cloud synchronization and administration require your own Supabase configuration.
 
-Приватный репозиторий `kevinscott66/bazahoz-ops` — задачи, security notes, инфраструктура.
+## Checks & deployment
 
-## Аудит
+Verify changes in beta, including offline operation and reconnection. Native Android needs a new APK build because its bundled web assets do not update just by changing the website.
 
-См. `docs/AUDIT_REPORT.md` (последний проход).
+- Application changes belong in `beta/`.
+- When beta changes, bump its app version and cache version.
+- Promotion copies `beta/vahtahoz.html` → `vahtahoz.html` and synchronizes the root cache version.
+- **Do not copy `beta/sw.js` to the root.** This previously cleared the stable cache.
+- [Android release instructions](docs/ANDROID_RELEASE.md)
 
-## Правила контрибуции
+## Data & security
 
-- Все изменения приложения — только в `beta/` (стабильная версия обновляется промоцией).
-- При каждом изменении `beta/vahtahoz.html` поднимайте версию сборки и кэш в `beta/sw.js` (`vahtahoz-BETA-vNNN`).
-- Промоция = копия `beta/vahtahoz.html` → `vahtahoz.html` плюс `APP_BUILD` и вручную тот же
-  номер в `CACHE` корневого `sw.js`. **`beta/sw.js` в корень не копируется никогда** — у него
-  своё имя кэша и свой `isMyCache`, в корне он стирает офлайн-кэш стабильной (уже случалось).
-- Веб-часть внутри Android-приложения застывает на сборке APK: выпуск, который должен дойти
-  до людей с приложением, требует `gh workflow run native-android.yml` — см. `docs/ANDROID_RELEASE.md`.
-- Личные данные (экспорты склада, бэкапы, ключи) в репозиторий не коммитятся — см. `.gitignore`.
+Migrations live in `supabase/migrations/`; apply them in order to the intended environment. The `manage-user` function handles accounts and RBAC. A client anon key does not replace RLS; privileged keys must stay private.
+
+Operational inventory exports, databases, backups and keys are not portfolio assets.
+
+## Limits & history
+
+Offline workflows do not mean every cloud feature works without a connection. Native packages have their own update cycle. The documented cache incident explains why each channel must own only its own data.
+
+[Audit notes](docs/AUDIT_REPORT.md) · [Stock recovery](docs/RUNBOOK_STOCK_RECOVERY.md)
+
+## License
+
+MIT - [LICENSE](LICENSE).
