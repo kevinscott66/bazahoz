@@ -1,0 +1,9 @@
+# Public recovery and lead actions validate their own boundary in the Edge Functions.
+# Keep this in version control so a deploy does not silently restore gateway JWT checks.
+project_id = "jzxajxwtcemrztfwbdkm"
+
+[functions.manage-user]
+verify_jwt = false
+
+[functions.lead]
+verify_jwt = false

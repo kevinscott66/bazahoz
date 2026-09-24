@@ -1,0 +1,64 @@
+name: Quality checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Run tests
+        run: bun test
+
+      - name: Build Edge Functions
+        run: |
+          bun build supabase/functions/manage-user/index.ts --target bun --outdir "$RUNNER_TEMP/manage-user" --external 'https://esm.sh/*'
+          bun build supabase/functions/lead/index.ts --target bun --outdir "$RUNNER_TEMP/lead" --external 'https://esm.sh/*'
+
+      - name: Check browser scripts
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          for (const file of ['vahtahoz.html', 'beta/vahtahoz.html']) {
+            const source = fs.readFileSync(file, 'utf8');
+            const script = new RegExp('<script(?:[^>]*)>([\\s\\S]*?)<\\/script>', 'gi');
+            for (const match of source.matchAll(script)) new Function(match[1]);
+            console.log(`${file}: script syntax ok`);
+          }
+          NODE
+          node --check sw.js
+          node --check beta/sw.js
+
+      - name: Check formatting and parity
+        run: |
+          git diff --check
+          cmp -s vahtahoz.html beta/vahtahoz.html
+
+      - name: Scan changed files for high-confidence secrets
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if git diff --binary "$BASE_SHA...$HEAD_SHA" | rg -n -i -- '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,}|service_role[^A-Za-z0-9_]*[:=][[:space:]]*[A-Za-z0-9._-]{20,}|MAIL_BROADCAST_SECRET[^A-Za-z0-9_]*[:=][[:space:]]*[^$<{[:space:]]{12,}'; then
+            echo 'High-confidence secret pattern found in pull request diff.'
+            exit 1
+          fi
+          echo 'No high-confidence secret patterns found.'

@@ -41,6 +41,19 @@ async function sha256(s: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
+// Глобальный бюджет не зависит от клиентских IP-заголовков, которые могут быть
+// ротированы при прямом обращении к публичной функции.
+async function globalRateOk(admin: any, purpose: string, windowSecs: number, limit: number): Promise<boolean> {
+  const salt = Deno.env.get("RATE_SALT") || SERVICE.slice(0, 16);
+  const key = await sha256(salt + "|global|" + purpose);
+  try {
+    const { data, error } = await admin.rpc("auth_rate_hit", {
+      p_key: key, p_purpose: purpose, p_window: windowSecs, p_limit: limit,
+    });
+    if (error) { console.warn("global rate", error.message); return false; }
+    return data === true;
+  } catch (e) { console.warn("global rate", e); return false; }
+}
 
 // Обрезка и вычистка: в письмо не должны попадать переводы строк из однострочных
 // полей (иначе поле подделывает соседние строки письма) и управляющие символы.
@@ -61,6 +74,7 @@ Deno.serve(async (req) => {
 
   let d: any = {};
   try { d = await req.json(); } catch { return json(req, { error: "bad_json" }, 400); }
+  if (!d || typeof d !== "object" || Array.isArray(d)) return json(req, { error: "bad_json" }, 400);
 
   // Ловушка: поле спрятано от людей, его заполняют только автозаполнялки ботов.
   // Отвечаем «принято» — бот не должен узнать, что его отсекли.
@@ -74,11 +88,15 @@ Deno.serve(async (req) => {
   if (!org || !fio || !contact) return json(req, { error: "required" }, 400);
 
   // Троттлинг по IP тем же счётчиком, что и восстановление пароля: 5 заявок в час.
-  // При сбое счётчика пропускаем — потерять настоящую заявку хуже, чем принять лишний спам.
+  // Глобальный бюджет выше не зависит от IP-заголовков и при сбое закрывает отправку.
+  const admin = createClient(SUPABASE_URL, SERVICE, { auth: { persistSession: false } });
+  if (!(await globalRateOk(admin, "lead", 3600, 60))) {
+    return json(req, { error: "rate" }, 429);
+  }
+  // Per-IP слой остаётся дополнительным и при сбое пропускает заявку.
   try {
     const ip = clientIp(req);
     if (ip) {
-      const admin = createClient(SUPABASE_URL, SERVICE, { auth: { persistSession: false } });
       const key = await sha256((Deno.env.get("RATE_SALT") || SERVICE.slice(0, 16)) + "|" + ip);
       const { data, error } = await admin.rpc("auth_rate_hit", {
         p_key: key, p_purpose: "lead", p_window: 3600, p_limit: 5,

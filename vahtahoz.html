@@ -400,8 +400,10 @@
     <svg class="ico" viewBox="0 0 48 48" width="64" height="64" style="color:var(--accent);stroke-width:2.6;margin-bottom:8px" aria-hidden="true"><path d="M9 16.5h30v22a3 3 0 0 1-3 3H12a3 3 0 0 1-3-3z"/><path d="M7 8.5h34a2 2 0 0 1 2 2v6H5v-6a2 2 0 0 1 2-2z"/><path d="M16.5 26.5l5.5 5.5 10-10"/></svg>
     <div style="font-size:26px;font-weight:800;letter-spacing:.3px">ВахтаХоз</div>
     <div style="font-size:13px;opacity:.65;margin:6px 0 22px">Войдите, чтобы синхронизировать склад</div>
-    <input id="lgEmail" class="input" type="text" inputmode="email" enterkeyhint="next" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username" placeholder="Логин (например: ivanov)" style="margin-bottom:10px;text-align:center" />
-    <input id="lgPwd" class="input" type="password" enterkeyhint="go" autocomplete="current-password" placeholder="Пароль" style="margin-bottom:14px;text-align:center" />
+    <label for="lgEmail" style="display:block;text-align:left;font-size:12px;opacity:.75;margin:0 2px 4px">Логин</label>
+    <input id="lgEmail" class="input" type="text" inputmode="email" enterkeyhint="next" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username" placeholder="Например: ivanov" style="margin-bottom:10px;text-align:center" />
+    <label for="lgPwd" style="display:block;text-align:left;font-size:12px;opacity:.75;margin:0 2px 4px">Пароль</label>
+    <input id="lgPwd" class="input" type="password" enterkeyhint="go" autocomplete="current-password" placeholder="Введите пароль" style="margin-bottom:14px;text-align:center" />
     <button id="lgGo" class="btn btn-primary" style="width:100%;font-size:16px">Войти</button>
     <div id="lgErr" style="color:#fca5a5;font-size:13px;min-height:34px;margin-top:10px;overflow-wrap:break-word;word-break:break-word;line-height:1.3"></div>
     <button id="lgForgot" class="btn btn-ghost" style="font-size:13px;opacity:.85;min-height:44px" onclick="requestPasswordReset()">Забыли пароль?</button>
@@ -460,7 +462,7 @@ const AUTO_RECONCILE = (NS === "beta_");
    Было 3 независимых ярлыка, и «О программе» отстал на v168 при сборке v202 —
    теперь все надписи берутся отсюда, разъехаться не могут.
    При PROMOTE beta→стабильная правится только APP_BUILD (и канал вычисляется из NS). */
-const APP_BUILD = "v261";
+const APP_BUILD = "v262";
 const APP_IS_BETA = (NS === "beta_");
 const APP_BUILD_LABEL = APP_BUILD + (APP_IS_BETA ? " · БЕТА" : "");
 // ярлык на экране входа — из той же константы (div выше в разметке, уже в DOM)
@@ -8961,11 +8963,13 @@ async function cloudInit(){
    Работает, когда домен логина (LOGIN_DOMAIN) реально принимает почту (catch-all на своём домене).
    1) «Забыли пароль?» → recover-письмо со ссылкой на приложение;
    2) ссылка открывает приложение с #type=recovery&access_token=… → экран нового пароля. */
-// вызов Edge Function БЕЗ токена — только публичные действия восстановления (юзер не залогинен)
-async function cloudCallFnPublic(action, payload){
+// вызов Edge Function для восстановления: публичные действия без токена и recovery-ссылка с Bearer
+async function cloudCallFnPublic(action, payload, bearer=""){
   const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(), 35000);
   let r;
-  try{ r = await fetch(`${CLOUD_CFG.url}/functions/v1/manage-user`, { method:"POST", signal:ctrl.signal, headers:{ apikey:CLOUD_CFG.anon, "Content-Type":"application/json" }, body: JSON.stringify(Object.assign({ action }, payload)) }); }
+  const headers={ apikey:CLOUD_CFG.anon, "Content-Type":"application/json" };
+  if(bearer) headers.Authorization=`Bearer ${bearer}`;
+  try{ r = await fetch(`${CLOUD_CFG.url}/functions/v1/manage-user`, { method:"POST", signal:ctrl.signal, headers, body: JSON.stringify(Object.assign({ action }, payload)) }); }
   catch(_){ clearTimeout(to); throw new Error("Сервер недоступен. Проверьте интернет"); }
   clearTimeout(to);
   const d = await r.json().catch(()=>({}));
@@ -9000,7 +9004,8 @@ async function requestPasswordReset(){
   openSheetOverGate(`
     <div class="font-bold text-xl mb-1">Забыли пароль?</div>
     <div class="text-sm opacity-70 mb-3">Введите логин — код для сброса придёт на привязанную резервную почту.</div>
-    <input class="input mb-2" id="rcLogin" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Логин (например: ivanov)" value="${esc(pre)}" />
+    <label for="rcLogin" style="display:block;text-align:left;font-size:12px;opacity:.75;margin:0 2px 4px">Логин</label>
+    <input class="input mb-2" id="rcLogin" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Например: ivanov" value="${esc(pre)}" />
     <button class="btn btn-primary w-full" id="rcSend">Отправить код</button>
     <div id="rcErr" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
   `);
@@ -9019,8 +9024,10 @@ async function requestPasswordReset(){
            поле нужно знать, что делать, если письма не будет: у большинства учётных
            записей резервная почта пока не привязана вовсе. -->
       <div class="text-sm opacity-70 mb-3">Если у логина есть привязанная почта — код отправлен. Введите его и новый пароль.<br>Письма нет и почта не привязана? Пароль сбросит начальник.</div>
-      <input class="input mb-2" id="rcCode" inputmode="numeric" maxlength="6" placeholder="Код из письма (6 цифр)" />
-      <input class="input mb-2" id="rcPw" type="password" autocapitalize="none" autocorrect="off" autocomplete="new-password" spellcheck="false" placeholder="Новый пароль (от 8 символов)" />
+      <label for="rcCode" style="display:block;text-align:left;font-size:12px;opacity:.75;margin:0 2px 4px">Код из письма</label>
+      <input class="input mb-2" id="rcCode" inputmode="numeric" maxlength="6" placeholder="6 цифр" />
+      <label for="rcPw" style="display:block;text-align:left;font-size:12px;opacity:.75;margin:0 2px 4px">Новый пароль</label>
+      <input class="input mb-2" id="rcPw" type="password" autocapitalize="none" autocorrect="off" autocomplete="new-password" spellcheck="false" placeholder="От 8 символов" />
       <button class="btn btn-primary w-full" id="rcGo">Сменить пароль</button>
       <div id="rcErr2" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
     `);
@@ -9058,6 +9065,7 @@ async function openRecoveryEmailSheet(edit){
     ${cur?`<div class="text-sm mb-3">Сейчас: <b>${esc(cur)}</b> ${ver?'<span class="badge badge-green">подтверждена</span>':'<span class="badge badge-yellow">не подтверждена</span>'}</div>`:''}
     ${form?`
     ${ver?`<div class="text-sm opacity-70 mb-2">Новый адрес нужно будет подтвердить кодом. Пока он не подтверждён, восстановление пароля идёт на прежний.</div>`:``}
+    <label for="reEmail" style="display:block;text-align:left;font-size:12px;opacity:.75;margin:0 2px 4px">Личная почта</label>
     <input class="input mb-2" id="reEmail" inputmode="email" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="email@example.com" value="${esc(cur||'')}" />
     <button class="btn btn-primary w-full" id="reSend">Отправить код подтверждения</button>
     `:`
@@ -9083,7 +9091,8 @@ async function openRecoveryEmailSheet(edit){
     openSheet(`
       <div class="font-bold text-xl mb-1">Подтвердите почту</div>
       <div class="text-sm opacity-70 mb-3">Код отправлен на <b>${esc(email)}</b>. Если письма нет во «Входящих» — проверьте папку «Спам».</div>
-      <input class="input mb-2" id="reCode" inputmode="numeric" maxlength="6" placeholder="Код (6 цифр)" />
+      <label for="reCode" style="display:block;text-align:left;font-size:12px;opacity:.75;margin:0 2px 4px">Код подтверждения</label>
+      <input class="input mb-2" id="reCode" inputmode="numeric" maxlength="6" placeholder="6 цифр" />
       <button class="btn btn-primary w-full" id="reGo">Подтвердить</button>
       <div id="reErr2" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
     `);
@@ -9128,7 +9137,8 @@ function openSetNewPassword(token){
   openSheet(`
     <div class="font-bold text-xl mb-3">Новый пароль</div>
     <div class="text-sm opacity-70 mb-2">Придумайте новый пароль для входа (не короче 8 символов).</div>
-    <input class="input mb-2" id="npw" type="password" autocapitalize="none" autocorrect="off" autocomplete="new-password" spellcheck="false" placeholder="Новый пароль" />
+    <label for="npw" style="display:block;text-align:left;font-size:12px;opacity:.75;margin:0 2px 4px">Новый пароль</label>
+    <input class="input mb-2" id="npw" type="password" autocapitalize="none" autocorrect="off" autocomplete="new-password" spellcheck="false" placeholder="От 8 символов" />
     <button class="btn btn-primary w-full" id="npGo">Сохранить пароль</button>
     <div id="npErr" class="err-text" style="font-size:13px;min-height:20px;margin-top:8px"></div>
   `);
@@ -9141,24 +9151,15 @@ function openSetNewPassword(token){
     if(pw.length<8){ err.textContent="Пароль не короче 8 символов"; return; }
     const btn=document.getElementById("npGo"); btn.disabled=true; btn.textContent="Сохранение…";
     try{
-      const r = await fetch(`${CLOUD_CFG.url}/auth/v1/user`, {
-        method:"PUT", headers:{ apikey:CLOUD_CFG.anon, Authorization:`Bearer ${token}`, "Content-Type":"application/json" },
-        body: JSON.stringify({ password: pw })
-      });
-      if(!r.ok){
-        /* Не всякий отказ здесь — «ссылка устарела». При включённой проверке паролей по базам
-           утечек сервер отвечает 422 с английским текстом, и прежнее сообщение отправляло
-           человека запрашивать новую ссылку по кругу — с тем же паролем и тем же отказом. */
-        let msg = "";
-        try{ const d = await r.json(); msg = String((d && (d.msg || d.message || d.error_description || d.error)) || ""); }catch(_){}
-        if(/known to be weak|pwned|breach|compromis/i.test(msg)) throw new Error("Пароль слишком простой — он есть в утечках. Придумайте другой");
-        if(/password/i.test(msg) && /at least|too short|length/i.test(msg)) throw new Error("Пароль не короче 8 символов");
-        throw new Error("expired");
-      }
+      const d = await cloudCallFnPublic("recovery_reset_password", { new_password: pw }, token);
       _sheetOnClose = null;   // успех: закрытие шита не должно повторно дёргать exitRecoveryMode
-      closeSheet(); toast("Пароль изменён — войдите с новым");
+      closeSheet(); await warnMailUnsynced(d, d.username); toast("Пароль изменён — войдите с новым");
       exitRecoveryMode();   // сброс _recoveryMode + гейт + отложенный cloudInit (online-листенеры)
-    }catch(e){ err.textContent="Ссылка устарела. Запросите сброс заново"; if(document.getElementById("npGo")){ btn.disabled=false; btn.textContent="Сохранить пароль"; } }
+    }catch(e){
+      const m=String(e.message||"");
+      err.textContent=m==="expired"?"Ссылка устарела. Запросите сброс заново":m==="too_many"?"Слишком много попыток, подождите":m||"Не удалось сменить пароль";
+      if(document.getElementById("npGo")){ btn.disabled=false; btn.textContent="Сохранить пароль"; }
+    }
   };
 }
 function showLoginGate(){
